@@ -30,10 +30,14 @@ cleanup() {
     # Also kill any remaining node processes from this script
     pkill -P $$ 2>/dev/null || true
 
-    # Optionally stop docker services
-    if [ "$STOP_DOCKER" = "true" ]; then
+    # Stop docker services if we started them (unless --keep-docker)
+    if [ "$USE_DOCKER" = "true" ] && [ "$KEEP_DOCKER" != "true" ]; then
         echo -e "${YELLOW}Stopping docker services...${NC}"
-        docker compose down
+        if [ "$USE_PHOTON" = "true" ]; then
+            docker compose --profile geocoding down
+        else
+            docker compose down
+        fi
     fi
 
     echo -e "${GREEN}Stopped.${NC}"
@@ -46,7 +50,7 @@ trap cleanup SIGINT SIGTERM EXIT
 USE_DOCKER=false
 USE_POSTGRES=false
 USE_PHOTON=false
-STOP_DOCKER=false
+KEEP_DOCKER=false
 
 for arg in "$@"; do
     case $arg in
@@ -61,8 +65,8 @@ for arg in "$@"; do
             USE_PHOTON=true
             USE_DOCKER=true
             ;;
-        --stop-docker)
-            STOP_DOCKER=true
+        --keep-docker)
+            KEEP_DOCKER=true
             ;;
     esac
 done
@@ -176,7 +180,7 @@ echo -e "  ${BLUE}Options:${NC}"
 echo -e "    --docker      Start PostgreSQL via docker compose"
 echo -e "    --postgres    Use PostgreSQL instead of SQLite (implies --docker)"
 echo -e "    --photon      Also start Photon geocoder (first run downloads ~8GB)"
-echo -e "    --stop-docker Stop docker services on exit"
+echo -e "    --keep-docker Keep docker services running on exit"
 echo ""
 echo -e "  Press ${RED}Ctrl+C${NC} to stop"
 echo ""
