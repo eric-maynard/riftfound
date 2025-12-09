@@ -168,7 +168,7 @@ if [ "$USE_DOCKER" = "true" ]; then
     # Wait for Photon if enabled
     if [ "$USE_PHOTON" = "true" ]; then
         export PHOTON_URL=http://localhost:2322
-        echo -e "${YELLOW}Waiting for Photon (first run downloads ~8GB, this may take a while)...${NC}"
+        echo -e "${YELLOW}Waiting for Photon...${NC}"
 
         # Check if Photon is healthy by hitting the API
         PHOTON_READY=false
@@ -178,8 +178,15 @@ if [ "$USE_DOCKER" = "true" ]; then
                 PHOTON_READY=true
             else
                 WAIT_COUNT=$((WAIT_COUNT + 1))
-                if [ $((WAIT_COUNT % 30)) -eq 0 ]; then
-                    echo -e "${YELLOW}  Still waiting for Photon... (check: docker logs riftfound-photon)${NC}"
+                # Every 30 seconds, show progress
+                if [ $((WAIT_COUNT % 15)) -eq 0 ]; then
+                    # Try to get download progress from container
+                    PROGRESS=$(docker logs --tail 1 riftfound-photon 2>&1 | grep -oE '[0-9]+%' | tail -1 || echo "")
+                    if [ -n "$PROGRESS" ]; then
+                        echo -e "${YELLOW}  Photon downloading: ${PROGRESS}${NC}"
+                    else
+                        echo -e "${YELLOW}  Still waiting for Photon... (docker logs riftfound-photon)${NC}"
+                    fi
                 fi
                 sleep 2
             fi
