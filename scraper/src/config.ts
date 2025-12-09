@@ -1,0 +1,52 @@
+import { z } from 'zod';
+import dotenv from 'dotenv';
+
+// Load .env file
+dotenv.config({ path: '../.env' });
+dotenv.config(); // Also check current directory
+
+const envSchema = z.object({
+  NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
+
+  // Database type: sqlite (default for dev) or postgres
+  DB_TYPE: z.enum(['sqlite', 'postgres']).default('sqlite'),
+
+  // SQLite config - relative to project root
+  SQLITE_PATH: z.string().default('../riftfound.db'),
+
+  // PostgreSQL config (only required if DB_TYPE=postgres)
+  DB_HOST: z.string().default('localhost'),
+  DB_PORT: z.string().transform(Number).default('5432'),
+  DB_NAME: z.string().default('riftfound'),
+  DB_USER: z.string().optional(),
+  DB_PASSWORD: z.string().optional(),
+
+  // Scraper
+  RIFTBOUND_EVENTS_URL: z.string().default('https://locator.riftbound.uvsgames.com/events'),
+  SCRAPE_INTERVAL_MINUTES: z.string().transform(Number).default('60'),
+  SCRAPE_MAX_PAGES: z.string().transform(Number).default('20'),
+});
+
+export type Env = z.infer<typeof envSchema>;
+
+function loadEnv(): Env {
+  const result = envSchema.safeParse(process.env);
+
+  if (!result.success) {
+    console.error('Invalid environment variables:');
+    console.error(result.error.format());
+    process.exit(1);
+  }
+
+  // Validate postgres credentials if using postgres
+  if (result.data.DB_TYPE === 'postgres') {
+    if (!result.data.DB_USER || !result.data.DB_PASSWORD) {
+      console.error('DB_USER and DB_PASSWORD required when DB_TYPE=postgres');
+      process.exit(1);
+    }
+  }
+
+  return result.data;
+}
+
+export const env = loadEnv();

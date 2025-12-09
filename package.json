@@ -1,0 +1,27 @@
+{
+  "name": "riftfound",
+  "version": "1.0.0",
+  "private": true,
+  "description": "A better event viewer for Riftbound events",
+  "workspaces": [
+    "backend",
+    "frontend",
+    "scraper"
+  ],
+  "scripts": {
+    "dev": "./dev.sh",
+    "dev:backend": "npm run dev --workspace=backend",
+    "dev:frontend": "npm run dev --workspace=frontend",
+    "dev:scraper": "npm run dev --workspace=scraper",
+    "build:backend": "npm run build --workspace=backend",
+    "build:frontend": "npm run build --workspace=frontend",
+    "build:scraper": "npm run build --workspace=scraper",
+    "build": "npm run build --workspaces",
+    "lint": "npm run lint --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "license": "MIT"
+}
