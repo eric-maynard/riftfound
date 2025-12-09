@@ -112,4 +112,4 @@ See [infrastructure/aws-deployment.md](infrastructure/aws-deployment.md) for AWS
 
 ## License
 
-MIT
+Apache License 2.0 - see [LICENSE](LICENSE)

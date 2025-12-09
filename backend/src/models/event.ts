@@ -14,14 +14,20 @@ export const EventSchema = z.object({
   latitude: z.number().nullable(),
   longitude: z.number().nullable(),
   startDate: z.date(),
+  startTime: z.string().nullable(), // e.g., "7:30 AM (UTC)"
   endDate: z.date().nullable(),
   eventType: z.string().nullable(),
-  organizer: z.string().nullable(),
+  organizer: z.string().nullable(), // Store/shop name
+  playerCount: z.number().nullable(), // Registered players
+  price: z.string().nullable(), // e.g., "A$15.00", "Free Event"
   url: z.string().url().nullable(),
   imageUrl: z.string().url().nullable(),
   createdAt: z.date(),
   updatedAt: z.date(),
   scrapedAt: z.date(),
+  // Shop coordinates (from joined shops table)
+  shopLatitude: z.number().nullable().optional(),
+  shopLongitude: z.number().nullable().optional(),
 });
 
 export type Event = z.infer<typeof EventSchema>;
@@ -45,6 +51,13 @@ export const EventQuerySchema = z.object({
   startDateFrom: z.string().datetime().optional(),
   startDateTo: z.string().datetime().optional(),
   search: z.string().optional(),
+  eventType: z.string().optional(),
+  // Location-based filtering
+  lat: z.string().transform(Number).optional(),
+  lng: z.string().transform(Number).optional(),
+  radiusKm: z.string().transform(Number).default('100'),
+  // Calendar mode - returns all events without pagination for a 3-month range
+  calendarMode: z.string().transform(v => v === 'true').optional(),
 });
 
 export type EventQuery = z.infer<typeof EventQuerySchema>;

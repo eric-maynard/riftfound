@@ -21,6 +21,9 @@ const envSchema = z.object({
 
   // CORS
   FRONTEND_URL: z.string().default('http://localhost:5173'),
+
+  // Geocoding - Photon (self-hosted)
+  PHOTON_URL: z.string().default('http://localhost:2322'),
 });
 
 export type Env = z.infer<typeof envSchema>;

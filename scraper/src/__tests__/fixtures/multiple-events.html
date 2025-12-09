@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html>
+<body>
+<!-- Multiple event cards with different data -->
+
+<!-- Event 1: Free event in New Zealand -->
+<div data-testid="eventCard-100001">
+  <div>
+    <img alt="Free Friday Night Riftbound" src="https://example.com/image1.png"/>
+  </div>
+  <h3 data-testid="eventCard-text-title">Free Friday Night Riftbound</h3>
+  <span data-testid="eventCard-text-date">Dec 10, 2025</span>
+  <span data-testid="eventCard-text-time">9:00 PM (UTC)</span>
+  <div class="flex items-center gap-1">
+    <svg class="lucide lucide-users"></svg>
+    <span>12 Players</span>
+  </div>
+  <div class="flex items-center gap-1">
+    <svg class="lucide lucide-trophy"></svg>
+    <span>Sealed</span>
+  </div>
+  <span data-testid="eventCard-text-storeName">Auckland, NZ</span>
+  <div class="flex items-center gap-1">
+    <svg class="lucide lucide-store"></svg>
+    <span>Card Kingdom NZ</span>
+  </div>
+  <span data-testid="eventCard-text-entryFee">Free Event</span>
+</div>
+
+<!-- Event 2: US event with USD price -->
+<div data-testid="eventCard-200002">
+  <h3 data-testid="eventCard-text-title">Weekly Draft Night</h3>
+  <span data-testid="eventCard-text-date">Dec 11, 2025</span>
+  <span data-testid="eventCard-text-time">2:00 AM (UTC)</span>
+  <div class="flex items-center gap-1">
+    <svg class="lucide lucide-users"></svg>
+    <span>32 Players</span>
+  </div>
+  <div class="flex items-center gap-1">
+    <svg class="lucide lucide-trophy"></svg>
+    <span>Draft</span>
+  </div>
+  <span data-testid="eventCard-text-storeName">California, US</span>
+  <div class="flex items-center gap-1">
+    <svg class="lucide lucide-store"></svg>
+    <span>Channel Fireball Gaming Center</span>
+  </div>
+  <span data-testid="eventCard-text-entryFee">$25.00</span>
+</div>
+
+<!-- Event 3: Event without store name -->
+<div data-testid="eventCard-300003">
+  <h3 data-testid="eventCard-text-title">Multiplayer Madness</h3>
+  <span data-testid="eventCard-text-date">Dec 12, 2025</span>
+  <span data-testid="eventCard-text-time">6:00 PM (UTC)</span>
+  <div class="flex items-center gap-1">
+    <svg class="lucide lucide-users"></svg>
+    <span>8 Players</span>
+  </div>
+  <div class="flex items-center gap-1">
+    <svg class="lucide lucide-trophy"></svg>
+    <span>Multiplayer</span>
+  </div>
+  <span data-testid="eventCard-text-storeName">London, UK</span>
+  <span data-testid="eventCard-text-entryFee">£10.00</span>
+</div>
+
+<!-- Duplicate card - should be deduplicated -->
+<div data-testid="eventCard-100001">
+  <h3 data-testid="eventCard-text-title">Free Friday Night Riftbound</h3>
+  <span data-testid="eventCard-text-date">Dec 10, 2025</span>
+  <span data-testid="eventCard-text-storeName">Auckland, NZ</span>
+</div>
+
+</body>
+</html>

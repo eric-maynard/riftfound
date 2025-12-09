@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   postgres:
     image: postgres:16-alpine
@@ -19,5 +17,28 @@ services:
       timeout: 5s
       retries: 5
 
+  # Photon geocoder - run with: docker compose --profile geocoding up -d
+  # First run downloads ~8GB (US extract)
+  photon:
+    build:
+      context: ./infrastructure/photon
+      dockerfile: Dockerfile
+    container_name: riftfound-photon
+    profiles:
+      - geocoding
+    ports:
+      - "2322:2322"
+    volumes:
+      - photon_data:/photon/photon_data
+    environment:
+      - PHOTON_COUNTRY=us
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:2322/api?q=test"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 300s
+
 volumes:
   postgres_data:
+  photon_data:

@@ -11,14 +11,26 @@ export interface Event {
   latitude: number | null;
   longitude: number | null;
   startDate: string;
+  startTime: string | null;
   endDate: string | null;
   eventType: string | null;
   organizer: string | null;
+  playerCount: number | null;
+  price: string | null;
   url: string | null;
   imageUrl: string | null;
   createdAt: string;
   updatedAt: string;
   scrapedAt: string;
+}
+
+export interface ScrapeInfo {
+  lastScrapeAt: string | null;
+  totalEvents: number;
+}
+
+export interface ScrapeInfoResponse {
+  data: ScrapeInfo;
 }
 
 export interface EventsResponse {
@@ -44,4 +56,21 @@ export interface EventFilters {
   startDateFrom?: string;
   startDateTo?: string;
   search?: string;
+  eventType?: string;
+  // Location-based filtering
+  lat?: number;
+  lng?: number;
+  radiusKm?: number;
+  // Calendar mode
+  calendarMode?: boolean;
+}
+
+export interface GeocodeResult {
+  latitude: number;
+  longitude: number;
+  displayName: string;
+}
+
+export interface GeocodeResponse {
+  data: GeocodeResult;
 }

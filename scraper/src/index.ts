@@ -6,6 +6,7 @@ import {
   upsertEvent,
 } from './database.js';
 import { scrapeEvents } from './scraper.js';
+import { processGeocodingQueue } from './geocoding.js';
 import { env } from './config.js';
 
 async function main() {
@@ -37,6 +38,13 @@ async function main() {
     console.log(`  Events found: ${events.length}`);
     console.log(`  Events created: ${created}`);
     console.log(`  Events updated: ${updated}`);
+
+    // Process geocoding queue for any new shops
+    console.log('\nProcessing geocoding queue...');
+    const geocodeResult = await processGeocodingQueue();
+    console.log(`  Shops geocoded: ${geocodeResult.processed}`);
+    console.log(`  Succeeded: ${geocodeResult.succeeded}`);
+    console.log(`  Failed: ${geocodeResult.failed}`);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error('Scrape failed:', message);

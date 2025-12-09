@@ -5,9 +5,10 @@ This guide explains how to deploy Riftfound to AWS without exposing credentials 
 ## Architecture
 
 - **Frontend**: S3 + CloudFront (static hosting)
-- **Backend API**: Lambda + API Gateway (or ECS Fargate)
+- **Backend API**: ECS Fargate (or Lambda + API Gateway)
 - **Scraper**: Lambda with EventBridge scheduled rule
 - **Database**: RDS PostgreSQL
+- **Geocoding**: Photon on ECS Fargate (self-hosted OSM geocoder)
 - **Secrets**: AWS Secrets Manager
 
 ## Credential Management
@@ -141,6 +142,64 @@ aws s3 sync dist/ s3://riftfound-frontend --delete
 # Create CloudFront distribution pointing to S3
 # (Use AWS Console or CloudFormation for easier configuration)
 ```
+
+### 5. Photon Geocoding Service (ECS Fargate)
+
+Photon is a self-hosted OSM geocoder. It requires ~70GB storage for worldwide data.
+
+```bash
+# Create ECS cluster
+aws ecs create-cluster --cluster-name riftfound-cluster
+
+# Create task definition (photon-task.json):
+{
+  "family": "riftfound-photon",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "1024",
+  "memory": "2048",
+  "containerDefinitions": [
+    {
+      "name": "photon",
+      "image": "ghcr.io/komoot/photon:latest",
+      "portMappings": [
+        {
+          "containerPort": 2322,
+          "protocol": "tcp"
+        }
+      ],
+      "mountPoints": [
+        {
+          "sourceVolume": "photon-data",
+          "containerPath": "/photon/photon_data"
+        }
+      ]
+    }
+  ],
+  "volumes": [
+    {
+      "name": "photon-data",
+      "efsVolumeConfiguration": {
+        "fileSystemId": "fs-xxxxx"
+      }
+    }
+  ]
+}
+
+# Register task definition
+aws ecs register-task-definition --cli-input-json file://photon-task.json
+
+# Create service
+aws ecs create-service \
+  --cluster riftfound-cluster \
+  --service-name photon \
+  --task-definition riftfound-photon \
+  --desired-count 1 \
+  --launch-type FARGATE \
+  --network-configuration "awsvpcConfiguration={subnets=[subnet-xxx],securityGroups=[sg-xxx]}"
+```
+
+**Note**: Photon requires EFS for persistent storage of OSM data (~70GB). First run will download the data automatically.
 
 ## Infrastructure as Code
 
