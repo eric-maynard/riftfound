@@ -1,114 +1,94 @@
 # Riftfound
 
-A web application that scrapes and displays Riftbound events in a better format.
+A calendar view for Riftbound TCG events with location-based filtering. Data scraped from https://locator.riftbound.uvsgames.com/
+
+## Quick Start
+
+```bash
+# Install dependencies
+npm install
+
+# Start dev servers (SQLite mode, no geocoding)
+./dev.sh
+
+# Or with PostgreSQL + Photon geocoder
+./dev.sh --docker --photon
+```
+
+Frontend: http://localhost:5173
+
+## Features
+
+- Calendar view with Google Calendar-style month grid
+- Location-based filtering (5mi, 10mi, 25mi, 50mi, 100mi radius)
+- Format filtering (Constructed, Sealed, Draft, Multiplayer)
+- Auto-detects user location, defaults to San Francisco if denied
+- Events displayed as "Time | Shop Name" with hover tooltips
 
 ## Project Structure
 
 ```
 riftfound/
-├── backend/          # Express.js API server (TypeScript)
-├── frontend/         # React application (TypeScript + Vite)
-├── scraper/          # Event scraper service (TypeScript)
-├── infrastructure/   # Database schema and deployment docs
-└── docker-compose.yml
+├── backend/          # Express.js API (port 3001)
+├── frontend/         # React + Vite calendar UI (port 5173)
+├── scraper/          # Event scraper + geocoding queue
+├── infrastructure/   # Docker, Photon, AWS deployment
+└── dev.sh            # Development script
 ```
 
-## Quick Start (Local Development)
+## Development
 
-### Prerequisites
+### dev.sh Options
 
-- Node.js 18+
-- Docker (for local PostgreSQL)
+| Flag | Description |
+|------|-------------|
+| (none) | SQLite mode, no Docker, no geocoding |
+| `--docker` | Start PostgreSQL via docker-compose |
+| `--postgres` | Use PostgreSQL for app (implies --docker) |
+| `--photon` | Start Photon geocoder (first run downloads ~8GB) |
+| `--stop-docker` | Stop Docker services on exit |
 
-### Setup
+### Manual Commands
 
-1. **Clone and install dependencies:**
-   ```bash
-   npm install
-   ```
+```bash
+npm run dev:backend   # Start backend only
+npm run dev:frontend  # Start frontend only
+npm run dev:scraper   # Run scraper once
+npm test              # Run scraper unit tests
+```
 
-2. **Set up environment:**
-   ```bash
-   cp .env.local.example .env
-   ```
+## API
 
-3. **Start local database:**
-   ```bash
-   docker-compose up -d
-   ```
+| Endpoint | Description |
+|----------|-------------|
+| `GET /api/events` | List events with filtering |
+| `GET /api/events/:id` | Single event |
+| `GET /api/events/info` | Scrape stats |
+| `GET /api/events/geocode?q=` | Geocode location |
 
-4. **Start development servers:**
-   ```bash
-   # Terminal 1 - Backend API
-   npm run dev:backend
+### Query Parameters
 
-   # Terminal 2 - Frontend
-   npm run dev:frontend
-   ```
-
-5. **Run the scraper (to populate data):**
-   ```bash
-   npm run dev:scraper
-   ```
-
-The frontend will be available at http://localhost:5173
-
-## Development Commands
-
-| Command | Description |
-|---------|-------------|
-| `npm run dev:backend` | Start backend in dev mode |
-| `npm run dev:frontend` | Start frontend in dev mode |
-| `npm run dev:scraper` | Run scraper once |
-| `npm run build` | Build all packages |
-| `docker-compose up -d` | Start local PostgreSQL |
-| `docker-compose down` | Stop local PostgreSQL |
-
-## Production Deployment
-
-See [infrastructure/aws-deployment.md](infrastructure/aws-deployment.md) for AWS deployment instructions.
-
-**Key points:**
-- Database credentials are stored in AWS Secrets Manager (not in code)
-- The `.env` file is gitignored and never committed
-- Copy `.env.example` or `.env.local.example` for your local setup
+- `page`, `limit` - Pagination
+- `search` - Text search
+- `city`, `state`, `country` - Location filters
+- `eventType` - Format filter
+- `lat`, `lng`, `radiusKm` - Distance filtering
+- `calendarMode=true` - Return all events in 3-month range
 
 ## Architecture
 
-### Backend
-- Express.js with TypeScript
-- PostgreSQL database (RDS in production)
-- Zod for validation
-- RESTful API at `/api/events`
+- **Database**: SQLite for dev, PostgreSQL for production
+- **Geocoding**: Self-hosted Photon (OSM-based), no external APIs
+- **Shops table**: Geocoded store locations, events reference via `shop_id`
+- **Scraper**: Runs every 60min, up to 500 events (20 pages × 25/page)
 
-### Frontend
-- React 18 with TypeScript
-- Vite for bundling
-- React Router for navigation
+## Deployment
 
-### Scraper
-- Runs periodically (Lambda + EventBridge in production)
-- Parses events from the source page
-- Upserts events to avoid duplicates
-
-## API Endpoints
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/api/events` | List events (with pagination & filters) |
-| GET | `/api/events/:id` | Get single event |
-| GET | `/api/health` | Health check |
-
-### Query Parameters for `/api/events`
-
-- `page` - Page number (default: 1)
-- `limit` - Items per page (default: 20)
-- `search` - Search in name/description/location
-- `city` - Filter by city
-- `state` - Filter by state
-- `country` - Filter by country
-- `startDateFrom` - Filter events starting after date
-- `startDateTo` - Filter events starting before date
+See [infrastructure/aws-deployment.md](infrastructure/aws-deployment.md) for AWS setup:
+- RDS PostgreSQL
+- ECS Fargate for backend/scraper
+- S3 + CloudFront for frontend
+- ECS Fargate + EFS for Photon
 
 ## License
 

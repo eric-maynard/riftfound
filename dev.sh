@@ -84,9 +84,12 @@ if [ "$USE_DOCKER" = "true" ]; then
         docker compose up -d
     fi
 
-    # Wait for services to be healthy
-    echo -e "${YELLOW}Waiting for services to be ready...${NC}"
-    sleep 5
+    # Wait for PostgreSQL to be healthy
+    echo -e "${YELLOW}Waiting for PostgreSQL...${NC}"
+    until docker compose exec -T postgres pg_isready -U riftfound > /dev/null 2>&1; do
+        sleep 1
+    done
+    echo -e "${GREEN}PostgreSQL ready!${NC}"
 
     # Export environment for PostgreSQL
     if [ "$USE_POSTGRES" = "true" ]; then
@@ -98,10 +101,31 @@ if [ "$USE_DOCKER" = "true" ]; then
         export DB_PASSWORD=localdevpassword
     fi
 
+    # Wait for Photon if enabled
+    if [ "$USE_PHOTON" = "true" ]; then
+        export PHOTON_URL=http://localhost:2322
+        echo -e "${YELLOW}Waiting for Photon (first run downloads ~8GB, this may take a while)...${NC}"
+
+        # Check if Photon is healthy by hitting the API
+        PHOTON_READY=false
+        WAIT_COUNT=0
+        while [ "$PHOTON_READY" = "false" ]; do
+            if curl -s "http://localhost:2322/api?q=test" > /dev/null 2>&1; then
+                PHOTON_READY=true
+            else
+                WAIT_COUNT=$((WAIT_COUNT + 1))
+                if [ $((WAIT_COUNT % 30)) -eq 0 ]; then
+                    echo -e "${YELLOW}  Still waiting for Photon... (check: docker logs riftfound-photon)${NC}"
+                fi
+                sleep 2
+            fi
+        done
+        echo -e "${GREEN}Photon ready!${NC}"
+    fi
+
     echo -e "${GREEN}Docker services started!${NC}"
     echo -e "  PostgreSQL: ${YELLOW}localhost:5432${NC}"
     if [ "$USE_PHOTON" = "true" ]; then
-        export PHOTON_URL=http://localhost:2322
         echo -e "  Photon:     ${YELLOW}localhost:2322${NC}"
     fi
     echo ""
