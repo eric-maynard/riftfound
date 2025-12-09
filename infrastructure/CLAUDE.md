@@ -32,8 +32,10 @@ The script waits for services to be healthy before starting backend/frontend.
 - Image built from `infrastructure/photon/Dockerfile`
 - Uses `PHOTON_COUNTRY=us` env var for US-only data
 - Data persisted in `photon_data` Docker volume
-- First run downloads ~8GB, takes time depending on connection
+- First run downloads ~14GB, takes 30+ minutes depending on connection
 - Health check: `curl http://localhost:2322/api?q=test`
+
+**IMPORTANT: Never move or restructure the Photon data directory.** The download takes 30+ minutes and the Elasticsearch index is fragile. The entrypoint.sh handles the nested directory structure (`photon_data/photon_data/elasticsearch`) - do not "fix" this by moving files. If you need to change paths, always backup the volume first with `docker run --rm -v riftfound_photon_data:/data -v $(pwd):/backup alpine tar -czvf /backup/photon-backup.tar.gz /data`.
 
 To use California only (smaller ~1GB):
 ```yaml

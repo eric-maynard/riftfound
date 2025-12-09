@@ -62,9 +62,12 @@ export async function processGeocodingQueue(): Promise<{ processed: number; succ
 
   for (const shop of shops) {
     try {
+      // Combine store name + location for better geocoding
+      // Many store names include city (e.g., "Gamers Heaven Phoenixville")
+      const searchText = `${shop.name}, ${shop.locationText}`;
       console.log(`  Geocoding: ${shop.name} - "${shop.locationText}"`);
 
-      const result = await geocodeLocation(shop.locationText!);
+      const result = await geocodeLocation(searchText);
 
       if (result) {
         updateShopGeocode(shop.id, result);

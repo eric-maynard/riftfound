@@ -19,6 +19,7 @@ cd "$SCRIPT_DIR"
 # PIDs for cleanup
 BACKEND_PID=""
 FRONTEND_PID=""
+SCRAPER_PID=""
 
 cleanup() {
     echo -e "\n${YELLOW}Shutting down...${NC}"
@@ -26,6 +27,7 @@ cleanup() {
     # Kill process groups (negative PID kills the group)
     [ -n "$BACKEND_PID" ] && kill -- -$BACKEND_PID 2>/dev/null || kill $BACKEND_PID 2>/dev/null || true
     [ -n "$FRONTEND_PID" ] && kill -- -$FRONTEND_PID 2>/dev/null || kill $FRONTEND_PID 2>/dev/null || true
+    [ -n "$SCRAPER_PID" ] && kill -- -$SCRAPER_PID 2>/dev/null || kill $SCRAPER_PID 2>/dev/null || true
 
     # Also kill any remaining node processes from this script
     pkill -P $$ 2>/dev/null || true
@@ -51,6 +53,7 @@ USE_DOCKER=false
 USE_POSTGRES=false
 USE_PHOTON=false
 KEEP_DOCKER=false
+RESET_DATA=false
 
 for arg in "$@"; do
     case $arg in
@@ -68,8 +71,36 @@ for arg in "$@"; do
         --keep-docker)
             KEEP_DOCKER=true
             ;;
+        --reset)
+            RESET_DATA=true
+            ;;
     esac
 done
+
+# Handle --reset flag
+if [ "$RESET_DATA" = "true" ]; then
+    echo -e "${YELLOW}Resetting all data...${NC}"
+
+    # Stop any running docker services first
+    echo -e "${YELLOW}Stopping docker services...${NC}"
+    docker compose --profile geocoding down 2>/dev/null || true
+
+    # Remove docker volumes
+    echo -e "${YELLOW}Removing docker volumes...${NC}"
+    docker volume rm riftfound_postgres_data 2>/dev/null && echo -e "  ${GREEN}Removed postgres_data volume${NC}" || echo -e "  ${BLUE}postgres_data volume not found${NC}"
+    docker volume rm riftfound_photon_data 2>/dev/null && echo -e "  ${GREEN}Removed photon_data volume${NC}" || echo -e "  ${BLUE}photon_data volume not found${NC}"
+
+    # Remove SQLite database
+    if [ -f "riftfound.db" ]; then
+        rm -f "riftfound.db"
+        echo -e "  ${GREEN}Removed riftfound.db${NC}"
+    else
+        echo -e "  ${BLUE}riftfound.db not found${NC}"
+    fi
+
+    echo -e "${GREEN}Reset complete!${NC}"
+    echo ""
+fi
 
 # Check if dependencies are installed
 if [ ! -d "node_modules" ]; then
@@ -81,11 +112,14 @@ fi
 if [ "$USE_DOCKER" = "true" ]; then
     echo -e "${BLUE}Starting docker services...${NC}"
 
+    # Stop any existing containers first to ensure clean state
     if [ "$USE_PHOTON" = "true" ]; then
+        docker compose --profile geocoding down 2>/dev/null || true
         echo -e "${YELLOW}Starting with Photon (first run will download ~8GB)...${NC}"
-        docker compose --profile geocoding up -d
+        docker compose --profile geocoding up -d --build
     else
-        docker compose up -d
+        docker compose down 2>/dev/null || true
+        docker compose up -d --build
     fi
 
     # Wait for PostgreSQL to be healthy
@@ -135,52 +169,43 @@ if [ "$USE_DOCKER" = "true" ]; then
     echo ""
 fi
 
-# Check if database exists (SQLite mode only), run scraper if not
-if [ "$USE_POSTGRES" != "true" ] && [ ! -f "riftfound.db" ]; then
-    echo -e "${YELLOW}No database found. Running initial scrape...${NC}"
-    npm run dev:scraper -- --run-once 2>/dev/null || (
-        cd scraper && npx tsx src/index.ts
-    )
-    echo -e "${GREEN}Scrape complete!${NC}"
-fi
-
 echo -e "${GREEN}Starting Riftfound dev servers...${NC}"
 echo ""
 
-# Start backend in its own process group
-echo -e "${YELLOW}Starting backend on http://localhost:3001${NC}"
 set -m  # Enable job control for process groups
+
+# Start backend
+echo -e "${YELLOW}Starting backend on http://localhost:3001${NC}"
 (cd "$SCRIPT_DIR/backend" && exec npx tsx src/index.ts) &
 BACKEND_PID=$!
 
-# Wait for backend to start
-sleep 2
-
-# Start frontend in its own process group
+# Start frontend
 echo -e "${YELLOW}Starting frontend on http://localhost:5173${NC}"
 (cd "$SCRIPT_DIR/frontend" && exec npx vite) &
 FRONTEND_PID=$!
+
+# Start scraper (runs continuously with interval)
+echo -e "${YELLOW}Starting scraper (runs every ${SCRAPE_INTERVAL_MINUTES:-60} minutes)${NC}"
+(cd "$SCRIPT_DIR/scraper" && exec npx tsx src/index.ts) &
+SCRAPER_PID=$!
+
+# Wait for servers to initialize before printing summary
+sleep 3
 
 echo ""
 echo -e "${GREEN}============================================${NC}"
 echo -e "${GREEN}  Riftfound is running!${NC}"
 echo -e "${GREEN}============================================${NC}"
 echo ""
-echo -e "  Frontend:  ${YELLOW}http://localhost:5173${NC}"
-echo -e "  Backend:   ${YELLOW}http://localhost:3001${NC}"
-echo -e "  API:       ${YELLOW}http://localhost:3001/api/events${NC}"
+echo -e "  ${GREEN}>>> Open: ${YELLOW}http://localhost:5173${NC} ${GREEN}<<<${NC}"
+echo ""
+echo -e "  Backend:  ${YELLOW}http://localhost:3001${NC}"
+echo -e "  Scraper:  ${YELLOW}Running (interval: ${SCRAPE_INTERVAL_MINUTES:-60}m)${NC}"
 if [ "$USE_DOCKER" = "true" ]; then
-    echo -e "  PostgreSQL:${YELLOW}localhost:5432${NC}"
     if [ "$USE_PHOTON" = "true" ]; then
-        echo -e "  Photon:    ${YELLOW}http://localhost:2322${NC}"
+        echo -e "  Photon:   ${YELLOW}http://localhost:2322${NC}"
     fi
 fi
-echo ""
-echo -e "  ${BLUE}Options:${NC}"
-echo -e "    --docker      Start PostgreSQL via docker compose"
-echo -e "    --postgres    Use PostgreSQL instead of SQLite (implies --docker)"
-echo -e "    --photon      Also start Photon geocoder (first run downloads ~8GB)"
-echo -e "    --keep-docker Keep docker services running on exit"
 echo ""
 echo -e "  Press ${RED}Ctrl+C${NC} to stop"
 echo ""

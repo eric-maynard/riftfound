@@ -1,25 +1,29 @@
 #!/bin/bash
 set -e
 
-DATA_DIR="/photon/photon_data"
+VOLUME_DIR="/photon/photon_data"
 COUNTRY="${PHOTON_COUNTRY:-us}"
 
-# Check if data already exists
-if [ ! -d "$DATA_DIR/elasticsearch" ]; then
+# Photon with -data-dir X looks for elasticsearch at X/photon_data/elasticsearch/
+# Tar extracts photon_data/elasticsearch/... into VOLUME_DIR
+# So DATA_DIR must be VOLUME_DIR (not VOLUME_DIR/photon_data)
+DATA_DIR="$VOLUME_DIR"
+
+if [ -d "$VOLUME_DIR/photon_data/elasticsearch/data/nodes" ]; then
+    echo "Found existing Photon data, starting server..."
+else
     echo "Downloading Photon data for country: $COUNTRY"
-    echo "This may take a while (~8GB for US)..."
+    echo "This may take a while (~14GB for US)..."
 
     DOWNLOAD_URL="https://download1.graphhopper.com/public/extracts/by-country-code/${COUNTRY}/photon-db-${COUNTRY}-latest.tar.bz2"
 
-    mkdir -p "$DATA_DIR"
-    cd "$DATA_DIR"
-
+    mkdir -p "$VOLUME_DIR"
+    cd "$VOLUME_DIR"
     curl -L "$DOWNLOAD_URL" | tar -xjf -
 
     echo "Download complete!"
-else
-    echo "Photon data already exists, starting server..."
 fi
 
 cd /photon
-exec java -jar photon.jar -data-path "$DATA_DIR"
+echo "Starting Photon with data-dir: $DATA_DIR"
+exec java -jar photon.jar -data-dir "$DATA_DIR"
