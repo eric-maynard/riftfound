@@ -45,70 +45,36 @@ a:hover {
 .container {
   max-width: 1200px;
   margin: 0 auto;
-  padding: 0 1rem;
+  padding: 1rem;
 }
 
-/* Buttons */
-.btn {
-  display: inline-flex;
+/* Calendar Page */
+.calendar-page {
+  padding-top: 0.5rem;
+}
+
+.error-banner {
+  margin-bottom: 1rem;
+  padding: 1rem;
+  background-color: rgba(255, 85, 85, 0.1);
+  border: 1px solid var(--color-error);
+  border-radius: 8px;
+  color: var(--color-error);
+}
+
+.loading-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
   align-items: center;
   justify-content: center;
-  padding: 0.5rem 1rem;
-  border-radius: 0.375rem;
-  font-weight: 500;
-  cursor: pointer;
-  transition: all 0.2s;
-  border: none;
-}
-
-.btn-primary {
-  background-color: var(--color-primary);
-  color: var(--color-bg);
-}
-
-.btn-primary:hover {
-  background-color: var(--color-primary-dark);
-}
-
-.btn-primary:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-.btn-secondary {
-  background-color: var(--color-bg-secondary);
+  background-color: rgba(40, 42, 54, 0.8);
+  z-index: 10;
+  border-radius: 8px;
   color: var(--color-text);
-  border: 1px solid var(--color-border);
-}
-
-.btn-secondary:hover {
-  background-color: var(--color-bg);
-  border-color: var(--color-primary);
-}
-
-.btn-secondary:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-.btn-clear {
-  background: none;
-  border: none;
-  color: var(--color-text-muted);
-  cursor: pointer;
-  padding: 0.25rem;
-}
-
-.btn-clear:hover {
-  color: var(--color-red);
-}
-
-/* Cards */
-.card {
-  background-color: var(--color-bg-secondary);
-  border: 1px solid var(--color-border);
-  border-radius: 0.5rem;
-  padding: 1.5rem;
 }
 
 /* Inputs */
@@ -120,6 +86,7 @@ input[type="text"] {
   border-radius: 0.375rem;
   color: var(--color-text);
   font-size: 0.875rem;
+  height: 36px;
 }
 
 input[type="text"]:focus {
@@ -141,6 +108,7 @@ select {
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%236272a4' d='M2 4l4 4 4-4'/%3E%3C/svg%3E");
   background-repeat: no-repeat;
   background-position: right 0.75rem center;
+  height: 36px;
 }
 
 select:focus {
@@ -171,7 +139,7 @@ select:disabled {
   display: flex;
   gap: 1rem;
   flex-wrap: wrap;
-  align-items: flex-end;
+  align-items: flex-start;
 }
 
 .event-filters .filter-group {
@@ -188,12 +156,12 @@ select:disabled {
 }
 
 .event-filters .filter-group select {
-  min-width: 120px;
+  min-width: 130px;
 }
 
 .event-filters .location-group {
   flex: 1;
-  min-width: 250px;
+  min-width: 280px;
 }
 
 .event-filters .location-input-row {
@@ -207,7 +175,7 @@ select:disabled {
 
 /* Search button with depth */
 .event-filters .search-btn {
-  padding: 0.5rem 1.25rem;
+  padding: 0 1.25rem;
   background: linear-gradient(180deg, var(--color-primary) 0%, var(--color-primary-dark) 100%);
   border: none;
   border-radius: 0.375rem;
@@ -217,6 +185,7 @@ select:disabled {
   cursor: pointer;
   box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.1);
   transition: all 0.15s ease;
+  height: 36px;
 }
 
 .event-filters .search-btn:hover:not(:disabled) {
@@ -238,8 +207,8 @@ select:disabled {
 /* Use my location link */
 .event-filters .use-location-link {
   display: inline-block;
-  margin-top: 0.5rem;
-  font-size: 0.8rem;
+  margin-top: 0.375rem;
+  font-size: 0.75rem;
   color: var(--color-cyan);
   text-decoration: none;
   cursor: pointer;
@@ -288,6 +257,7 @@ select:disabled {
   border: 1px solid var(--color-border);
   border-radius: 0.5rem;
   padding: 1rem;
+  position: relative;
 }
 
 .fc {
@@ -318,21 +288,26 @@ select:disabled {
   font-weight: 600;
 }
 
-/* Center the title properly */
+/* Center the title - use absolute positioning for true centering */
 .fc .fc-toolbar.fc-header-toolbar {
+  position: relative;
   display: flex;
   justify-content: space-between;
   align-items: center;
 }
 
-.fc .fc-toolbar-chunk {
-  display: flex;
-  align-items: center;
+.fc .fc-toolbar-chunk:first-child {
+  flex: 0 0 auto;
 }
 
 .fc .fc-toolbar-chunk:nth-child(2) {
-  flex: 1;
-  justify-content: center;
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+.fc .fc-toolbar-chunk:last-child {
+  flex: 0 0 auto;
 }
 
 .fc .fc-daygrid-day-number {
@@ -362,13 +337,22 @@ select:disabled {
   color: var(--color-text-muted);
 }
 
-.fc .fc-daygrid-day-frame {
-  min-height: 120px;
+/* Force uniform cell heights */
+.fc .fc-scrollgrid-sync-table {
+  height: auto !important;
 }
 
-/* Uniform row heights */
-.fc .fc-daygrid-body-unbalanced .fc-daygrid-day-events {
-  min-height: 4em;
+.fc .fc-daygrid-body {
+  width: 100% !important;
+}
+
+.fc .fc-daygrid-day-frame {
+  min-height: 110px;
+  height: 110px;
+}
+
+.fc .fc-daygrid-day-events {
+  min-height: 80px;
 }
 
 .fc .fc-event {
@@ -399,10 +383,12 @@ select:disabled {
   font-weight: 500;
 }
 
+/* Popover for +N more */
 .fc .fc-popover {
   background-color: var(--color-bg-secondary);
   border-color: var(--color-border);
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+  z-index: 100;
 }
 
 .fc .fc-popover-header {
@@ -437,10 +423,10 @@ select:disabled {
   cursor: not-allowed;
 }
 
-/* Event tooltip */
+/* Event tooltip - must be above popover */
 .event-tooltip {
   position: fixed;
-  z-index: 1000;
+  z-index: 10000;
   background-color: var(--color-bg-secondary);
   border: 1px solid var(--color-border);
   border-radius: 0.5rem;

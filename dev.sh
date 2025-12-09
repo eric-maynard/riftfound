@@ -22,17 +22,25 @@ FRONTEND_PID=""
 
 cleanup() {
     echo -e "\n${YELLOW}Shutting down...${NC}"
-    [ -n "$BACKEND_PID" ] && kill $BACKEND_PID 2>/dev/null
-    [ -n "$FRONTEND_PID" ] && kill $FRONTEND_PID 2>/dev/null
+
+    # Kill process groups (negative PID kills the group)
+    [ -n "$BACKEND_PID" ] && kill -- -$BACKEND_PID 2>/dev/null || kill $BACKEND_PID 2>/dev/null || true
+    [ -n "$FRONTEND_PID" ] && kill -- -$FRONTEND_PID 2>/dev/null || kill $FRONTEND_PID 2>/dev/null || true
+
+    # Also kill any remaining node processes from this script
+    pkill -P $$ 2>/dev/null || true
+
     # Optionally stop docker services
     if [ "$STOP_DOCKER" = "true" ]; then
         echo -e "${YELLOW}Stopping docker services...${NC}"
         docker compose down
     fi
+
+    echo -e "${GREEN}Stopped.${NC}"
     exit 0
 }
 
-trap cleanup SIGINT SIGTERM
+trap cleanup SIGINT SIGTERM EXIT
 
 # Parse arguments
 USE_DOCKER=false
@@ -111,17 +119,18 @@ fi
 echo -e "${GREEN}Starting Riftfound dev servers...${NC}"
 echo ""
 
-# Start backend
+# Start backend in its own process group
 echo -e "${YELLOW}Starting backend on http://localhost:3001${NC}"
-(cd "$SCRIPT_DIR/backend" && npx tsx src/index.ts) &
+set -m  # Enable job control for process groups
+(cd "$SCRIPT_DIR/backend" && exec npx tsx src/index.ts) &
 BACKEND_PID=$!
 
 # Wait for backend to start
 sleep 2
 
-# Start frontend
+# Start frontend in its own process group
 echo -e "${YELLOW}Starting frontend on http://localhost:5173${NC}"
-(cd "$SCRIPT_DIR/frontend" && npx vite) &
+(cd "$SCRIPT_DIR/frontend" && exec npx vite) &
 FRONTEND_PID=$!
 
 echo ""

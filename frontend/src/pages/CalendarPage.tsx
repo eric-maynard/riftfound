@@ -11,6 +11,15 @@ import EventTooltip from '../components/EventTooltip';
 // Miles to km conversion
 const MILES_TO_KM = 1.60934;
 
+// Default location: San Francisco, CA
+const DEFAULT_LOCATION = {
+  lat: 37.7749,
+  lng: -122.4194,
+  displayName: 'San Francisco, CA',
+};
+
+const DEFAULT_DISTANCE_MILES = 25;
+
 // Known formats from the scraper
 const AVAILABLE_FORMATS = ['Constructed', 'Sealed', 'Draft', 'Multiplayer'];
 
@@ -32,7 +41,7 @@ function getValidDateRange() {
 
   const maxDate = new Date(now);
   maxDate.setMonth(maxDate.getMonth() + 3);
-  maxDate.setDate(0); // Last day of that month
+  maxDate.setDate(0);
 
   return { minDate, maxDate };
 }
@@ -40,7 +49,6 @@ function getValidDateRange() {
 // Format time from "7:30 AM (UTC)" to "7:30 AM"
 function formatEventTime(event: Event): string {
   if (!event.startTime) {
-    // Extract time from startDate
     const date = new Date(event.startDate);
     return date.toLocaleTimeString(undefined, {
       hour: 'numeric',
@@ -63,15 +71,45 @@ function CalendarPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [filters, setFilters] = useState<Filters>({
-    location: null,
-    distanceMiles: null,
+    location: DEFAULT_LOCATION,
+    distanceMiles: DEFAULT_DISTANCE_MILES,
     format: null,
   });
+  const [locationInitialized, setLocationInitialized] = useState(false);
   const [tooltipEvent, setTooltipEvent] = useState<Event | null>(null);
   const [tooltipPosition, setTooltipPosition] = useState({ x: 0, y: 0 });
   const calendarRef = useRef<FullCalendar>(null);
 
   const { minDate, maxDate } = useMemo(() => getValidDateRange(), []);
+
+  // Try to get user's location on mount, fallback to San Francisco
+  useEffect(() => {
+    if (locationInitialized) return;
+
+    if (navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition(
+        (position) => {
+          setFilters(prev => ({
+            ...prev,
+            location: {
+              lat: position.coords.latitude,
+              lng: position.coords.longitude,
+              displayName: 'My Location',
+            },
+            distanceMiles: DEFAULT_DISTANCE_MILES,
+          }));
+          setLocationInitialized(true);
+        },
+        () => {
+          // Geolocation denied or failed, keep default (San Francisco)
+          setLocationInitialized(true);
+        },
+        { timeout: 5000 }
+      );
+    } else {
+      setLocationInitialized(true);
+    }
+  }, [locationInitialized]);
 
   useEffect(() => {
     async function fetchEvents() {
@@ -129,7 +167,6 @@ function CalendarPage() {
     setTooltipEvent(null);
   };
 
-  // Prevent navigation outside the valid date range
   const handleDatesSet = (dateInfo: DatesSetArg) => {
     const calendarApi = calendarRef.current?.getApi();
     if (!calendarApi) return;
@@ -144,7 +181,7 @@ function CalendarPage() {
   };
 
   return (
-    <div>
+    <div className="calendar-page">
       <EventFilters
         filters={filters}
         onFiltersChange={setFilters}
@@ -152,34 +189,15 @@ function CalendarPage() {
       />
 
       {error && (
-        <div style={{
-          marginBottom: '1rem',
-          padding: '1rem',
-          backgroundColor: 'rgba(255, 85, 85, 0.1)',
-          border: '1px solid var(--color-error)',
-          borderRadius: '8px',
-          color: 'var(--color-error)',
-        }}>
+        <div className="error-banner">
           {error}
         </div>
       )}
 
-      <div className="fc-wrapper" style={{ position: 'relative' }}>
+      <div className="fc-wrapper">
         {loading && (
-          <div style={{
-            position: 'absolute',
-            top: 0,
-            left: 0,
-            right: 0,
-            bottom: 0,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            backgroundColor: 'rgba(40, 42, 54, 0.8)',
-            zIndex: 10,
-            borderRadius: '8px',
-          }}>
-            <div style={{ color: 'var(--color-text)' }}>Loading events...</div>
+          <div className="loading-overlay">
+            <div>Loading events...</div>
           </div>
         )}
 
