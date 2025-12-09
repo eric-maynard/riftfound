@@ -54,6 +54,7 @@ USE_POSTGRES=false
 USE_PHOTON=false
 KEEP_DOCKER=false
 RESET_DATA=false
+RESET_DB_ONLY=false
 
 for arg in "$@"; do
     case $arg in
@@ -73,6 +74,9 @@ for arg in "$@"; do
             ;;
         --reset)
             RESET_DATA=true
+            ;;
+        --reset-db)
+            RESET_DB_ONLY=true
             ;;
     esac
 done
@@ -99,6 +103,28 @@ if [ "$RESET_DATA" = "true" ]; then
     fi
 
     echo -e "${GREEN}Reset complete!${NC}"
+    echo ""
+fi
+
+# Handle --reset-db flag (database only, preserves Photon)
+if [ "$RESET_DB_ONLY" = "true" ]; then
+    echo -e "${YELLOW}Resetting database only (Photon preserved)...${NC}"
+
+    # Stop postgres container if running
+    docker compose stop postgres 2>/dev/null || true
+
+    # Remove postgres volume
+    docker volume rm riftfound_postgres_data 2>/dev/null && echo -e "  ${GREEN}Removed postgres_data volume${NC}" || echo -e "  ${BLUE}postgres_data volume not found${NC}"
+
+    # Remove SQLite database
+    if [ -f "riftfound.db" ]; then
+        rm -f "riftfound.db"
+        echo -e "  ${GREEN}Removed riftfound.db${NC}"
+    else
+        echo -e "  ${BLUE}riftfound.db not found${NC}"
+    fi
+
+    echo -e "${GREEN}Database reset complete!${NC}"
     echo ""
 fi
 
