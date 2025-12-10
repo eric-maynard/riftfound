@@ -4,6 +4,7 @@ import {
   completeScrapeRun,
   failScrapeRun,
   upsertEventWithStore,
+  deleteOldEvents,
 } from './database.js';
 import { fetchEventsFromApi, getEventCount } from './api.js';
 import { env } from './config.js';
@@ -63,12 +64,18 @@ async function runScrape(): Promise<{ found: number; created: number }> {
       eventsUpdated: totalUpdated,
     });
 
+    // Clean up old events (more than 60 days past)
+    const deletedCount = await deleteOldEvents(60);
+
     console.log(`\n========================================`);
     console.log(`Scrape completed successfully`);
     console.log(`  Total events found: ${totalFound}`);
     console.log(`  Events created: ${totalCreated}`);
     console.log(`  Events updated: ${totalUpdated}`);
     console.log(`  Unique stores: ${totalStores}`);
+    if (deletedCount > 0) {
+      console.log(`  Old events deleted: ${deletedCount}`);
+    }
     console.log(`========================================\n`);
 
     return { found: totalFound, created: totalCreated };

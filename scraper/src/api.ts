@@ -56,14 +56,14 @@ function formatPrice(cents: number, currency: string): string {
   return `${symbol}${dollars.toFixed(2)}`;
 }
 
-function parseEventType(format: string, type: string): string {
-  // Map API format/type to our simplified categories
-  const formatLower = format.toLowerCase();
-  if (formatLower.includes('constructed')) return 'Constructed';
-  if (formatLower.includes('sealed')) return 'Sealed';
-  if (formatLower.includes('draft')) return 'Draft';
-  if (formatLower.includes('multiplayer')) return 'Multiplayer';
-  return format || type || 'Other';
+function inferEventCategory(name: string, description: string | null): string {
+  // Infer category from event name and description
+  const text = `${name} ${description || ''}`.toLowerCase();
+
+  if (text.includes('summoner skirmish')) return 'Summoner Skirmish';
+  if (text.includes('nexus night')) return 'Nexus Night';
+
+  return 'Other';
 }
 
 function convertApiEvent(apiEvent: ApiEvent): ScrapedEvent & { storeInfo: ApiStore } {
@@ -91,9 +91,10 @@ function convertApiEvent(apiEvent: ApiEvent): ScrapedEvent & { storeInfo: ApiSto
     startDate,
     startTime: timeStr,
     endDate,
-    eventType: parseEventType(apiEvent.event_format, apiEvent.event_type),
+    eventType: inferEventCategory(apiEvent.name, apiEvent.description),
     organizer: apiEvent.store?.name || null,
     playerCount: apiEvent.registered_user_count,
+    capacity: apiEvent.capacity,
     price: formatPrice(apiEvent.cost_in_cents, apiEvent.currency),
     url: null, // API doesn't provide event URL
     imageUrl: apiEvent.full_header_image_url,

@@ -8,18 +8,19 @@ export interface EventFilters {
     lng: number;
     displayName: string;
   } | null;
-  distanceMiles: number | null;
+  distanceMiles: number;
   format: string | null;
 }
 
 interface EventFiltersProps {
   filters: EventFilters;
+  appliedFilters: EventFilters;
   onFiltersChange: (filters: EventFilters) => void;
+  onSearch: () => void;
   availableFormats: string[];
 }
 
 const DISTANCE_OPTIONS = [
-  { value: null, label: 'Any Distance' },
   { value: 5, label: '5 mi' },
   { value: 10, label: '10 mi' },
   { value: 25, label: '25 mi' },
@@ -27,8 +28,21 @@ const DISTANCE_OPTIONS = [
   { value: 100, label: '100 mi' },
 ];
 
-function EventFiltersComponent({ filters, onFiltersChange, availableFormats }: EventFiltersProps) {
-  const [cityInput, setCityInput] = useState('');
+// Check if two filter states are equal
+function filtersEqual(a: EventFilters, b: EventFilters): boolean {
+  if (a.distanceMiles !== b.distanceMiles) return false;
+  if (a.format !== b.format) return false;
+  if (a.location === null && b.location === null) return true;
+  if (a.location === null || b.location === null) return false;
+  return (
+    a.location.lat === b.location.lat &&
+    a.location.lng === b.location.lng &&
+    a.location.displayName === b.location.displayName
+  );
+}
+
+function EventFiltersComponent({ filters, appliedFilters, onFiltersChange, onSearch, availableFormats }: EventFiltersProps) {
+  const [cityInput, setCityInput] = useState(filters.location?.displayName || '');
   const [suggestions, setSuggestions] = useState<GeocodeSuggestion[]>([]);
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -37,11 +51,27 @@ function EventFiltersComponent({ filters, onFiltersChange, availableFormats }: E
   const inputRef = useRef<HTMLInputElement>(null);
   const suggestionsRef = useRef<HTMLDivElement>(null);
 
+  // Check if search would do anything
+  const hasChanges = !filtersEqual(filters, appliedFilters);
+  const canSearch = filters.location !== null && hasChanges;
+
+  // Update input when filters change externally (e.g., geolocation)
+  useEffect(() => {
+    if (filters.location?.displayName) {
+      setCityInput(filters.location.displayName);
+    }
+  }, [filters.location?.displayName]);
+
   // Debounced search for suggestions
   useEffect(() => {
     if (cityInput.length < 2) {
       setSuggestions([]);
       setShowSuggestions(false);
+      return;
+    }
+
+    // Don't search if input matches current location
+    if (filters.location?.displayName === cityInput) {
       return;
     }
 
@@ -57,7 +87,7 @@ function EventFiltersComponent({ filters, onFiltersChange, availableFormats }: E
     }, 200); // 200ms debounce
 
     return () => clearTimeout(timer);
-  }, [cityInput]);
+  }, [cityInput, filters.location?.displayName]);
 
   // Close suggestions when clicking outside
   useEffect(() => {
@@ -77,6 +107,7 @@ function EventFiltersComponent({ filters, onFiltersChange, availableFormats }: E
   }, []);
 
   const handleSelectSuggestion = (suggestion: GeocodeSuggestion) => {
+    setCityInput(suggestion.displayName);
     onFiltersChange({
       ...filters,
       location: {
@@ -84,9 +115,7 @@ function EventFiltersComponent({ filters, onFiltersChange, availableFormats }: E
         lng: suggestion.longitude,
         displayName: suggestion.displayName,
       },
-      distanceMiles: filters.distanceMiles ?? 25,
     });
-    setCityInput('');
     setSuggestions([]);
     setShowSuggestions(false);
     setError(null);
@@ -94,6 +123,11 @@ function EventFiltersComponent({ filters, onFiltersChange, availableFormats }: E
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (!showSuggestions || suggestions.length === 0) {
+      // Allow Enter to trigger search when no suggestions showing
+      if (e.key === 'Enter' && canSearch) {
+        e.preventDefault();
+        onSearch();
+      }
       return;
     }
 
@@ -130,6 +164,7 @@ function EventFiltersComponent({ filters, onFiltersChange, availableFormats }: E
 
     navigator.geolocation.getCurrentPosition(
       (position) => {
+        setCityInput('My Location');
         onFiltersChange({
           ...filters,
           location: {
@@ -137,7 +172,6 @@ function EventFiltersComponent({ filters, onFiltersChange, availableFormats }: E
             lng: position.coords.longitude,
             displayName: 'My Location',
           },
-          distanceMiles: filters.distanceMiles ?? 25,
         });
         setLoading(false);
       },
@@ -148,7 +182,7 @@ function EventFiltersComponent({ filters, onFiltersChange, availableFormats }: E
     );
   };
 
-  const handleDistanceChange = (value: number | null) => {
+  const handleDistanceChange = (value: number) => {
     onFiltersChange({
       ...filters,
       distanceMiles: value,
@@ -162,24 +196,22 @@ function EventFiltersComponent({ filters, onFiltersChange, availableFormats }: E
     });
   };
 
-  const handleClearLocation = () => {
-    onFiltersChange({
-      ...filters,
-      location: null,
-      distanceMiles: null,
-    });
+  const handleSearchClick = () => {
+    if (canSearch) {
+      onSearch();
+    }
   };
 
   return (
     <div className="event-filters">
       <div className="filter-row">
         <div className="filter-group">
-          <label>Format</label>
+          <label>Type</label>
           <select
             value={filters.format ?? ''}
             onChange={(e) => handleFormatChange(e.target.value || null)}
           >
-            <option value="">All Formats</option>
+            <option value="">All Types</option>
             {availableFormats.map((format) => (
               <option key={format} value={format}>
                 {format}
@@ -191,12 +223,11 @@ function EventFiltersComponent({ filters, onFiltersChange, availableFormats }: E
         <div className="filter-group">
           <label>Distance</label>
           <select
-            value={filters.distanceMiles ?? ''}
-            onChange={(e) => handleDistanceChange(e.target.value ? Number(e.target.value) : null)}
-            disabled={!filters.location}
+            value={filters.distanceMiles}
+            onChange={(e) => handleDistanceChange(Number(e.target.value))}
           >
             {DISTANCE_OPTIONS.map((opt) => (
-              <option key={opt.label} value={opt.value ?? ''}>
+              <option key={opt.label} value={opt.value}>
                 {opt.label}
               </option>
             ))}
@@ -244,21 +275,20 @@ function EventFiltersComponent({ filters, onFiltersChange, availableFormats }: E
             Use my current location
           </a>
         </div>
+
+        <div className="filter-group search-group">
+          <label>&nbsp;</label>
+          <button
+            className="btn-search"
+            onClick={handleSearchClick}
+            disabled={!canSearch}
+          >
+            Search
+          </button>
+        </div>
       </div>
 
       {error && <div className="filter-error">{error}</div>}
-
-      {filters.location && (
-        <div className="active-filter">
-          <span>
-            {filters.location.displayName}
-            {filters.distanceMiles && ` (within ${filters.distanceMiles} mi)`}
-          </span>
-          <button onClick={handleClearLocation} className="btn-clear">
-            Clear
-          </button>
-        </div>
-      )}
     </div>
   );
 }

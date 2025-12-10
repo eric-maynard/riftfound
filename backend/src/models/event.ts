@@ -19,6 +19,7 @@ export const EventSchema = z.object({
   eventType: z.string().nullable(),
   organizer: z.string().nullable(), // Store/shop name
   playerCount: z.number().nullable(), // Registered players
+  capacity: z.number().nullable(), // Max players
   price: z.string().nullable(), // e.g., "A$15.00", "Free Event"
   url: z.string().url().nullable(),
   imageUrl: z.string().url().nullable(),

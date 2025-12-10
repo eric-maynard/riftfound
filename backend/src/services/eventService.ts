@@ -14,9 +14,12 @@ function getCalendarDateRange(): { startDate: string; endDate: string } {
   };
 }
 
+// Max events for calendar view: 35 days * 5 events per day = 175
+const CALENDAR_MAX_EVENTS = 175;
+
 export async function getEvents(query: EventQuery): Promise<{ events: Event[]; total: number }> {
-  // In calendar mode, ignore pagination and use 3-month range
-  const limit = query.calendarMode ? 10000 : query.limit;
+  // In calendar mode, limit to prevent overfetching (enough for 5 events per day for ~35 days)
+  const limit = query.calendarMode ? CALENDAR_MAX_EVENTS : query.limit;
   const offset = query.calendarMode ? 0 : (query.page - 1) * query.limit;
 
   if (useSqlite()) {
@@ -263,6 +266,7 @@ function mapRowToEvent(row: Record<string, unknown>): Event {
     eventType: row.event_type as string | null,
     organizer: row.organizer as string | null,
     playerCount: row.player_count as number | null,
+    capacity: row.capacity as number | null,
     price: row.price as string | null,
     url: row.url as string | null,
     imageUrl: row.image_url as string | null,

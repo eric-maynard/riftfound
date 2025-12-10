@@ -16,6 +16,7 @@ export interface Event {
   eventType: string | null;
   organizer: string | null;
   playerCount: number | null;
+  capacity: number | null;
   price: string | null;
   url: string | null;
   imageUrl: string | null;

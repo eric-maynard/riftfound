@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo } from 'react';
+import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import FullCalendar from '@fullcalendar/react';
 import dayGridPlugin from '@fullcalendar/daygrid';
@@ -20,13 +20,29 @@ const DEFAULT_LOCATION = {
 
 const DEFAULT_DISTANCE_MILES = 25;
 
-// Known formats from the scraper
-const AVAILABLE_FORMATS = ['Constructed', 'Sealed', 'Draft', 'Multiplayer'];
+// Event categories inferred from event names (Summoner Skirmish first)
+const AVAILABLE_FORMATS = ['Summoner Skirmish', 'Nexus Night', 'Other'];
+
+// Priority order for event display (lower = higher priority)
+const EVENT_TYPE_PRIORITY: Record<string, number> = {
+  'Summoner Skirmish': 0,
+  'Nexus Night': 1,
+  'Other': 2,
+};
+
+// Colors per event type (Dracula palette)
+const EVENT_COLORS: Record<string, string> = {
+  'Nexus Night': '#bd93f9',      // Purple
+  'Summoner Skirmish': '#ff79c6', // Pink
+  'Other': '#6272a4',             // Muted blue-grey
+};
 
 interface CalendarEvent {
   id: string;
   title: string;
   start: string;
+  backgroundColor: string;
+  borderColor: string;
   extendedProps: {
     event: Event;
   };
@@ -70,15 +86,26 @@ function CalendarPage() {
   const [events, setEvents] = useState<Event[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [filters, setFilters] = useState<Filters>({
+
+  // Staged filters (what user is editing)
+  const [stagedFilters, setStagedFilters] = useState<Filters>({
     location: DEFAULT_LOCATION,
     distanceMiles: DEFAULT_DISTANCE_MILES,
     format: null,
   });
+
+  // Applied filters (what's actually being used for the query)
+  const [appliedFilters, setAppliedFilters] = useState<Filters>({
+    location: DEFAULT_LOCATION,
+    distanceMiles: DEFAULT_DISTANCE_MILES,
+    format: null,
+  });
+
   const [locationInitialized, setLocationInitialized] = useState(false);
   const [tooltipEvent, setTooltipEvent] = useState<Event | null>(null);
   const [tooltipPosition, setTooltipPosition] = useState({ x: 0, y: 0 });
   const calendarRef = useRef<FullCalendar>(null);
+  const [searchTrigger, setSearchTrigger] = useState(0);
 
   const { minDate, maxDate } = useMemo(() => getValidDateRange(), []);
 
@@ -89,47 +116,55 @@ function CalendarPage() {
     if (navigator.geolocation) {
       navigator.geolocation.getCurrentPosition(
         (position) => {
-          setFilters(prev => ({
+          const newLocation = {
+            lat: position.coords.latitude,
+            lng: position.coords.longitude,
+            displayName: 'My Location',
+          };
+          setStagedFilters(prev => ({
             ...prev,
-            location: {
-              lat: position.coords.latitude,
-              lng: position.coords.longitude,
-              displayName: 'My Location',
-            },
-            distanceMiles: DEFAULT_DISTANCE_MILES,
+            location: newLocation,
+          }));
+          setAppliedFilters(prev => ({
+            ...prev,
+            location: newLocation,
           }));
           setLocationInitialized(true);
+          setSearchTrigger(t => t + 1); // Trigger search after geolocation
         },
         () => {
           // Geolocation denied or failed, keep default (San Francisco)
           setLocationInitialized(true);
+          setSearchTrigger(t => t + 1); // Trigger initial search
         },
         { timeout: 5000 }
       );
     } else {
       setLocationInitialized(true);
+      setSearchTrigger(t => t + 1); // Trigger initial search
     }
   }, [locationInitialized]);
 
+  // Fetch events when search is triggered
   useEffect(() => {
+    if (searchTrigger === 0) return; // Don't fetch on initial render
+
     async function fetchEvents() {
       setLoading(true);
       setError(null);
 
       try {
-        const radiusKm = filters.distanceMiles
-          ? filters.distanceMiles * MILES_TO_KM
-          : undefined;
+        const radiusKm = appliedFilters.distanceMiles * MILES_TO_KM;
 
         const response = await getEvents({
           calendarMode: true,
-          ...(filters.location && radiusKm && {
-            lat: filters.location.lat,
-            lng: filters.location.lng,
+          ...(appliedFilters.location && {
+            lat: appliedFilters.location.lat,
+            lng: appliedFilters.location.lng,
             radiusKm,
           }),
-          ...(filters.format && {
-            eventType: filters.format,
+          ...(appliedFilters.format && {
+            eventType: appliedFilters.format,
           }),
         });
         setEvents(response.data);
@@ -141,20 +176,33 @@ function CalendarPage() {
     }
 
     fetchEvents();
-  }, [filters]);
+  }, [searchTrigger, appliedFilters]);
+
+  // Handle search button click
+  const handleSearch = useCallback(() => {
+    setAppliedFilters(stagedFilters);
+    setSearchTrigger(t => t + 1);
+  }, [stagedFilters]);
 
   // Convert events to FullCalendar format
-  const calendarEvents: CalendarEvent[] = events.map((event) => ({
-    id: event.id,
-    title: formatEventTitle(event),
-    start: event.startDate,
-    extendedProps: {
-      event,
-    },
-  }));
+  const calendarEvents: CalendarEvent[] = events.map((event) => {
+    const color = EVENT_COLORS[event.eventType || 'Other'] || EVENT_COLORS['Other'];
+    return {
+      id: event.id,
+      title: formatEventTitle(event),
+      start: event.startDate,
+      backgroundColor: color,
+      borderColor: color,
+      extendedProps: {
+        event,
+      },
+    };
+  });
 
   const handleEventClick = (info: EventClickArg) => {
-    navigate(`/events/${info.event.id}`);
+    const eventData = info.event.extendedProps.event as Event;
+    const locatorUrl = `https://locator.riftbound.uvsgames.com/events/${eventData.externalId}`;
+    window.open(locatorUrl, '_blank');
   };
 
   const handleEventMouseEnter = (info: EventHoveringArg) => {
@@ -183,8 +231,10 @@ function CalendarPage() {
   return (
     <div className="calendar-page">
       <EventFilters
-        filters={filters}
-        onFiltersChange={setFilters}
+        filters={stagedFilters}
+        appliedFilters={appliedFilters}
+        onFiltersChange={setStagedFilters}
+        onSearch={handleSearch}
         availableFormats={AVAILABLE_FORMATS}
       />
 
@@ -215,7 +265,7 @@ function CalendarPage() {
             end: maxDate,
           }}
           fixedWeekCount={false}
-          dayMaxEvents={4}
+          dayMaxEventRows={3}
           headerToolbar={{
             left: 'prev,next today',
             center: 'title',
@@ -224,6 +274,13 @@ function CalendarPage() {
           height="auto"
           eventDisplay="block"
           displayEventTime={false}
+          eventOrder={(a, b) => {
+            const aType = (a.extendedProps?.event as Event)?.eventType || 'Other';
+            const bType = (b.extendedProps?.event as Event)?.eventType || 'Other';
+            const aPriority = EVENT_TYPE_PRIORITY[aType] ?? 99;
+            const bPriority = EVENT_TYPE_PRIORITY[bType] ?? 99;
+            return aPriority - bPriority;
+          }}
         />
       </div>
 

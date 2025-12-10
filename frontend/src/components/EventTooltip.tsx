@@ -21,24 +21,23 @@ function formatTime(timeString: string | null): string | null {
 }
 
 function formatLocation(event: Event): string | null {
-  // Prefer: City, State/Country (from organizer)
-  // e.g., "Brisbane, QLD (Good Games Brisbane)"
-  const parts: string[] = [];
+  // Format: "Shop Name (City, State)" e.g., "Merlion Games (San Carlos, CA)"
+  const locationParts: string[] = [];
 
   if (event.city) {
-    parts.push(event.city);
+    locationParts.push(event.city);
   }
 
   if (event.state) {
-    parts.push(event.state);
+    locationParts.push(event.state);
   } else if (event.country) {
-    parts.push(event.country);
+    locationParts.push(event.country);
   }
 
-  const locationStr = parts.join(', ');
+  const locationStr = locationParts.join(', ');
 
   if (event.organizer && locationStr) {
-    return `${locationStr} (${event.organizer})`;
+    return `${event.organizer} (${locationStr})`;
   } else if (event.organizer) {
     return event.organizer;
   } else if (locationStr) {
@@ -77,13 +76,13 @@ function EventTooltip({ event, position }: EventTooltipProps) {
             <span className="format-tag">{event.eventType}</span>
           )}
 
-          {event.playerCount !== null && event.playerCount !== undefined && (
+          {(event.playerCount !== null || event.capacity !== null) && (
             <span style={{
               color: 'var(--color-green)',
               fontSize: '0.75rem',
               fontWeight: 500,
             }}>
-              {event.playerCount} Players
+              {event.playerCount ?? 0}/{event.capacity ?? '?'} Players
             </span>
           )}
 

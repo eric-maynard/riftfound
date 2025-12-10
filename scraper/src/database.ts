@@ -20,6 +20,7 @@ export interface ScrapedEvent {
   eventType?: string | null;
   organizer?: string | null; // Store/shop name
   playerCount?: number | null; // Registered players
+  capacity?: number | null; // Max players
   price?: string | null; // e.g., "A$15.00", "Free Event"
   url?: string | null;
   imageUrl?: string | null;
@@ -114,6 +115,9 @@ function initSqliteSchema(db: Database.Database) {
   } catch { /* column exists */ }
   try {
     db.exec(`ALTER TABLE events ADD COLUMN player_count INTEGER`);
+  } catch { /* column exists */ }
+  try {
+    db.exec(`ALTER TABLE events ADD COLUMN capacity INTEGER`);
   } catch { /* column exists */ }
   try {
     db.exec(`ALTER TABLE events ADD COLUMN price TEXT`);
@@ -357,8 +361,8 @@ async function upsertEventInternal(event: ScrapedEvent, shopId: number | null): 
         UPDATE events SET
           name = ?, description = ?, location = ?, address = ?, city = ?, state = ?,
           country = ?, latitude = ?, longitude = ?, start_date = ?, start_time = ?,
-          end_date = ?, event_type = ?, organizer = ?, player_count = ?, price = ?,
-          url = ?, image_url = ?, shop_id = ?, scraped_at = datetime('now'), updated_at = datetime('now')
+          end_date = ?, event_type = ?, organizer = ?, player_count = ?, capacity = ?,
+          price = ?, url = ?, image_url = ?, shop_id = ?, scraped_at = datetime('now'), updated_at = datetime('now')
         WHERE external_id = ?
       `).run(
         event.name, event.description ?? null, event.location ?? null,
@@ -366,8 +370,8 @@ async function upsertEventInternal(event: ScrapedEvent, shopId: number | null): 
         event.country ?? null, event.latitude ?? null, event.longitude ?? null,
         event.startDate.toISOString(), event.startTime ?? null,
         event.endDate?.toISOString() ?? null, event.eventType ?? null,
-        event.organizer ?? null, event.playerCount ?? null, event.price ?? null,
-        event.url ?? null, event.imageUrl ?? null, shopId, event.externalId
+        event.organizer ?? null, event.playerCount ?? null, event.capacity ?? null,
+        event.price ?? null, event.url ?? null, event.imageUrl ?? null, shopId, event.externalId
       );
       return { created: false };
     } else {
@@ -375,16 +379,16 @@ async function upsertEventInternal(event: ScrapedEvent, shopId: number | null): 
         INSERT INTO events (
           external_id, name, description, location, address, city, state, country,
           latitude, longitude, start_date, start_time, end_date, event_type, organizer,
-          player_count, price, url, image_url, shop_id, scraped_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+          player_count, capacity, price, url, image_url, shop_id, scraped_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
       `).run(
         event.externalId, event.name, event.description ?? null, event.location ?? null,
         event.address ?? null, event.city ?? null, event.state ?? null,
         event.country ?? null, event.latitude ?? null, event.longitude ?? null,
         event.startDate.toISOString(), event.startTime ?? null,
         event.endDate?.toISOString() ?? null, event.eventType ?? null,
-        event.organizer ?? null, event.playerCount ?? null, event.price ?? null,
-        event.url ?? null, event.imageUrl ?? null, shopId
+        event.organizer ?? null, event.playerCount ?? null, event.capacity ?? null,
+        event.price ?? null, event.url ?? null, event.imageUrl ?? null, shopId
       );
       return { created: true };
     }
@@ -394,8 +398,8 @@ async function upsertEventInternal(event: ScrapedEvent, shopId: number | null): 
       `INSERT INTO events (
         external_id, name, description, location, address, city, state, country,
         latitude, longitude, start_date, start_time, end_date, event_type, organizer,
-        player_count, price, url, image_url, shop_id, scraped_at
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, NOW())
+        player_count, capacity, price, url, image_url, shop_id, scraped_at
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, NOW())
       ON CONFLICT (external_id) DO UPDATE SET
         name = EXCLUDED.name, description = EXCLUDED.description,
         location = EXCLUDED.location, address = EXCLUDED.address,
@@ -404,7 +408,8 @@ async function upsertEventInternal(event: ScrapedEvent, shopId: number | null): 
         start_date = EXCLUDED.start_date, start_time = EXCLUDED.start_time,
         end_date = EXCLUDED.end_date, event_type = EXCLUDED.event_type,
         organizer = EXCLUDED.organizer, player_count = EXCLUDED.player_count,
-        price = EXCLUDED.price, url = EXCLUDED.url, image_url = EXCLUDED.image_url,
+        capacity = EXCLUDED.capacity, price = EXCLUDED.price,
+        url = EXCLUDED.url, image_url = EXCLUDED.image_url,
         shop_id = EXCLUDED.shop_id, scraped_at = NOW(), updated_at = NOW()
       RETURNING (xmax = 0) as created`,
       [
@@ -413,7 +418,7 @@ async function upsertEventInternal(event: ScrapedEvent, shopId: number | null): 
         event.country ?? null, event.latitude ?? null, event.longitude ?? null,
         event.startDate, event.startTime ?? null, event.endDate ?? null,
         event.eventType ?? null, event.organizer ?? null, event.playerCount ?? null,
-        event.price ?? null, event.url ?? null, event.imageUrl ?? null, shopId,
+        event.capacity ?? null, event.price ?? null, event.url ?? null, event.imageUrl ?? null, shopId,
       ]
     );
     return { created: result.rows[0].created };
@@ -482,6 +487,28 @@ export function updateShopGeocode(
     }
   } else {
     throw new Error('updateShopGeocode not implemented for PostgreSQL yet');
+  }
+}
+
+// Delete events older than specified days
+export async function deleteOldEvents(daysOld = 60): Promise<number> {
+  const cutoffDate = new Date();
+  cutoffDate.setDate(cutoffDate.getDate() - daysOld);
+  const cutoffIso = cutoffDate.toISOString();
+
+  if (useSqlite()) {
+    const db = getSqliteDb();
+    const result = db.prepare(`
+      DELETE FROM events WHERE start_date < ?
+    `).run(cutoffIso);
+    return result.changes;
+  } else {
+    const pool = getPgPool();
+    const result = await pool.query(
+      `DELETE FROM events WHERE start_date < $1`,
+      [cutoffIso]
+    );
+    return result.rowCount || 0;
   }
 }
 

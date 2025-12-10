@@ -48,6 +48,23 @@ a:hover {
   padding: 1rem;
 }
 
+/* Footer */
+.site-footer {
+  margin-top: 1.5rem;
+  padding: 1rem 0;
+  text-align: center;
+  font-size: 0.8rem;
+  color: var(--color-text-muted);
+}
+
+.site-footer a {
+  color: var(--color-text-muted);
+}
+
+.site-footer a:hover {
+  color: var(--color-cyan);
+}
+
 /* Calendar Page */
 .calendar-page {
   padding-top: 0.5rem;
@@ -178,7 +195,7 @@ select:disabled {
   top: 100%;
   left: 0;
   right: 0;
-  background: var(--color-bg-light);
+  background: var(--color-bg-tertiary);
   border: 1px solid var(--color-border);
   border-top: none;
   border-radius: 0 0 0.375rem 0.375rem;
@@ -204,7 +221,7 @@ select:disabled {
 
 .event-filters .suggestion-item:hover,
 .event-filters .suggestion-item.selected {
-  background: var(--color-selection);
+  background: var(--color-bg-secondary);
 }
 
 .event-filters .suggestion-name {
@@ -213,7 +230,7 @@ select:disabled {
 }
 
 .event-filters .suggestion-type {
-  color: var(--color-comment);
+  color: var(--color-text-muted);
   font-size: 0.75rem;
   text-transform: capitalize;
 }
@@ -239,30 +256,34 @@ select:disabled {
   font-size: 0.875rem;
 }
 
-.event-filters .active-filter {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.75rem;
-  margin-top: 0.75rem;
-  padding: 0.375rem 0.75rem;
-  background-color: var(--color-bg-tertiary);
-  border: 1px solid var(--color-cyan);
-  border-radius: 2rem;
-  font-size: 0.8rem;
-  color: var(--color-cyan);
+/* Search button group */
+.event-filters .search-group {
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
 }
 
-.event-filters .active-filter .btn-clear {
-  color: var(--color-text-muted);
-  font-size: 0.75rem;
-  padding: 0;
-  background: none;
-  border: none;
+.event-filters .btn-search {
+  padding: 0.5rem 1.5rem;
+  background-color: var(--color-primary);
+  border: 1px solid var(--color-primary);
+  border-radius: 0.375rem;
+  color: var(--color-bg);
+  font-size: 0.875rem;
+  font-weight: 600;
   cursor: pointer;
+  height: 36px;
+  transition: background-color 0.15s ease;
 }
 
-.event-filters .active-filter .btn-clear:hover {
-  color: var(--color-red);
+.event-filters .btn-search:hover:not(:disabled) {
+  background-color: var(--color-primary-dark);
+  border-color: var(--color-primary-dark);
+}
+
+.event-filters .btn-search:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 /* FullCalendar Dark Theme Overrides - Dracula */
@@ -270,7 +291,7 @@ select:disabled {
   background-color: var(--color-bg-secondary);
   border: 1px solid var(--color-border);
   border-radius: 0.5rem;
-  padding: 1rem;
+  padding: 0.75rem;
   position: relative;
 }
 
@@ -351,22 +372,38 @@ select:disabled {
   color: var(--color-text-muted);
 }
 
-/* Force uniform cell heights */
-.fc .fc-scrollgrid-sync-table {
+/* Header row (Sun, Mon, Tue, etc.) - compact */
+.fc .fc-col-header-cell {
+  height: auto !important;
+  padding: 0.25rem 0 !important;
+}
+
+.fc .fc-col-header-cell .fc-scrollgrid-sync-inner {
   height: auto !important;
 }
 
+.fc .fc-col-header-cell-cushion {
+  pointer-events: none;
+  cursor: default;
+  padding: 4px 0 !important;
+}
+
+/* Reduce toolbar margin */
+.fc .fc-toolbar {
+  margin-bottom: 0.5rem !important;
+}
+
+/* Day cells - uniform height */
 .fc .fc-daygrid-body {
   width: 100% !important;
 }
 
 .fc .fc-daygrid-day-frame {
-  min-height: 110px;
-  height: 110px;
+  min-height: 115px !important;
 }
 
 .fc .fc-daygrid-day-events {
-  min-height: 80px;
+  margin-top: 2px !important;
 }
 
 .fc .fc-event {
