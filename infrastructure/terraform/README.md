@@ -60,12 +60,25 @@ sudo docker logs -f photon
 
 | Resource | Purpose | Est. Cost |
 |----------|---------|-----------|
-| EC2 t3.small | Runs Photon container | ~$15/mo |
-| EBS 20GB gp3 | Stores Photon/OSM data | ~$2/mo |
+| EC2 t3.medium | Runs Photon container | ~$30/mo |
+| EBS 100GB gp3 | Stores Photon/OSM data | ~$8/mo |
 | Elastic IP | Stable public IP | Free (while attached) |
 | Security Group | Firewall rules | Free |
 
-**Total: ~$17/month**
+**Total: ~$38/month** (worldwide data)
+
+For US-only data, use smaller instance/volume (~$17/mo):
+```hcl
+photon_instance_type = "t3.small"
+photon_volume_size   = 20
+photon_country       = "us"
+```
+
+## Scaling Notes
+
+**Photon**: A single t3.medium handles 100+ requests/second easily. Photon queries are fast (10-50ms). A dozen concurrent users is no problem.
+
+For higher load, upgrade to t3.large ($60/mo) or t3.xlarge ($120/mo). Photon scales vertically with RAM.
 
 ## Configuration
 

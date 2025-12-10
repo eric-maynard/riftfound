@@ -68,6 +68,9 @@ resource "aws_iam_instance_profile" "photon" {
 
 # User data script to install Docker and run Photon
 locals {
+  # Build docker run command with optional country filter
+  photon_env_flag = var.photon_country != "" ? "-e PHOTON_COUNTRY=${var.photon_country}" : ""
+
   photon_user_data = <<-EOF
     #!/bin/bash
     set -ex
@@ -77,21 +80,35 @@ locals {
     systemctl enable docker
     systemctl start docker
 
-    # Create data directory on the EBS volume
+    # Mount the data EBS volume
+    # Wait for volume to attach
+    while [ ! -e /dev/nvme1n1 ] && [ ! -e /dev/xvdf ]; do sleep 1; done
+
+    # Format if new (check if has filesystem)
+    DEVICE=$([ -e /dev/nvme1n1 ] && echo /dev/nvme1n1 || echo /dev/xvdf)
+    if ! blkid $DEVICE; then
+      mkfs.ext4 $DEVICE
+    fi
+
+    # Mount
     mkdir -p /photon_data
+    mount $DEVICE /photon_data
+    echo "$DEVICE /photon_data ext4 defaults,nofail 0 2" >> /etc/fstab
 
     # Run Photon container
-    # First run will download US data (~8GB), takes 20-30 minutes
+    # Worldwide data (~70GB) takes 1-2 hours to download
+    # US-only data (~8GB) takes 20-30 minutes
     docker run -d \
       --name photon \
       --restart unless-stopped \
       -p 2322:2322 \
       -v /photon_data:/photon/photon_data \
-      -e PHOTON_COUNTRY=us \
+      ${local.photon_env_flag} \
       komoot/photon
 
     # Log completion
     echo "Photon container started at $(date)" >> /var/log/photon-setup.log
+    echo "Country filter: ${var.photon_country != "" ? var.photon_country : "worldwide"}" >> /var/log/photon-setup.log
   EOF
 }
 
