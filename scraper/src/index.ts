@@ -6,19 +6,44 @@ import {
   upsertEventWithStore,
   deleteOldEvents,
 } from './database.js';
-import { fetchEventsFromApi, getEventCount } from './api.js';
+import { fetchEventsPage, getEventCount } from './api.js';
 import { env } from './config.js';
 
 function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-async function runScrape(): Promise<{ found: number; created: number }> {
-  console.log('Starting scrape run...');
+/**
+ * Distributed scraping approach:
+ * 1. Get total count and page count upfront
+ * 2. Calculate delay between pages to spread requests across the cycle
+ * 3. Fetch one page at a time with calculated delays
+ *
+ * This prevents burst traffic and spreads load evenly across the scrape interval.
+ */
+async function runDistributedScrape(): Promise<{ found: number; created: number }> {
+  console.log('Starting distributed scrape run...');
 
-  // Get total count first
-  const totalExpected = await getEventCount();
-  console.log(`API reports ${totalExpected} upcoming events worldwide`);
+  // Get total count and pages needed
+  const { total: totalExpected, pageCount } = await getEventCount();
+  console.log(`API reports ${totalExpected} upcoming events (~${pageCount} pages)`);
+
+  if (pageCount === 0) {
+    console.log('No events to scrape');
+    return { found: 0, created: 0 };
+  }
+
+  // Calculate delay between pages to spread across the cycle
+  // Reserve 10% of interval for processing overhead
+  const cycleMs = env.SCRAPE_INTERVAL_MINUTES * 60 * 1000;
+  const availableMs = cycleMs * 0.9;
+  const delayBetweenPagesMs = Math.floor(availableMs / pageCount);
+
+  // Minimum delay of 2 seconds, maximum of 5 minutes per page
+  const effectiveDelayMs = Math.max(2000, Math.min(delayBetweenPagesMs, 5 * 60 * 1000));
+
+  console.log(`Scrape strategy: ${pageCount} pages, ${Math.round(effectiveDelayMs / 1000)}s between pages`);
+  console.log(`Estimated completion: ${Math.round((pageCount * effectiveDelayMs) / 60000)} minutes`);
 
   const runId = await startScrapeRun();
 
@@ -27,14 +52,18 @@ async function runScrape(): Promise<{ found: number; created: number }> {
   let totalUpdated = 0;
   let totalStores = 0;
   const storesSeen = new Set<string>();
+  let currentPage = 1;
 
   try {
-    // Fetch events from API with pagination
-    for await (const { page, events } of fetchEventsFromApi(1000)) {
-      console.log(`\nProcessing page ${page} (${events.length} events)...`);
+    while (true) {
+      const startTime = Date.now();
+
+      console.log(`\n[Page ${currentPage}/${pageCount}] Fetching...`);
+      const { events, hasMore } = await fetchEventsPage(currentPage);
+
       totalFound += events.length;
 
-      // Upsert events from this page
+      // Process events from this page
       let pageCreated = 0;
       let pageUpdated = 0;
 
@@ -55,7 +84,20 @@ async function runScrape(): Promise<{ found: number; created: number }> {
 
       totalCreated += pageCreated;
       totalUpdated += pageUpdated;
-      console.log(`  Upserted: ${pageCreated} created, ${pageUpdated} updated`);
+
+      const elapsed = Date.now() - startTime;
+      console.log(`[Page ${currentPage}/${pageCount}] ${events.length} events (${pageCreated} new, ${pageUpdated} updated) in ${elapsed}ms`);
+
+      if (!hasMore) {
+        break;
+      }
+
+      currentPage++;
+
+      // Wait before next page (subtract processing time to maintain consistent pace)
+      const waitTime = Math.max(1000, effectiveDelayMs - elapsed);
+      console.log(`Next page in ${Math.round(waitTime / 1000)}s...`);
+      await sleep(waitTime);
     }
 
     await completeScrapeRun(runId, {
@@ -68,11 +110,12 @@ async function runScrape(): Promise<{ found: number; created: number }> {
     const deletedCount = await deleteOldEvents(60);
 
     console.log(`\n========================================`);
-    console.log(`Scrape completed successfully`);
+    console.log(`Distributed scrape completed`);
     console.log(`  Total events found: ${totalFound}`);
     console.log(`  Events created: ${totalCreated}`);
     console.log(`  Events updated: ${totalUpdated}`);
     console.log(`  Unique stores: ${totalStores}`);
+    console.log(`  Pages fetched: ${currentPage}`);
     if (deletedCount > 0) {
       console.log(`  Old events deleted: ${deletedCount}`);
     }
@@ -88,22 +131,28 @@ async function runScrape(): Promise<{ found: number; created: number }> {
 }
 
 async function main() {
-  const intervalMs = env.SCRAPE_INTERVAL_MINUTES * 60 * 1000;
-
-  console.log(`Scraper starting (interval: ${env.SCRAPE_INTERVAL_MINUTES} minutes)`);
-  console.log(`Using API endpoint for worldwide event data`);
+  console.log(`Scraper starting (distributed mode, cycle: ${env.SCRAPE_INTERVAL_MINUTES} minutes)`);
+  console.log(`Requests will be spread evenly across each ${env.SCRAPE_INTERVAL_MINUTES}-minute cycle`);
 
   // Run forever
   while (true) {
+    const cycleStart = Date.now();
+
     try {
-      const result = await runScrape();
+      await runDistributedScrape();
 
-      // If no new events, use shorter interval (5 min)
-      const nextInterval = result.created === 0 ? Math.min(intervalMs, 5 * 60 * 1000) : intervalMs;
-      const nextMinutes = Math.round(nextInterval / 60000);
+      // Calculate how long until next cycle should start
+      const cycleMs = env.SCRAPE_INTERVAL_MINUTES * 60 * 1000;
+      const elapsed = Date.now() - cycleStart;
+      const remainingMs = Math.max(0, cycleMs - elapsed);
 
-      console.log(`Next scrape in ${nextMinutes} minutes...`);
-      await sleep(nextInterval);
+      if (remainingMs > 0) {
+        const remainingMinutes = Math.round(remainingMs / 60000);
+        console.log(`Cycle complete. Next cycle in ${remainingMinutes} minutes...`);
+        await sleep(remainingMs);
+      } else {
+        console.log(`Cycle took longer than interval, starting next immediately...`);
+      }
     } catch (error) {
       console.error('Scrape error, retrying in 5 minutes...');
       await sleep(5 * 60 * 1000);
@@ -118,9 +167,5 @@ main().catch(async (error) => {
   process.exit(1);
 });
 
-// Export for Lambda handler (one-shot mode)
-export async function handler() {
-  const result = await runScrape();
-  await closePool();
-  return { statusCode: 200, body: `Scrape completed: ${result.found} found, ${result.created} created` };
-}
+// Export for Lambda handler (one-shot mode - still uses burst for Lambda)
+export { runDistributedScrape as handler };

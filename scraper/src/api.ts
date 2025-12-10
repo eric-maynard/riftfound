@@ -181,11 +181,11 @@ export async function* fetchEventsFromApi(
 }
 
 /**
- * Get total event count without fetching all data.
+ * Get total event count and page info without fetching all data.
  */
-export async function getEventCount(): Promise<number> {
+export async function getEventCount(): Promise<{ total: number; pageCount: number }> {
   const today = new Date().toISOString();
-  const url = `${API_BASE}/events/?start_date_after=${encodeURIComponent(today)}&display_status=upcoming&latitude=0&longitude=0&num_miles=20000&upcoming_only=true&game_slug=riftbound&page=1&page_size=1`;
+  const url = `${API_BASE}/events/?start_date_after=${encodeURIComponent(today)}&display_status=upcoming&latitude=0&longitude=0&num_miles=20000&upcoming_only=true&game_slug=riftbound&page=1&page_size=${PAGE_SIZE}`;
 
   const response = await fetch(url, {
     headers: {
@@ -199,5 +199,36 @@ export async function getEventCount(): Promise<number> {
   }
 
   const data: ApiResponse = await response.json();
-  return data.total;
+  const pageCount = Math.ceil(data.total / PAGE_SIZE);
+  return { total: data.total, pageCount };
+}
+
+/**
+ * Fetch a single page of events from the API.
+ * Used for distributed scraping approach.
+ */
+export async function fetchEventsPage(
+  page: number
+): Promise<{ events: (ScrapedEvent & { storeInfo: ApiStore })[]; hasMore: boolean }> {
+  const today = new Date().toISOString();
+  const url = `${API_BASE}/events/?start_date_after=${encodeURIComponent(today)}&display_status=upcoming&latitude=0&longitude=0&num_miles=20000&upcoming_only=true&game_slug=riftbound&page=${page}&page_size=${PAGE_SIZE}`;
+
+  const response = await fetch(url, {
+    headers: {
+      'User-Agent': 'Riftfound/1.0 (Event Aggregator)',
+      'Accept': 'application/json',
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+  }
+
+  const data: ApiResponse = await response.json();
+  const events = data.results.map(convertApiEvent);
+
+  return {
+    events,
+    hasMore: data.next_page_number !== null,
+  };
 }
