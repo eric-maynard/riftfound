@@ -84,15 +84,20 @@ function EventTooltip({ event, position }: EventTooltipProps) {
             }}>{event.eventType}</span>
           )}
 
-          {(event.playerCount !== null || event.capacity !== null) && (
-            <span style={{
-              color: 'var(--color-green)',
-              fontSize: '0.75rem',
-              fontWeight: 500,
-            }}>
-              {event.playerCount ?? 0}/{event.capacity ?? '?'} Players
-            </span>
-          )}
+          {(event.playerCount !== null || event.capacity !== null) && (() => {
+            const players = event.playerCount ?? 0;
+            const capacity = event.capacity ?? 0;
+            const isFull = capacity > 0 && players >= capacity;
+            return (
+              <span style={{
+                color: isFull ? 'var(--color-red)' : 'var(--color-green)',
+                fontSize: '0.75rem',
+                fontWeight: 500,
+              }}>
+                {players}/{event.capacity ?? '?'} Players
+              </span>
+            );
+          })()}
 
           {event.price && (
             <span style={{

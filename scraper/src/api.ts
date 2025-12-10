@@ -56,6 +56,34 @@ function formatPrice(cents: number, currency: string): string {
   return `${symbol}${dollars.toFixed(2)}`;
 }
 
+// Parse city from full_address when API city field is unreliable
+// Address format: "Street, City, State, Zip, Country" or "Street, City, State Zip, Country"
+function parseCityFromAddress(fullAddress: string, storeCity: string | null, storeState: string | null): string | null {
+  // If store city looks valid (not same as state, not a 2-letter code), use it
+  if (storeCity && storeCity !== storeState && storeCity.length > 2) {
+    return storeCity;
+  }
+
+  // Parse from full_address: "1569 Olivina Ave, Ste 121, Livermore, CA, 94551, US"
+  // Split by comma and find the city (usually 2nd or 3rd from end before state/zip/country)
+  const parts = fullAddress.split(',').map(p => p.trim());
+  if (parts.length >= 4) {
+    // Try to find city - it's typically before state abbreviation
+    // Pattern: [..., City, State, Zip, Country] or [..., City, State Zip, Country]
+    for (let i = parts.length - 3; i >= 1; i--) {
+      const part = parts[i];
+      // Skip if it looks like a zip code, state abbreviation, or country
+      if (/^\d{5}/.test(part)) continue; // Zip code
+      if (/^[A-Z]{2}$/.test(part)) continue; // State abbr
+      if (/^[A-Z]{2,3}$/.test(part) && ['US', 'USA', 'UK', 'CA'].includes(part)) continue; // Country
+      if (part.length <= 3) continue; // Too short
+      return part;
+    }
+  }
+
+  return storeCity;
+}
+
 function inferEventCategory(name: string, description: string | null): string {
   // Infer category from event name and description
   const text = `${name} ${description || ''}`.toLowerCase();
@@ -79,7 +107,7 @@ function convertApiEvent(apiEvent: ApiEvent): ScrapedEvent & { storeInfo: ApiSto
     description: apiEvent.description,
     location: apiEvent.store?.name || null,
     address: apiEvent.full_address,
-    city: apiEvent.store?.city || null,
+    city: parseCityFromAddress(apiEvent.full_address, apiEvent.store?.city || null, apiEvent.store?.state || null),
     state: apiEvent.store?.state || null,
     country: apiEvent.store?.country || null,
     latitude: apiEvent.latitude,
