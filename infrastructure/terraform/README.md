@@ -60,14 +60,15 @@ sudo docker logs -f photon
 
 | Resource | Purpose | Est. Cost |
 |----------|---------|-----------|
-| EC2 t3.medium | Runs Photon container | ~$30/mo |
+| EC2 t3.medium (Photon) | Runs Photon geocoder | ~$30/mo |
+| EC2 t3.medium (Backend) | Runs API + Scraper | ~$30/mo |
 | EBS 100GB gp3 | Stores Photon/OSM data | ~$8/mo |
-| Elastic IP | Stable public IP | Free (while attached) |
-| Security Group | Firewall rules | Free |
+| EBS 20GB gp3 | Backend root volume | ~$2/mo |
+| 2x Elastic IP | Stable public IPs | Free (while attached) |
 
-**Total: ~$38/month** (worldwide data)
+**Total: ~$70/month** (worldwide data)
 
-For US-only data, use smaller instance/volume (~$17/mo):
+For US-only Photon data, save ~$20/mo:
 ```hcl
 photon_instance_type = "t3.small"
 photon_volume_size   = 20
@@ -76,9 +77,10 @@ photon_country       = "us"
 
 ## Scaling Notes
 
-**Photon**: A single t3.medium handles 100+ requests/second easily. Photon queries are fast (10-50ms). A dozen concurrent users is no problem.
+- **Photon**: t3.medium handles 100+ req/s. Upgrade to t3.large for more headroom.
+- **Backend**: t3.medium handles dozens of concurrent users. Upgrade to t3.large/xlarge if needed.
 
-For higher load, upgrade to t3.large ($60/mo) or t3.xlarge ($120/mo). Photon scales vertically with RAM.
+Both scale vertically - just change instance type and `terraform apply`.
 
 ## Configuration
 

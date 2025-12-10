@@ -28,6 +28,12 @@ variable "photon_country" {
   default     = "" # Empty = worldwide (~70GB), or 'us' for US-only (~8GB)
 }
 
+variable "backend_instance_type" {
+  description = "EC2 instance type for Backend API"
+  type        = string
+  default     = "t3.medium" # 2 vCPU, 4GB RAM
+}
+
 variable "ssh_key_name" {
   description = "Name of existing EC2 key pair for SSH access (optional)"
   type        = string

@@ -1,3 +1,4 @@
+# Photon outputs
 output "photon_public_ip" {
   description = "Public IP address of Photon instance"
   value       = aws_eip.photon.public_ip
@@ -13,12 +14,35 @@ output "photon_instance_id" {
   value       = aws_instance.photon.id
 }
 
-output "photon_test_command" {
-  description = "Command to test Photon API"
-  value       = "curl '${aws_eip.photon.public_ip}:2322/api?q=san+francisco&limit=1'"
+# Backend outputs
+output "backend_public_ip" {
+  description = "Public IP address of Backend instance"
+  value       = aws_eip.backend.public_ip
 }
 
-output "ssm_connect_command" {
-  description = "Command to connect via SSM (no SSH key needed)"
-  value       = "aws ssm start-session --target ${aws_instance.photon.id}"
+output "backend_url" {
+  description = "URL for Backend API"
+  value       = "http://${aws_eip.backend.public_ip}:3001"
+}
+
+output "backend_instance_id" {
+  description = "Backend EC2 instance ID"
+  value       = aws_instance.backend.id
+}
+
+# Helpful commands
+output "test_commands" {
+  description = "Commands to test the deployment"
+  value = {
+    photon  = "curl 'http://${aws_eip.photon.public_ip}:2322/api?q=san+francisco&limit=1'"
+    backend = "curl 'http://${aws_eip.backend.public_ip}:3001/api/events'"
+  }
+}
+
+output "ssm_commands" {
+  description = "Commands to connect via SSM (no SSH key needed)"
+  value = {
+    photon  = "aws ssm start-session --target ${aws_instance.photon.id}"
+    backend = "aws ssm start-session --target ${aws_instance.backend.id}"
+  }
 }
