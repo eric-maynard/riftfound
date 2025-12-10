@@ -1,5 +1,6 @@
-import { useState } from 'react';
-import { geocodeCity } from '../services/api';
+import { useState, useEffect, useRef } from 'react';
+import { getLocationSuggestions } from '../services/api';
+import type { GeocodeSuggestion } from '../types/event';
 
 export interface EventFilters {
   location: {
@@ -28,31 +29,93 @@ const DISTANCE_OPTIONS = [
 
 function EventFiltersComponent({ filters, onFiltersChange, availableFormats }: EventFiltersProps) {
   const [cityInput, setCityInput] = useState('');
+  const [suggestions, setSuggestions] = useState<GeocodeSuggestion[]>([]);
+  const [showSuggestions, setShowSuggestions] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [selectedIndex, setSelectedIndex] = useState(-1);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const suggestionsRef = useRef<HTMLDivElement>(null);
 
-  const handleCitySearch = async () => {
-    if (!cityInput.trim()) return;
+  // Debounced search for suggestions
+  useEffect(() => {
+    if (cityInput.length < 2) {
+      setSuggestions([]);
+      setShowSuggestions(false);
+      return;
+    }
 
-    setLoading(true);
+    const timer = setTimeout(async () => {
+      try {
+        const response = await getLocationSuggestions(cityInput);
+        setSuggestions(response.data);
+        setShowSuggestions(response.data.length > 0);
+        setSelectedIndex(-1);
+      } catch {
+        setSuggestions([]);
+      }
+    }, 200); // 200ms debounce
+
+    return () => clearTimeout(timer);
+  }, [cityInput]);
+
+  // Close suggestions when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (
+        suggestionsRef.current &&
+        !suggestionsRef.current.contains(event.target as Node) &&
+        inputRef.current &&
+        !inputRef.current.contains(event.target as Node)
+      ) {
+        setShowSuggestions(false);
+      }
+    };
+
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  const handleSelectSuggestion = (suggestion: GeocodeSuggestion) => {
+    onFiltersChange({
+      ...filters,
+      location: {
+        lat: suggestion.latitude,
+        lng: suggestion.longitude,
+        displayName: suggestion.displayName,
+      },
+      distanceMiles: filters.distanceMiles ?? 25,
+    });
+    setCityInput('');
+    setSuggestions([]);
+    setShowSuggestions(false);
     setError(null);
+  };
 
-    try {
-      const response = await geocodeCity(cityInput);
-      onFiltersChange({
-        ...filters,
-        location: {
-          lat: response.data.latitude,
-          lng: response.data.longitude,
-          displayName: response.data.displayName,
-        },
-        distanceMiles: filters.distanceMiles ?? 25,
-      });
-      setCityInput('');
-    } catch {
-      setError('Location not found');
-    } finally {
-      setLoading(false);
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (!showSuggestions || suggestions.length === 0) {
+      return;
+    }
+
+    switch (e.key) {
+      case 'ArrowDown':
+        e.preventDefault();
+        setSelectedIndex((prev) => (prev < suggestions.length - 1 ? prev + 1 : prev));
+        break;
+      case 'ArrowUp':
+        e.preventDefault();
+        setSelectedIndex((prev) => (prev > 0 ? prev - 1 : -1));
+        break;
+      case 'Enter':
+        e.preventDefault();
+        if (selectedIndex >= 0 && selectedIndex < suggestions.length) {
+          handleSelectSuggestion(suggestions[selectedIndex]);
+        }
+        break;
+      case 'Escape':
+        setShowSuggestions(false);
+        setSelectedIndex(-1);
+        break;
     }
   };
 
@@ -142,22 +205,33 @@ function EventFiltersComponent({ filters, onFiltersChange, availableFormats }: E
 
         <div className="filter-group location-group">
           <label>Location</label>
-          <div className="location-input-row">
+          <div className="location-input-wrapper">
             <input
+              ref={inputRef}
               type="text"
               placeholder="Enter city or zip code..."
               value={cityInput}
               onChange={(e) => setCityInput(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && handleCitySearch()}
+              onFocus={() => suggestions.length > 0 && setShowSuggestions(true)}
+              onKeyDown={handleKeyDown}
               disabled={loading}
+              autoComplete="off"
             />
-            <button
-              onClick={handleCitySearch}
-              disabled={loading || !cityInput.trim()}
-              className="search-btn"
-            >
-              {loading ? 'Searching...' : 'Search'}
-            </button>
+            {showSuggestions && suggestions.length > 0 && (
+              <div ref={suggestionsRef} className="location-suggestions">
+                {suggestions.map((suggestion, index) => (
+                  <div
+                    key={`${suggestion.latitude}-${suggestion.longitude}`}
+                    className={`suggestion-item ${index === selectedIndex ? 'selected' : ''}`}
+                    onClick={() => handleSelectSuggestion(suggestion)}
+                    onMouseEnter={() => setSelectedIndex(index)}
+                  >
+                    <span className="suggestion-name">{suggestion.displayName}</span>
+                    <span className="suggestion-type">{suggestion.type}</span>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
           <a
             href="#"

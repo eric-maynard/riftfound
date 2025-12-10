@@ -1,7 +1,7 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { EventQuerySchema } from '../models/event.js';
 import * as eventService from '../services/eventService.js';
-import { geocodeCity } from '../services/geocodingService.js';
+import { geocodeCity, geocodeSuggestions } from '../services/geocodingService.js';
 
 const router = Router();
 
@@ -73,6 +73,23 @@ router.get('/geocode', async (req: Request, res: Response, next: NextFunction) =
         displayName: result.displayName,
       },
     });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// GET /api/events/geocode/suggest - Autocomplete suggestions for location search
+router.get('/geocode/suggest', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const query = req.query.q as string;
+
+    if (!query || query.trim().length < 2) {
+      res.json({ data: [] });
+      return;
+    }
+
+    const suggestions = await geocodeSuggestions(query);
+    res.json({ data: suggestions });
   } catch (error) {
     next(error);
   }

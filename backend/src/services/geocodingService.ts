@@ -7,6 +7,13 @@ export interface GeocodeResult {
   displayName: string;
 }
 
+export interface GeocodeSuggestion {
+  latitude: number;
+  longitude: number;
+  displayName: string;
+  type: string; // city, state, country, etc.
+}
+
 interface PhotonFeature {
   geometry: {
     coordinates: [number, number]; // [lon, lat]
@@ -16,6 +23,8 @@ interface PhotonFeature {
     city?: string;
     state?: string;
     country?: string;
+    osm_value?: string; // e.g., "city", "town", "village"
+    type?: string;
   };
 }
 
@@ -125,4 +134,43 @@ export async function geocodeCity(query: string): Promise<GeocodeResult | null> 
   await cacheGeocode(query, result);
 
   return result;
+}
+
+// Get autocomplete suggestions from Photon (no caching - fast enough)
+export async function geocodeSuggestions(query: string, limit = 5): Promise<GeocodeSuggestion[]> {
+  if (!query || query.length < 2) {
+    return [];
+  }
+
+  const url = new URL(`${env.PHOTON_URL}/api`);
+  url.searchParams.set('q', query);
+  url.searchParams.set('limit', String(limit));
+  // Bias toward places (cities, towns) not streets
+  url.searchParams.set('osm_tag', 'place');
+
+  const response = await fetch(url.toString());
+
+  if (!response.ok) {
+    throw new Error(`Photon API error: ${response.status}`);
+  }
+
+  const data = await response.json() as PhotonResponse;
+
+  return data.features.map((feature) => {
+    const [lon, lat] = feature.geometry.coordinates;
+    const props = feature.properties;
+
+    // Build display name from properties
+    const displayParts = [props.name, props.city, props.state, props.country].filter(Boolean);
+    // Remove duplicates (e.g., when name === city)
+    const uniqueParts = [...new Set(displayParts)];
+    const displayName = uniqueParts.join(', ') || query;
+
+    return {
+      latitude: lat,
+      longitude: lon,
+      displayName,
+      type: props.osm_value || props.type || 'place',
+    };
+  });
 }

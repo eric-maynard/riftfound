@@ -74,3 +74,14 @@ export interface GeocodeResult {
 export interface GeocodeResponse {
   data: GeocodeResult;
 }
+
+export interface GeocodeSuggestion {
+  latitude: number;
+  longitude: number;
+  displayName: string;
+  type: string;
+}
+
+export interface GeocodeSuggestionsResponse {
+  data: GeocodeSuggestion[];
+}

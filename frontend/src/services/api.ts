@@ -1,4 +1,4 @@
-import type { EventsResponse, EventResponse, EventFilters, ScrapeInfoResponse, GeocodeResponse } from '../types/event';
+import type { EventsResponse, EventResponse, EventFilters, ScrapeInfoResponse, GeocodeResponse, GeocodeSuggestionsResponse } from '../types/event';
 
 const API_BASE = '/api';
 
@@ -44,4 +44,8 @@ export async function getScrapeInfo(): Promise<ScrapeInfoResponse> {
 
 export async function geocodeCity(query: string): Promise<GeocodeResponse> {
   return fetchApi<GeocodeResponse>(`/events/geocode?q=${encodeURIComponent(query)}`);
+}
+
+export async function getLocationSuggestions(query: string): Promise<GeocodeSuggestionsResponse> {
+  return fetchApi<GeocodeSuggestionsResponse>(`/events/geocode/suggest?q=${encodeURIComponent(query)}`);
 }

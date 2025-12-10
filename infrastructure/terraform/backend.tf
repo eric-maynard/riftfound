@@ -71,6 +71,26 @@ resource "aws_iam_role_policy_attachment" "backend_ssm" {
   policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
 }
 
+# Allow backend to read database password from SSM Parameter Store
+resource "aws_iam_role_policy" "backend_ssm_params" {
+  name = "${var.project_name}-backend-ssm-params"
+  role = aws_iam_role.backend.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "ssm:GetParameter",
+          "ssm:GetParameters"
+        ]
+        Resource = "arn:aws:ssm:${var.aws_region}:*:parameter/${var.project_name}/*"
+      }
+    ]
+  })
+}
+
 resource "aws_iam_instance_profile" "backend" {
   name = "${var.project_name}-backend-profile"
   role = aws_iam_role.backend.name
@@ -82,8 +102,8 @@ locals {
     #!/bin/bash
     set -ex
 
-    # Install Node.js 20
-    dnf install -y nodejs20 npm git
+    # Install Node.js 20 and PostgreSQL client
+    dnf install -y nodejs20 npm git postgresql15
 
     # Install PM2 for process management
     npm install -g pm2
@@ -93,7 +113,7 @@ locals {
 
     # Clone repo (you'll need to set up deploy keys or make repo public)
     cd /home/riftfound
-    sudo -u riftfound git clone https://github.com/eric-maynard/riftfound.git app || true
+    sudo -u riftfound git clone ${var.github_repo} app || true
     cd app
 
     # Install dependencies
@@ -101,13 +121,24 @@ locals {
     cd backend && sudo -u riftfound npm install && cd ..
     cd scraper && sudo -u riftfound npm install && cd ..
 
+    # Get database password from SSM Parameter Store
+    DB_PASSWORD=$(aws ssm get-parameter --name "/${var.project_name}/database/password" --with-decryption --query 'Parameter.Value' --output text --region ${var.aws_region})
+
     # Create environment file
-    cat > /home/riftfound/app/.env << 'ENVFILE'
+    cat > /home/riftfound/app/.env << ENVFILE
     NODE_ENV=production
-    DB_TYPE=sqlite
+    DB_TYPE=postgres
+    DATABASE_URL=postgresql://riftfound:$DB_PASSWORD@${aws_db_instance.main.endpoint}/riftfound
     PHOTON_URL=http://${aws_eip.photon.public_ip}:2322
     ENVFILE
     chown riftfound:riftfound /home/riftfound/app/.env
+    chmod 600 /home/riftfound/app/.env
+
+    # Wait for RDS to be available
+    until PGPASSWORD=$DB_PASSWORD psql -h ${aws_db_instance.main.address} -U riftfound -d riftfound -c '\q' 2>/dev/null; do
+      echo "Waiting for RDS..."
+      sleep 5
+    done
 
     # Start backend with PM2
     cd /home/riftfound/app/backend

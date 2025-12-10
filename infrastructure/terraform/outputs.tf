@@ -46,3 +46,57 @@ output "ssm_commands" {
     backend = "aws ssm start-session --target ${aws_instance.backend.id}"
   }
 }
+
+# Frontend outputs
+output "cloudfront_url" {
+  description = "CloudFront distribution URL"
+  value       = "https://${aws_cloudfront_distribution.frontend.domain_name}"
+}
+
+output "cloudfront_distribution_id" {
+  description = "CloudFront distribution ID (for cache invalidation)"
+  value       = aws_cloudfront_distribution.frontend.id
+}
+
+output "frontend_bucket" {
+  description = "S3 bucket name for frontend files"
+  value       = aws_s3_bucket.frontend.id
+}
+
+output "frontend_url" {
+  description = "Frontend URL (custom domain or CloudFront)"
+  value       = var.domain_name != "" ? "https://${var.domain_name}" : "https://${aws_cloudfront_distribution.frontend.domain_name}"
+}
+
+# Database outputs
+output "database_endpoint" {
+  description = "RDS PostgreSQL endpoint"
+  value       = aws_db_instance.main.endpoint
+}
+
+output "database_name" {
+  description = "Database name"
+  value       = aws_db_instance.main.db_name
+}
+
+output "database_password_ssm" {
+  description = "SSM parameter path for database password"
+  value       = aws_ssm_parameter.db_password.name
+}
+
+# DNS outputs (only if domain configured)
+output "nameservers" {
+  description = "Route53 nameservers (update your domain registrar with these)"
+  value       = var.domain_name != "" ? aws_route53_zone.main[0].name_servers : []
+}
+
+# Deployment commands
+output "deploy_frontend" {
+  description = "Commands to deploy frontend"
+  value       = <<-EOT
+    # Build and deploy frontend:
+    cd frontend && npm run build
+    aws s3 sync dist/ s3://${aws_s3_bucket.frontend.id} --delete
+    aws cloudfront create-invalidation --distribution-id ${aws_cloudfront_distribution.frontend.id} --paths "/*"
+  EOT
+}

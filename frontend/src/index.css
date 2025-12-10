@@ -164,44 +164,58 @@ select:disabled {
   min-width: 280px;
 }
 
-.event-filters .location-input-row {
-  display: flex;
-  gap: 0.5rem;
+.event-filters .location-input-wrapper {
+  position: relative;
 }
 
-.event-filters .location-input-row input {
-  flex: 1;
+.event-filters .location-input-wrapper input {
+  width: 100%;
 }
 
-/* Search button with depth */
-.event-filters .search-btn {
-  padding: 0 1.25rem;
-  background: linear-gradient(180deg, var(--color-primary) 0%, var(--color-primary-dark) 100%);
-  border: none;
-  border-radius: 0.375rem;
-  color: var(--color-bg);
-  font-size: 0.875rem;
-  font-weight: 600;
+/* Autocomplete dropdown */
+.event-filters .location-suggestions {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  background: var(--color-bg-light);
+  border: 1px solid var(--color-border);
+  border-top: none;
+  border-radius: 0 0 0.375rem 0.375rem;
+  max-height: 250px;
+  overflow-y: auto;
+  z-index: 1000;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+}
+
+.event-filters .suggestion-item {
+  padding: 0.625rem 0.75rem;
   cursor: pointer;
-  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.1);
-  transition: all 0.15s ease;
-  height: 36px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-bottom: 1px solid var(--color-border);
+  transition: background-color 0.1s ease;
 }
 
-.event-filters .search-btn:hover:not(:disabled) {
-  background: linear-gradient(180deg, #c9a0fc 0%, var(--color-primary) 100%);
-  box-shadow: 0 3px 6px rgba(0, 0, 0, 0.25), inset 0 1px 0 rgba(255, 255, 255, 0.15);
-  transform: translateY(-1px);
+.event-filters .suggestion-item:last-child {
+  border-bottom: none;
 }
 
-.event-filters .search-btn:active:not(:disabled) {
-  transform: translateY(0);
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+.event-filters .suggestion-item:hover,
+.event-filters .suggestion-item.selected {
+  background: var(--color-selection);
 }
 
-.event-filters .search-btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
+.event-filters .suggestion-name {
+  color: var(--color-text);
+  font-size: 0.875rem;
+}
+
+.event-filters .suggestion-type {
+  color: var(--color-comment);
+  font-size: 0.75rem;
+  text-transform: capitalize;
 }
 
 /* Use my location link */

@@ -64,9 +64,12 @@ sudo docker logs -f photon
 | EC2 t3.medium (Backend) | Runs API + Scraper | ~$30/mo |
 | EBS 100GB gp3 | Stores Photon/OSM data | ~$8/mo |
 | EBS 20GB gp3 | Backend root volume | ~$2/mo |
+| RDS db.t3.micro | PostgreSQL database | ~$15/mo |
+| S3 + CloudFront | Frontend hosting | ~$1/mo |
 | 2x Elastic IP | Stable public IPs | Free (while attached) |
+| Route53 (optional) | DNS hosting | ~$0.50/mo |
 
-**Total: ~$70/month** (worldwide data)
+**Total: ~$85/month** (worldwide data, no custom domain)
 
 For US-only Photon data, save ~$20/mo:
 ```hcl
@@ -91,7 +94,24 @@ photon_instance_type = "t3.medium"        # More RAM for larger datasets
 photon_volume_size   = 100                # For worldwide data (~70GB)
 ssh_key_name         = "my-key"           # Optional: enable SSH
 allowed_ssh_cidr     = "1.2.3.4/32"       # Your IP for SSH
+domain_name          = "riftfound.com"    # Optional: custom domain
 ```
+
+## Custom Domain Setup
+
+If you set `domain_name`, Terraform creates:
+- Route53 hosted zone
+- ACM SSL certificate (auto-validated via DNS)
+- CloudFront aliases for domain and www subdomain
+- API subdomain pointing to backend
+
+**After `terraform apply`**, update your domain registrar's nameservers:
+```bash
+terraform output nameservers
+# Copy these to your registrar (e.g., Namecheap, GoDaddy)
+```
+
+Certificate validation may take 10-30 minutes.
 
 ## Connecting to the Instance
 
@@ -128,9 +148,66 @@ terraform destroy
 
 **Warning**: This will delete the Photon instance. The EBS data volume is preserved by default (delete_on_termination = false), but you'll need to manually delete it if you want to remove everything.
 
+## Deploying the Frontend
+
+After `terraform apply`, deploy your frontend:
+```bash
+# Build the frontend
+cd frontend
+npm run build
+
+# Get bucket name and CloudFront distribution ID
+BUCKET=$(terraform -chdir=../infrastructure/terraform output -raw frontend_bucket)
+CF_ID=$(terraform -chdir=../infrastructure/terraform output -raw cloudfront_distribution_id)
+
+# Upload to S3 and invalidate cache
+aws s3 sync dist/ s3://$BUCKET --delete
+aws cloudfront create-invalidation --distribution-id $CF_ID --paths "/*"
+```
+
+Your site will be available at the CloudFront URL (or custom domain if configured):
+```bash
+terraform output frontend_url
+```
+
+## Database Access
+
+The database password is stored securely in SSM Parameter Store:
+```bash
+# Get the password (requires AWS CLI configured)
+aws ssm get-parameter --name "/riftfound/database/password" --with-decryption --query 'Parameter.Value' --output text
+
+# Connect via psql (from backend instance)
+aws ssm start-session --target <backend-instance-id>
+psql -h <rds-endpoint> -U riftfound -d riftfound
+```
+
+## Architecture
+
+```
+                    ┌─────────────────┐
+                    │   CloudFront    │
+                    │   (CDN + HTTPS) │
+                    └────────┬────────┘
+                             │
+              ┌──────────────┼──────────────┐
+              │              │              │
+              ▼              ▼              ▼
+        ┌─────────┐    ┌──────────┐   ┌─────────┐
+        │   S3    │    │ Backend  │   │ Photon  │
+        │Frontend │    │  EC2     │   │  EC2    │
+        └─────────┘    └────┬─────┘   └─────────┘
+                            │
+                       ┌────▼────┐
+                       │   RDS   │
+                       │PostgreSQL│
+                       └─────────┘
+```
+
 ## Next Steps
 
-After Photon is running:
-1. Update your app's `PHOTON_URL` environment variable
-2. Deploy the backend/frontend (see ../aws-deployment.md)
-3. Consider adding RDS for PostgreSQL
+After deployment:
+1. Update DNS nameservers at your registrar (if using custom domain)
+2. Wait for Photon to download data (~1-2 hours for worldwide)
+3. Deploy frontend to S3
+4. Verify everything works: `terraform output test_commands`

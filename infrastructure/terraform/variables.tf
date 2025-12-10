@@ -45,3 +45,30 @@ variable "allowed_ssh_cidr" {
   type        = string
   default     = "0.0.0.0/0" # WARNING: Open to all - restrict in production
 }
+
+# Database variables
+variable "db_instance_class" {
+  description = "RDS instance class"
+  type        = string
+  default     = "db.t3.micro" # Free tier eligible, ~$15/mo after
+}
+
+variable "db_skip_final_snapshot" {
+  description = "Skip final snapshot when destroying database (set to false for production)"
+  type        = bool
+  default     = true # Set to false for production!
+}
+
+# Domain variables
+variable "domain_name" {
+  description = "Custom domain name (leave empty to use CloudFront URL)"
+  type        = string
+  default     = "" # e.g., "riftfound.com"
+}
+
+# GitHub repo for backend deployment
+variable "github_repo" {
+  description = "GitHub repository URL for backend code"
+  type        = string
+  default     = "https://github.com/eric-maynard/riftfound.git"
+}
