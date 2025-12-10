@@ -3,10 +3,9 @@ import {
   startScrapeRun,
   completeScrapeRun,
   failScrapeRun,
-  upsertEvent,
+  upsertEventWithStore,
 } from './database.js';
-import { scrapeEventsStream } from './scraper.js';
-import { processGeocodingQueue } from './geocoding.js';
+import { fetchEventsFromApi, getEventCount } from './api.js';
 import { env } from './config.js';
 
 function sleep(ms: number): Promise<void> {
@@ -15,19 +14,22 @@ function sleep(ms: number): Promise<void> {
 
 async function runScrape(): Promise<{ found: number; created: number }> {
   console.log('Starting scrape run...');
+
+  // Get total count first
+  const totalExpected = await getEventCount();
+  console.log(`API reports ${totalExpected} upcoming events worldwide`);
+
   const runId = await startScrapeRun();
 
   let totalFound = 0;
   let totalCreated = 0;
   let totalUpdated = 0;
-  let totalGeocoded = 0;
+  let totalStores = 0;
+  const storesSeen = new Set<string>();
 
   try {
-    // Stream events page by page with delays
-    for await (const { page, events } of scrapeEventsStream(
-      env.SCRAPE_MAX_PAGES,
-      env.SCRAPE_PAGE_DELAY_SECONDS
-    )) {
+    // Fetch events from API with pagination
+    for await (const { page, events } of fetchEventsFromApi(1000)) {
       console.log(`\nProcessing page ${page} (${events.length} events)...`);
       totalFound += events.length;
 
@@ -36,24 +38,23 @@ async function runScrape(): Promise<{ found: number; created: number }> {
       let pageUpdated = 0;
 
       for (const event of events) {
-        const result = await upsertEvent(event);
+        const result = await upsertEventWithStore(event, event.storeInfo);
         if (result.created) {
           pageCreated++;
         } else {
           pageUpdated++;
+        }
+
+        // Track unique stores
+        if (event.storeInfo && !storesSeen.has(event.storeInfo.name)) {
+          storesSeen.add(event.storeInfo.name);
+          totalStores++;
         }
       }
 
       totalCreated += pageCreated;
       totalUpdated += pageUpdated;
       console.log(`  Upserted: ${pageCreated} created, ${pageUpdated} updated`);
-
-      // Process geocoding queue for any new shops from this page
-      const geocodeResult = await processGeocodingQueue();
-      if (geocodeResult.processed > 0) {
-        console.log(`  Geocoded: ${geocodeResult.succeeded} succeeded, ${geocodeResult.failed} failed`);
-        totalGeocoded += geocodeResult.succeeded;
-      }
     }
 
     await completeScrapeRun(runId, {
@@ -67,7 +68,7 @@ async function runScrape(): Promise<{ found: number; created: number }> {
     console.log(`  Total events found: ${totalFound}`);
     console.log(`  Events created: ${totalCreated}`);
     console.log(`  Events updated: ${totalUpdated}`);
-    console.log(`  Shops geocoded: ${totalGeocoded}`);
+    console.log(`  Unique stores: ${totalStores}`);
     console.log(`========================================\n`);
 
     return { found: totalFound, created: totalCreated };
@@ -83,6 +84,7 @@ async function main() {
   const intervalMs = env.SCRAPE_INTERVAL_MINUTES * 60 * 1000;
 
   console.log(`Scraper starting (interval: ${env.SCRAPE_INTERVAL_MINUTES} minutes)`);
+  console.log(`Using API endpoint for worldwide event data`);
 
   // Run forever
   while (true) {

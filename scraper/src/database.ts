@@ -223,6 +223,20 @@ export interface Shop {
   geocodeError: string | null;
 }
 
+// Store info from API (with coordinates)
+export interface StoreInfo {
+  id: number;
+  name: string;
+  full_address: string;
+  city: string;
+  state: string;
+  country: string;
+  latitude: number;
+  longitude: number;
+  website: string | null;
+  email: string | null;
+}
+
 // Upsert a shop and return its id
 async function upsertShop(name: string, locationText: string | null): Promise<number> {
   if (useSqlite()) {
@@ -261,12 +275,76 @@ async function upsertShop(name: string, locationText: string | null): Promise<nu
   }
 }
 
+// Upsert a shop with full info from API (includes coordinates)
+export async function upsertShopFromApi(store: StoreInfo): Promise<number> {
+  if (useSqlite()) {
+    const db = getSqliteDb();
+
+    // Check if exists
+    const existing = db.prepare('SELECT id FROM shops WHERE name = ?').get(store.name) as { id: number } | undefined;
+
+    if (existing) {
+      // Update with API data (always has better info)
+      db.prepare(`
+        UPDATE shops SET
+          location_text = ?,
+          latitude = ?,
+          longitude = ?,
+          geocode_status = 'completed',
+          updated_at = datetime('now')
+        WHERE id = ?
+      `).run(store.full_address, store.latitude, store.longitude, existing.id);
+      return existing.id;
+    } else {
+      const result = db.prepare(`
+        INSERT INTO shops (name, location_text, latitude, longitude, geocode_status)
+        VALUES (?, ?, ?, ?, 'completed')
+      `).run(store.name, store.full_address, store.latitude, store.longitude);
+      return result.lastInsertRowid as number;
+    }
+  } else {
+    const pool = getPgPool();
+    const result = await pool.query(
+      `INSERT INTO shops (name, location_text, latitude, longitude, geocode_status)
+       VALUES ($1, $2, $3, $4, 'completed')
+       ON CONFLICT (name) DO UPDATE SET
+         location_text = EXCLUDED.location_text,
+         latitude = EXCLUDED.latitude,
+         longitude = EXCLUDED.longitude,
+         geocode_status = 'completed',
+         updated_at = NOW()
+       RETURNING id`,
+      [store.name, store.full_address, store.latitude, store.longitude]
+    );
+    return result.rows[0].id;
+  }
+}
+
+// Upsert event with store info from API (no geocoding needed)
+export async function upsertEventWithStore(
+  event: ScrapedEvent,
+  storeInfo: StoreInfo | null
+): Promise<{ created: boolean }> {
+  // First, upsert the shop with full coordinates from API
+  let shopId: number | null = null;
+  if (storeInfo) {
+    shopId = await upsertShopFromApi(storeInfo);
+  }
+
+  // Then upsert the event with the shop reference
+  return upsertEventInternal(event, shopId);
+}
+
 export async function upsertEvent(event: ScrapedEvent): Promise<{ created: boolean }> {
   // First, upsert the shop if we have an organizer
   let shopId: number | null = null;
   if (event.organizer) {
     shopId = await upsertShop(event.organizer, event.location ?? null);
   }
+  return upsertEventInternal(event, shopId);
+}
+
+async function upsertEventInternal(event: ScrapedEvent, shopId: number | null): Promise<{ created: boolean }> {
 
   if (useSqlite()) {
     const db = getSqliteDb();
