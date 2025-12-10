@@ -429,7 +429,7 @@ select:disabled {
 
 .fc .fc-more-link,
 .fc .fc-daygrid-more-link {
-  color: var(--color-pink);
+  color: var(--color-cyan);
   font-size: 0.75rem;
   font-weight: 500;
 }

@@ -73,7 +73,10 @@ function EventTooltip({ event, position }: EventTooltipProps) {
 
         <div style={{ display: 'flex', gap: '0.75rem', marginTop: '0.25rem' }}>
           {event.eventType && (
-            <span className="format-tag">{event.eventType}</span>
+            <span className="format-tag" style={{
+              backgroundColor: event.eventType === 'Summoner Skirmish' ? '#ff79c6' :
+                              event.eventType === 'Nexus Night' ? '#bd93f9' : '#6272a4'
+            }}>{event.eventType}</span>
           )}
 
           {(event.playerCount !== null || event.capacity !== null) && (
