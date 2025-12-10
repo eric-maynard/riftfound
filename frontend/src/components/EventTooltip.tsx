@@ -14,10 +14,16 @@ function formatDate(dateString: string): string {
   });
 }
 
-function formatTime(timeString: string | null): string | null {
-  if (!timeString) return null;
-  // Clean up time string like "7:30 AM (UTC)" -> "7:30 AM"
-  return timeString.replace(/\s*\(UTC\)\s*/i, '').trim();
+// Convert UTC date to local time with timezone abbreviation (e.g., "7:00 PM (PST)")
+function formatTime(date: Date): string {
+  const timeStr = date.toLocaleTimeString(undefined, {
+    hour: 'numeric',
+    minute: '2-digit',
+  });
+  const tzAbbr = date.toLocaleTimeString(undefined, { timeZoneName: 'short' })
+    .split(' ')
+    .pop() || '';
+  return `${timeStr} (${tzAbbr})`;
 }
 
 function formatLocation(event: Event): string | null {
@@ -51,7 +57,7 @@ function formatLocation(event: Event): string | null {
 
 function EventTooltip({ event, position }: EventTooltipProps) {
   const location = formatLocation(event);
-  const time = formatTime(event.startTime);
+  const time = formatTime(new Date(event.startDate));
 
   return (
     <div className="event-tooltip" style={{
@@ -63,8 +69,7 @@ function EventTooltip({ event, position }: EventTooltipProps) {
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
         <p>
-          {formatDate(event.startDate)}
-          {time && ` at ${time}`}
+          {formatDate(event.startDate)} at {time}
         </p>
 
         {location && (

@@ -70,12 +70,8 @@ function convertApiEvent(apiEvent: ApiEvent): ScrapedEvent & { storeInfo: ApiSto
   const startDate = new Date(apiEvent.start_datetime);
   const endDate = apiEvent.end_datetime ? new Date(apiEvent.end_datetime) : null;
 
-  // Extract time string
-  const timeStr = startDate.toLocaleTimeString('en-US', {
-    hour: 'numeric',
-    minute: '2-digit',
-    hour12: true
-  });
+  // Store time as null - frontend will extract from startDate ISO string
+  // This avoids timezone conversion issues with server locale
 
   return {
     externalId: String(apiEvent.id),
@@ -89,7 +85,7 @@ function convertApiEvent(apiEvent: ApiEvent): ScrapedEvent & { storeInfo: ApiSto
     latitude: apiEvent.latitude,
     longitude: apiEvent.longitude,
     startDate,
-    startTime: timeStr,
+    startTime: null, // Frontend will convert from UTC startDate to local time
     endDate,
     eventType: inferEventCategory(apiEvent.name, apiEvent.description),
     organizer: apiEvent.store?.name || null,

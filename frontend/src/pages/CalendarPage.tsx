@@ -62,16 +62,13 @@ function getValidDateRange() {
   return { minDate, maxDate };
 }
 
-// Format time from "7:30 AM (UTC)" to "7:30 AM"
+// Convert UTC startDate to local time string (e.g., "7:00 PM")
 function formatEventTime(event: Event): string {
-  if (!event.startTime) {
-    const date = new Date(event.startDate);
-    return date.toLocaleTimeString(undefined, {
-      hour: 'numeric',
-      minute: '2-digit',
-    });
-  }
-  return event.startTime.replace(/\s*\(UTC\)\s*/i, '').trim();
+  const date = new Date(event.startDate);
+  return date.toLocaleTimeString(undefined, {
+    hour: 'numeric',
+    minute: '2-digit',
+  });
 }
 
 // Create display title: "Time | Shop Name"
