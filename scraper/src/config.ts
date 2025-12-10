@@ -22,13 +22,7 @@ const envSchema = z.object({
   DB_PASSWORD: z.string().optional(),
 
   // Scraper
-  RIFTBOUND_EVENTS_URL: z.string().default('https://locator.riftbound.uvsgames.com/events'),
   SCRAPE_INTERVAL_MINUTES: z.string().transform(Number).default('60'),
-  SCRAPE_MAX_PAGES: z.string().transform(Number).default('20'),
-  SCRAPE_PAGE_DELAY_SECONDS: z.string().transform(Number).default('30'),
-
-  // Geocoding - Photon (self-hosted) or Nominatim (public fallback)
-  PHOTON_URL: z.string().default('http://localhost:2322'),
 });
 
 export type Env = z.infer<typeof envSchema>;

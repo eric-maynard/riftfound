@@ -6,23 +6,22 @@ TypeScript scraper for Riftbound events using the official API.
 
 ```
 src/
-├── index.ts          # Entry point, runs scrape loop
+├── index.ts          # Entry point, runs distributed scrape loop
 ├── config.ts         # Zod-validated env config
 ├── database.ts       # DB operations for events, shops, scrape_runs
-├── api.ts            # API client for Riftbound backend (NEW)
-├── scraper.ts        # Legacy HTML scraper (deprecated)
-├── parser.ts         # Legacy HTML parsing (deprecated)
-└── geocoding.ts      # Legacy Photon geocoding (deprecated)
+└── api.ts            # API client for Riftbound backend
 ```
 
 ## How It Works
 
-The scraper now uses the official Riftbound API instead of HTML scraping:
+The scraper uses the official Riftbound API with a **distributed scraping** approach:
 
-1. **Fetch from API** (`api.ts`): Hits `/api/v2/events/` with `upcoming_only=true`, `num_miles=20000` (worldwide)
-2. **Pagination**: 1000 events per page, ~31 requests to get all ~30k events
+1. **Get count** (`api.ts`): Single API call to get total event count and calculate pages needed
+2. **Distributed fetching**: Spreads ~31 page requests evenly across the 60-minute cycle (~105s between requests)
 3. **Upsert events** (`database.ts`): Inserts/updates events with coordinates from API
 4. **Upsert stores**: Store info (with coordinates) embedded in each event response
+
+This approach prevents burst traffic and maintains consistent, gentle load on the upstream API.
 
 ## API Endpoint
 
@@ -43,17 +42,7 @@ Returns JSON with:
 - Coordinates (latitude, longitude)
 - Full store info (name, address, coordinates, website, email)
 
-## Benefits Over HTML Scraping
-
-- **30k+ events** vs ~500 from paginated HTML
-- **Pre-geocoded** coordinates from API (no Photon needed)
-- **Structured JSON** vs fragile HTML parsing
-- **Faster** - ~31 API calls vs slow HTML scraping
-- **Complete store data** including contact info
-
 ## Environment
 
-- `SCRAPE_INTERVAL_MINUTES`: Loop interval (default: 60)
+- `SCRAPE_INTERVAL_MINUTES`: Cycle length (default: 60). Requests distributed evenly across cycle.
 - `DB_TYPE`: `sqlite` or `postgres`
-
-Note: `PHOTON_URL`, `SCRAPE_MAX_PAGES`, `RIFTBOUND_EVENTS_URL` are no longer used.

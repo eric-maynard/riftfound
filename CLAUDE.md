@@ -38,5 +38,4 @@ riftfound/
 
 Key vars (see `.env.example` for full list):
 - `DB_TYPE`: `sqlite` or `postgres`
-- `PHOTON_URL`: Geocoder endpoint (default: `http://localhost:2322`)
-- `SCRAPE_MAX_PAGES`: Max pages to scrape (default: 20, ~500 events)
+- `SCRAPE_INTERVAL_MINUTES`: How often scraper cycles (default: 60). Requests are distributed evenly across the cycle.
