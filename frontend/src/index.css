@@ -736,9 +736,14 @@ select:disabled {
 
 /* Mobile responsive styles */
 @media (max-width: 600px) {
-  /* Reduce container padding on mobile */
+  /* Reduce container padding on mobile but keep some edge visibility */
   .container {
-    padding: 0.5rem;
+    padding: 0.5rem 0.25rem;
+  }
+
+  /* Slightly smaller base font on mobile */
+  body {
+    font-size: 0.9rem;
   }
 
   /* Hide logo on mobile */
@@ -804,12 +809,10 @@ select:disabled {
     text-align: center;
   }
 
-  /* Full width calendar wrapper - no padding on mobile */
+  /* Full width calendar wrapper - minimal padding on mobile */
   .fc-wrapper {
-    padding: 0;
-    border-radius: 0;
-    border-left: none;
-    border-right: none;
+    padding: 0.25rem;
+    border-radius: 0.25rem;
   }
 
   /* Smaller day cell height on mobile */
