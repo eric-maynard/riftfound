@@ -366,6 +366,7 @@ function CalendarPage() {
           events={dayEventsModal.events}
           onClose={handleDayEventsClose}
           onEventClick={handleDayEventClick}
+          disabled={!!tooltipEvent}
         />
       )}
 
