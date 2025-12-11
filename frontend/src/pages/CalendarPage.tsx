@@ -1,11 +1,14 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import FullCalendar from '@fullcalendar/react';
 import dayGridPlugin from '@fullcalendar/daygrid';
+import interactionPlugin from '@fullcalendar/interaction';
 import type { EventClickArg, EventHoveringArg, DatesSetArg } from '@fullcalendar/core';
+import type { DateClickArg } from '@fullcalendar/interaction';
 import { getEvents } from '../services/api';
 import type { Event } from '../types/event';
 import EventFilters, { type EventFilters as Filters } from '../components/EventFilters';
 import EventTooltip from '../components/EventTooltip';
+import DayEventsModal from '../components/DayEventsModal';
 
 // Miles to km conversion
 const MILES_TO_KM = 1.60934;
@@ -117,6 +120,7 @@ function CalendarPage() {
   const [locationInitialized, setLocationInitialized] = useState(false);
   const [tooltipEvent, setTooltipEvent] = useState<Event | null>(null);
   const [tooltipPosition, setTooltipPosition] = useState({ x: 0, y: 0 });
+  const [dayEventsModal, setDayEventsModal] = useState<{ date: Date; events: Event[] } | null>(null);
   const calendarRef = useRef<FullCalendar>(null);
   const [searchTrigger, setSearchTrigger] = useState(0);
   const isMobile = useIsMobile();
@@ -231,13 +235,45 @@ function CalendarPage() {
     setTooltipEvent(null);
   }, []);
 
+  // Get events for a specific date
+  const getEventsForDate = useCallback((date: Date): Event[] => {
+    const dateStr = date.toISOString().split('T')[0];
+    return events.filter((event) => {
+      const eventDate = new Date(event.startDate).toISOString().split('T')[0];
+      return eventDate === dateStr;
+    });
+  }, [events]);
+
+  // Handle date click (on mobile, show day events modal)
+  const handleDateClick = useCallback((info: DateClickArg) => {
+    if (!isMobile) return;
+    const dayEvents = getEventsForDate(info.date);
+    if (dayEvents.length > 0) {
+      setDayEventsModal({ date: info.date, events: dayEvents });
+    }
+  }, [isMobile, getEventsForDate]);
+
+
+  const handleDayEventsClose = useCallback(() => {
+    setDayEventsModal(null);
+  }, []);
+
+  const handleDayEventClick = useCallback((event: Event) => {
+    setDayEventsModal(null);
+    setTooltipEvent(event);
+  }, []);
+
   const handleEventMouseEnter = (info: EventHoveringArg) => {
+    // Disable hover tooltip on mobile (tap-to-view handles it)
+    if (isMobile) return;
     const eventData = info.event.extendedProps.event as Event;
     setTooltipEvent(eventData);
     setTooltipPosition({ x: info.jsEvent.clientX, y: info.jsEvent.clientY });
   };
 
   const handleEventMouseLeave = () => {
+    // Disable hover tooltip on mobile (tap-to-view handles it)
+    if (isMobile) return;
     setTooltipEvent(null);
   };
 
@@ -276,12 +312,13 @@ function CalendarPage() {
 
         <FullCalendar
           ref={calendarRef}
-          plugins={[dayGridPlugin]}
+          plugins={[dayGridPlugin, interactionPlugin]}
           initialView="dayGridMonth"
           events={calendarEvents}
           eventClick={handleEventClick}
           eventMouseEnter={handleEventMouseEnter}
           eventMouseLeave={handleEventMouseLeave}
+          dateClick={handleDateClick}
           datesSet={handleDatesSet}
           validRange={{
             start: minDate,
@@ -289,6 +326,7 @@ function CalendarPage() {
           }}
           fixedWeekCount={false}
           dayMaxEventRows={3}
+          moreLinkContent={(arg) => isMobile ? `+${arg.num}` : `+${arg.num} more`}
           headerToolbar={{
             left: 'prev,next today',
             center: 'title',
@@ -315,6 +353,15 @@ function CalendarPage() {
           position={tooltipPosition}
           isMobile={isMobile}
           onClose={handleTooltipClose}
+        />
+      )}
+
+      {dayEventsModal && (
+        <DayEventsModal
+          date={dayEventsModal.date}
+          events={dayEventsModal.events}
+          onClose={handleDayEventsClose}
+          onEventClick={handleDayEventClick}
         />
       )}
     </div>
