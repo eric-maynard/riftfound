@@ -3,6 +3,8 @@ import type { Event } from '../types/event';
 interface EventTooltipProps {
   event: Event;
   position: { x: number; y: number };
+  isMobile?: boolean;
+  onClose?: () => void;
 }
 
 function formatDate(dateString: string): string {
@@ -55,16 +57,36 @@ function formatLocation(event: Event): string | null {
   return null;
 }
 
-function EventTooltip({ event, position }: EventTooltipProps) {
+function EventTooltip({ event, position, isMobile, onClose }: EventTooltipProps) {
   const location = formatLocation(event);
   const time = formatTime(new Date(event.startDate));
+  const locatorUrl = `https://locator.riftbound.uvsgames.com/events/${event.externalId}`;
 
-  return (
-    <div className="event-tooltip" style={{
-      left: position.x,
-      top: position.y,
-      transform: 'translate(-50%, -100%) translateY(-10px)',
-    }}>
+  const handleBackdropClick = (e: React.MouseEvent) => {
+    if (e.target === e.currentTarget && onClose) {
+      onClose();
+    }
+  };
+
+  const tooltipContent = (
+    <div
+      className={`event-tooltip ${isMobile ? 'event-tooltip-mobile' : ''}`}
+      style={isMobile ? undefined : {
+        left: position.x,
+        top: position.y,
+        transform: 'translate(-50%, -100%) translateY(-10px)',
+      }}
+    >
+      {isMobile && (
+        <a
+          href={locatorUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="event-tooltip-visit"
+        >
+          Visit &rsaquo;
+        </a>
+      )}
       <h3>{event.name}</h3>
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
@@ -112,6 +134,16 @@ function EventTooltip({ event, position }: EventTooltipProps) {
       </div>
     </div>
   );
+
+  if (isMobile) {
+    return (
+      <div className="event-tooltip-backdrop" onClick={handleBackdropClick}>
+        {tooltipContent}
+      </div>
+    );
+  }
+
+  return tooltipContent;
 }
 
 export default EventTooltip;

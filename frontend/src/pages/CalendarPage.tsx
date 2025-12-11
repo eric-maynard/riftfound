@@ -77,6 +77,24 @@ function formatEventTitle(event: Event): string {
   return `${time} | ${shop}`;
 }
 
+// Mobile breakpoint (matches CSS)
+const MOBILE_BREAKPOINT = 600;
+
+function useIsMobile() {
+  const [isMobile, setIsMobile] = useState(() => window.innerWidth <= MOBILE_BREAKPOINT);
+
+  useEffect(() => {
+    const handleResize = () => {
+      setIsMobile(window.innerWidth <= MOBILE_BREAKPOINT);
+    };
+
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
+  return isMobile;
+}
+
 function CalendarPage() {
   const [events, setEvents] = useState<Event[]>([]);
   const [loading, setLoading] = useState(true);
@@ -101,6 +119,7 @@ function CalendarPage() {
   const [tooltipPosition, setTooltipPosition] = useState({ x: 0, y: 0 });
   const calendarRef = useRef<FullCalendar>(null);
   const [searchTrigger, setSearchTrigger] = useState(0);
+  const isMobile = useIsMobile();
 
   const { minDate, maxDate } = useMemo(() => getValidDateRange(), []);
 
@@ -196,9 +215,21 @@ function CalendarPage() {
 
   const handleEventClick = (info: EventClickArg) => {
     const eventData = info.event.extendedProps.event as Event;
-    const locatorUrl = `https://locator.riftbound.uvsgames.com/events/${eventData.externalId}`;
-    window.open(locatorUrl, '_blank');
+
+    if (isMobile) {
+      // On mobile, show the tooltip card instead of opening link
+      setTooltipEvent(eventData);
+      setTooltipPosition({ x: 0, y: 0 }); // Position not used in mobile mode
+    } else {
+      // On desktop, open the locator link directly
+      const locatorUrl = `https://locator.riftbound.uvsgames.com/events/${eventData.externalId}`;
+      window.open(locatorUrl, '_blank');
+    }
   };
+
+  const handleTooltipClose = useCallback(() => {
+    setTooltipEvent(null);
+  }, []);
 
   const handleEventMouseEnter = (info: EventHoveringArg) => {
     const eventData = info.event.extendedProps.event as Event;
@@ -279,7 +310,12 @@ function CalendarPage() {
       </div>
 
       {tooltipEvent && (
-        <EventTooltip event={tooltipEvent} position={tooltipPosition} />
+        <EventTooltip
+          event={tooltipEvent}
+          position={tooltipPosition}
+          isMobile={isMobile}
+          onClose={handleTooltipClose}
+        />
       )}
     </div>
   );

@@ -83,7 +83,7 @@ a:hover {
   position: fixed;
   top: 12px;
   left: 12px;
-  height: 40px;
+  height: 60px;
   width: auto;
   z-index: 100;
 }
@@ -91,7 +91,7 @@ a:hover {
 /* Calendar Page */
 .calendar-page {
   padding-top: 0.5rem;
-  padding-left: 60px; /* Space for fixed logo */
+  padding-left: 80px; /* Space for fixed logo */
 }
 
 .error-banner {
@@ -627,4 +627,80 @@ select:disabled {
   font-weight: 600;
   text-transform: uppercase;
   margin-top: 0.5rem;
+}
+
+/* Mobile tooltip backdrop */
+.event-tooltip-backdrop {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10000;
+  padding: 1rem;
+}
+
+/* Mobile tooltip card */
+.event-tooltip-mobile {
+  position: relative;
+  left: auto !important;
+  top: auto !important;
+  transform: none !important;
+  max-width: 90vw;
+  width: 320px;
+}
+
+/* Visit link in mobile tooltip */
+.event-tooltip-visit {
+  position: absolute;
+  top: 0.75rem;
+  right: 0.75rem;
+  color: var(--color-cyan);
+  font-size: 0.875rem;
+  font-weight: 500;
+  text-decoration: none;
+}
+
+.event-tooltip-visit:hover {
+  color: var(--color-pink);
+}
+
+/* Mobile responsive styles */
+@media (max-width: 600px) {
+  /* Hide logo on mobile */
+  .site-logo {
+    display: none;
+  }
+
+  /* Remove left padding since logo is hidden */
+  .calendar-page {
+    padding-left: 0;
+  }
+
+  /* Fix calendar toolbar - stack vertically on mobile */
+  .fc .fc-toolbar.fc-header-toolbar {
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+
+  /* Reset absolute positioning on title for mobile */
+  .fc .fc-toolbar-chunk:nth-child(2) {
+    position: static;
+    transform: none;
+    order: -1;
+  }
+
+  /* Smaller title on mobile */
+  .fc .fc-toolbar-title {
+    font-size: 1rem;
+  }
+
+  /* Navigation buttons row */
+  .fc .fc-toolbar-chunk:first-child {
+    order: 0;
+  }
 }
