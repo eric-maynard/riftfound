@@ -63,7 +63,7 @@ cp deploy.env.example deploy.env
 
 ```bash
 # SSH to server (values from deploy.env)
-ssh -i ~/.ssh/riftfound.pem ec2-user@34.210.147.185
+ssh -i $SSH_KEY_PATH $EC2_USER@$EC2_HOST
 
 # Check service status
 pm2 status
