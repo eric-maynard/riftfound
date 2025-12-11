@@ -6,7 +6,7 @@
 
 :root {
   /* Dracula-inspired color palette */
-  --color-bg: #282a36;
+  --color-bg: #363b43;
   --color-bg-secondary: #44475a;
   --color-bg-tertiary: #21222c;
   --color-text: #f8f8f2;
@@ -78,16 +78,20 @@ a:hover {
   margin-bottom: 0;
 }
 
-/* Site Logo */
+/* Site Logo - fixed top-left corner */
 .site-logo {
-  height: 48px;
+  position: fixed;
+  top: 12px;
+  left: 12px;
+  height: 40px;
   width: auto;
-  flex-shrink: 0;
+  z-index: 100;
 }
 
 /* Calendar Page */
 .calendar-page {
   padding-top: 0.5rem;
+  padding-left: 60px; /* Space for fixed logo */
 }
 
 .error-banner {
@@ -479,7 +483,7 @@ select:disabled {
 }
 
 .fc .fc-daygrid-day.fc-day-other {
-  background-color: var(--color-bg);
+  background-color: #2a2b36;
 }
 
 .fc .fc-daygrid-day.fc-day-other .fc-daygrid-day-number {
@@ -567,7 +571,7 @@ select:disabled {
 }
 
 .fc th {
-  background-color: var(--color-bg);
+  background-color: #2a2b36;
 }
 
 .fc .fc-button {
