@@ -32,6 +32,48 @@ interface PhotonResponse {
   features: PhotonFeature[];
 }
 
+// Public Photon API as fallback for non-US queries
+const PUBLIC_PHOTON_URL = 'https://photon.komoot.io';
+
+// Helper to call a Photon API endpoint
+async function callPhotonApi(baseUrl: string, query: string, limit: number, osmTag?: string): Promise<PhotonResponse> {
+  const url = new URL(`${baseUrl}/api`);
+  url.searchParams.set('q', query);
+  url.searchParams.set('limit', String(limit));
+  if (osmTag) {
+    url.searchParams.set('osm_tag', osmTag);
+  }
+
+  const response = await fetch(url.toString());
+  if (!response.ok) {
+    throw new Error(`Photon API error: ${response.status}`);
+  }
+  return response.json() as Promise<PhotonResponse>;
+}
+
+// Try self-hosted Photon first, fall back to public API
+async function callPhotonWithFallback(query: string, limit: number, osmTag?: string): Promise<PhotonResponse> {
+  // Try self-hosted first
+  try {
+    const result = await callPhotonApi(env.PHOTON_URL, query, limit, osmTag);
+    // If we got results, return them
+    if (result.features.length > 0) {
+      return result;
+    }
+    // No results from self-hosted (might be non-US query), try public
+  } catch {
+    // Self-hosted failed, try public fallback
+  }
+
+  // Fallback to public Photon API
+  try {
+    return await callPhotonApi(PUBLIC_PHOTON_URL, query, limit, osmTag);
+  } catch {
+    // Both failed, return empty
+    return { features: [] };
+  }
+}
+
 // Check cache for geocoded location
 async function getCachedGeocode(query: string): Promise<GeocodeResult | null> {
   const normalizedQuery = query.toLowerCase().trim();
@@ -91,7 +133,7 @@ async function cacheGeocode(query: string, result: GeocodeResult): Promise<void>
   }
 }
 
-// Geocode a city/location using Photon API
+// Geocode a city/location using Photon API (with fallback)
 export async function geocodeCity(query: string): Promise<GeocodeResult | null> {
   // Check cache first
   const cached = await getCachedGeocode(query);
@@ -99,18 +141,7 @@ export async function geocodeCity(query: string): Promise<GeocodeResult | null> 
     return cached;
   }
 
-  // Call Photon API
-  const url = new URL(`${env.PHOTON_URL}/api`);
-  url.searchParams.set('q', query);
-  url.searchParams.set('limit', '1');
-
-  const response = await fetch(url.toString());
-
-  if (!response.ok) {
-    throw new Error(`Photon API error: ${response.status}`);
-  }
-
-  const data = await response.json() as PhotonResponse;
+  const data = await callPhotonWithFallback(query, 1);
 
   if (data.features.length === 0) {
     return null;
@@ -136,25 +167,13 @@ export async function geocodeCity(query: string): Promise<GeocodeResult | null> 
   return result;
 }
 
-// Get autocomplete suggestions from Photon (no caching - fast enough)
+// Get autocomplete suggestions from Photon (with fallback)
 export async function geocodeSuggestions(query: string, limit = 5): Promise<GeocodeSuggestion[]> {
   if (!query || query.length < 2) {
     return [];
   }
 
-  const url = new URL(`${env.PHOTON_URL}/api`);
-  url.searchParams.set('q', query);
-  url.searchParams.set('limit', String(limit));
-  // Bias toward places (cities, towns) not streets
-  url.searchParams.set('osm_tag', 'place');
-
-  const response = await fetch(url.toString());
-
-  if (!response.ok) {
-    throw new Error(`Photon API error: ${response.status}`);
-  }
-
-  const data = await response.json() as PhotonResponse;
+  const data = await callPhotonWithFallback(query, limit, 'place');
 
   return data.features.map((feature) => {
     const [lon, lat] = feature.geometry.coordinates;
