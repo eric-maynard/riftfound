@@ -31,13 +31,34 @@ interface PhotonFeature {
     coordinates: [number, number]; // [lon, lat]
   };
   properties: {
+    osm_id?: number;
+    osm_type?: string;
+    osm_key?: string;
+    osm_value?: string; // e.g., "city", "town", "village"
     name?: string;
     city?: string;
     state?: string;
     country?: string;
-    osm_value?: string; // e.g., "city", "town", "village"
+    countrycode?: string;
     type?: string;
   };
+}
+
+// Photon document format for Elasticsearch indexing
+interface PhotonDocument {
+  osm_id: number;
+  osm_type: string;
+  osm_key: string;
+  osm_value: string;
+  type: string;
+  importance: number;
+  name: { default: string; en?: string };
+  coordinate: { lat: number; lon: number };
+  countrycode: string;
+  country?: { default: string };
+  state?: { default: string };
+  city?: { default: string };
+  context: Record<string, unknown>;
 }
 
 interface PhotonResponse {
@@ -46,6 +67,68 @@ interface PhotonResponse {
 
 // Public Photon API as fallback for non-US queries
 const PUBLIC_PHOTON_URL = 'https://photon.komoot.io';
+
+// Elasticsearch URL for indexing (Photon uses ES internally on port 9200)
+// Derived from PHOTON_URL by replacing port 2322 with 9200
+function getElasticsearchUrl(): string {
+  return env.PHOTON_URL.replace(':2322', ':9200');
+}
+
+// Convert a Photon feature to a document for indexing
+function featureToPhotonDocument(feature: PhotonFeature, query: string): PhotonDocument {
+  const props = feature.properties;
+  const [lon, lat] = feature.geometry.coordinates;
+  const osmValue = props.osm_value || props.type || 'place';
+
+  // Use query as English name if the default name uses non-Latin characters
+  const defaultName = props.name || query;
+  const hasNonLatin = /[^\u0000-\u007F]/.test(defaultName);
+
+  const doc: PhotonDocument = {
+    osm_id: props.osm_id || Math.floor(Math.random() * 100000000) + 700000000,
+    osm_type: props.osm_type?.charAt(0).toUpperCase() || 'N',
+    osm_key: props.osm_key || 'place',
+    osm_value: osmValue,
+    type: osmValue,
+    importance: 0.5,
+    name: hasNonLatin
+      ? { default: query, en: query }  // Use query as default for non-Latin names
+      : { default: defaultName },
+    coordinate: { lat, lon },
+    countrycode: (props.countrycode || '').toUpperCase(),
+    context: {},
+  };
+
+  if (props.country) doc.country = { default: props.country };
+  if (props.state) doc.state = { default: props.state };
+  if (props.city && props.city !== props.name) doc.city = { default: props.city };
+
+  return doc;
+}
+
+// Index a Photon feature into local Elasticsearch
+async function indexFeatureToLocalPhoton(feature: PhotonFeature, query: string): Promise<void> {
+  try {
+    const esUrl = getElasticsearchUrl();
+    const doc = featureToPhotonDocument(feature, query);
+
+    // Index the document using ES 5.x API (requires _type)
+    const response = await fetch(`${esUrl}/photon/place/${doc.osm_id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(doc),
+    });
+
+    if (response.ok) {
+      console.log(`Indexed location to local Photon: ${query} (osm_id: ${doc.osm_id})`);
+    } else {
+      console.error(`Failed to index to local Photon: ${response.status}`);
+    }
+  } catch (error) {
+    // Don't fail the request if indexing fails - it's just a cache optimization
+    console.error('Error indexing to local Photon:', error);
+  }
+}
 
 // Helper to call a Photon API endpoint
 async function callPhotonApi(baseUrl: string, query: string, limit: number, osmTag?: string): Promise<PhotonResponse> {
@@ -80,7 +163,16 @@ async function callPhotonWithFallback(query: string, limit: number, osmTag?: str
   // Fallback to public Photon API
   try {
     logPublicPhotonQuery(query);
-    return await callPhotonApi(PUBLIC_PHOTON_URL, query, limit, osmTag);
+    const result = await callPhotonApi(PUBLIC_PHOTON_URL, query, limit, osmTag);
+
+    // If we got results from public Photon, index them to local Photon
+    // so future queries will find them locally
+    if (result.features.length > 0) {
+      // Index in background - don't block the response
+      indexFeatureToLocalPhoton(result.features[0], query).catch(() => {});
+    }
+
+    return result;
   } catch {
     // Both failed, return empty
     return { features: [] };
