@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { getLocationSuggestions } from '../services/api';
+import { getLocationSuggestions, geocodeCity } from '../services/api';
 import type { GeocodeSuggestion } from '../types/event';
 import TypeSelect from './TypeSelect';
 
@@ -54,7 +54,11 @@ function EventFiltersComponent({ filters, appliedFilters, onFiltersChange, onSea
 
   // Check if search would do anything
   const hasChanges = !filtersEqual(filters, appliedFilters);
-  const canSearch = filters.location !== null && hasChanges;
+  // Allow search if:
+  // 1. Location is set and there are changes, OR
+  // 2. User has typed text that could be geocoded (even without autocomplete selection)
+  const hasTypedLocation = cityInput.trim().length >= 2 && cityInput !== filters.location?.displayName;
+  const canSearch = (filters.location !== null && hasChanges) || hasTypedLocation;
 
   // Update input when filters change externally (e.g., geolocation)
   useEffect(() => {
@@ -197,8 +201,37 @@ function EventFiltersComponent({ filters, appliedFilters, onFiltersChange, onSea
     });
   };
 
-  const handleSearchClick = () => {
-    if (canSearch) {
+  const handleSearchClick = async () => {
+    if (!canSearch) return;
+
+    // If user typed something but didn't select from autocomplete, geocode it first
+    if (hasTypedLocation) {
+      setLoading(true);
+      setError(null);
+      try {
+        const response = await geocodeCity(cityInput.trim());
+        if (response.data) {
+          const newLocation = {
+            lat: response.data.latitude,
+            lng: response.data.longitude,
+            displayName: response.data.displayName,
+          };
+          setCityInput(response.data.displayName);
+          onFiltersChange({
+            ...filters,
+            location: newLocation,
+          });
+          // Trigger search after state update
+          setTimeout(() => onSearch(), 0);
+        } else {
+          setError('Location not found');
+        }
+      } catch {
+        setError('Unable to find location');
+      } finally {
+        setLoading(false);
+      }
+    } else {
       onSearch();
     }
   };

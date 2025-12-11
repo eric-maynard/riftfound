@@ -167,13 +167,21 @@ export async function geocodeCity(query: string): Promise<GeocodeResult | null> 
   return result;
 }
 
-// Get autocomplete suggestions from Photon (with fallback)
+// Get autocomplete suggestions - local Photon only (no public fallback to avoid rate limits)
+// Public Photon is only used when user clicks Search without selecting from autocomplete
 export async function geocodeSuggestions(query: string, limit = 5): Promise<GeocodeSuggestion[]> {
   if (!query || query.length < 2) {
     return [];
   }
 
-  const data = await callPhotonWithFallback(query, limit, 'place');
+  // Only use local Photon - no public fallback for suggestions
+  let data: PhotonResponse;
+  try {
+    data = await callPhotonApi(env.PHOTON_URL, query, limit, 'place');
+  } catch {
+    // Local Photon failed, return empty (no suggestions)
+    return [];
+  }
 
   return data.features.map((feature) => {
     const [lon, lat] = feature.geometry.coordinates;
