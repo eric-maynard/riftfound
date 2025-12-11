@@ -253,6 +253,15 @@ function CalendarPage() {
     }
   }, [isMobile, getEventsForDate]);
 
+  // Handle nav link day click (clicking the date number)
+  const handleNavLinkDayClick = useCallback((date: Date) => {
+    if (!isMobile) return;
+    const dayEvents = getEventsForDate(date);
+    if (dayEvents.length > 0) {
+      setDayEventsModal({ date, events: dayEvents });
+    }
+  }, [isMobile, getEventsForDate]);
+
 
   const handleDayEventsClose = useCallback(() => {
     setDayEventsModal(null);
@@ -327,6 +336,8 @@ function CalendarPage() {
           fixedWeekCount={false}
           dayMaxEventRows={3}
           moreLinkContent={(arg) => isMobile ? `+${arg.num}` : `+${arg.num} more`}
+          navLinks={isMobile}
+          navLinkDayClick={handleNavLinkDayClick}
           headerToolbar={{
             left: 'prev,next today',
             center: 'title',
