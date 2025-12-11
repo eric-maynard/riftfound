@@ -271,8 +271,15 @@ function CalendarPage() {
   }, []);
 
   const handleDayEventClick = useCallback((event: Event) => {
-    setDayEventsModal(null);
+    // Keep day events modal open, just show tooltip on top
     setTooltipEvent(event);
+  }, []);
+
+  // When closing tooltip, if day events modal is open, just close tooltip (go back to modal)
+  // Otherwise close everything
+  const handleTooltipCloseWithModal = useCallback(() => {
+    setTooltipEvent(null);
+    // dayEventsModal stays open if it was open
   }, []);
 
   const handleEventMouseEnter = (info: EventHoveringArg) => {
@@ -361,21 +368,21 @@ function CalendarPage() {
         />
       </div>
 
-      {tooltipEvent && (
-        <EventTooltip
-          event={tooltipEvent}
-          position={tooltipPosition}
-          isMobile={isMobile}
-          onClose={handleTooltipClose}
-        />
-      )}
-
       {dayEventsModal && (
         <DayEventsModal
           date={dayEventsModal.date}
           events={dayEventsModal.events}
           onClose={handleDayEventsClose}
           onEventClick={handleDayEventClick}
+        />
+      )}
+
+      {tooltipEvent && (
+        <EventTooltip
+          event={tooltipEvent}
+          position={tooltipPosition}
+          isMobile={isMobile}
+          onClose={dayEventsModal ? handleTooltipCloseWithModal : handleTooltipClose}
         />
       )}
     </div>

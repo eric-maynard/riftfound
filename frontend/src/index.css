@@ -629,7 +629,7 @@ select:disabled {
   margin-top: 0.5rem;
 }
 
-/* Mobile tooltip backdrop */
+/* Mobile tooltip backdrop - higher z-index to appear above day events modal */
 .event-tooltip-backdrop {
   position: fixed;
   top: 0;
@@ -640,7 +640,7 @@ select:disabled {
   display: flex;
   align-items: center;
   justify-content: center;
-  z-index: 10000;
+  z-index: 10001;
   padding: 1rem;
 }
 
