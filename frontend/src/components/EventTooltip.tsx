@@ -64,6 +64,7 @@ function EventTooltip({ event, position, isMobile, onClose }: EventTooltipProps)
 
   const handleBackdropClick = (e: React.MouseEvent) => {
     if (e.target === e.currentTarget && onClose) {
+      e.stopPropagation(); // Prevent click from reaching day events modal backdrop underneath
       onClose();
     }
   };

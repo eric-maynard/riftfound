@@ -25,13 +25,6 @@ const DEFAULT_DISTANCE_MILES = 25;
 // Event categories inferred from event names (Summoner Skirmish first)
 const AVAILABLE_FORMATS = ['Summoner Skirmish', 'Nexus Night', 'Other'];
 
-// Priority order for event display (lower = higher priority)
-const EVENT_TYPE_PRIORITY: Record<string, number> = {
-  'Summoner Skirmish': 0,
-  'Nexus Night': 1,
-  'Other': 2,
-};
-
 // Colors per event type (Dracula palette)
 const EVENT_COLORS: Record<string, string> = {
   'Nexus Night': '#bd93f9',      // Purple
@@ -359,11 +352,10 @@ function CalendarPage() {
           eventOrder={(a: unknown, b: unknown) => {
             const aEvent = (a as { extendedProps?: { event?: Event } })?.extendedProps?.event;
             const bEvent = (b as { extendedProps?: { event?: Event } })?.extendedProps?.event;
-            const aType = aEvent?.eventType || 'Other';
-            const bType = bEvent?.eventType || 'Other';
-            const aPriority = EVENT_TYPE_PRIORITY[aType] ?? 99;
-            const bPriority = EVENT_TYPE_PRIORITY[bType] ?? 99;
-            return aPriority - bPriority;
+            // Sort by start time
+            const aTime = aEvent?.startDate ? new Date(aEvent.startDate).getTime() : 0;
+            const bTime = bEvent?.startDate ? new Date(bEvent.startDate).getTime() : 0;
+            return aTime - bTime;
           }}
         />
       </div>
