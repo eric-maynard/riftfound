@@ -1,8 +1,6 @@
 # Riftfound
 
-A calendar view for Riftbound TCG events with location-based filtering. Data scraped from https://locator.riftbound.uvsgames.com/
-
-**Live site**: https://www.riftfound.com
+A calendar view for Riftbound TCG event.
 
 ## Quick Start
 
@@ -18,15 +16,6 @@ npm install
 ```
 
 Frontend: http://localhost:5173
-
-## Features
-
-- Calendar view with Google Calendar-style month grid
-- Location-based filtering (5mi, 10mi, 25mi, 50mi, 100mi radius)
-- Event type filtering (Summoner Skirmish, Nexus Night)
-- Auto-detects user location, defaults to San Francisco if denied
-- Events displayed as "Time | Shop Name" with hover tooltips showing full details
-- Times displayed in user's local timezone
 
 ## Project Structure
 
