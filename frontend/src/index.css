@@ -736,6 +736,11 @@ select:disabled {
 
 /* Mobile responsive styles */
 @media (max-width: 600px) {
+  /* Reduce container padding on mobile */
+  .container {
+    padding: 0.5rem;
+  }
+
   /* Hide logo on mobile */
   .site-logo {
     display: none;
@@ -744,6 +749,25 @@ select:disabled {
   /* Remove left padding since logo is hidden */
   .calendar-page {
     padding-left: 0;
+  }
+
+  /* Compact filters on mobile */
+  .event-filters {
+    padding: 0.75rem;
+  }
+
+  .event-filters .filter-row {
+    gap: 0.5rem;
+  }
+
+  .event-filters .location-group {
+    min-width: unset;
+    width: 100%;
+  }
+
+  .event-filters .use-location-link {
+    margin-top: 0.25rem;
+    margin-bottom: 0.25rem;
   }
 
   /* Fix calendar toolbar - stack vertically on mobile */
@@ -778,5 +802,16 @@ select:disabled {
     padding: 0.5rem !important;
     min-width: 2rem;
     text-align: center;
+  }
+
+  /* Full width calendar wrapper */
+  .fc-wrapper {
+    padding: 0.5rem;
+    border-radius: 0.25rem;
+  }
+
+  /* Smaller day cell height on mobile */
+  .fc .fc-daygrid-day-frame {
+    min-height: 80px !important;
   }
 }

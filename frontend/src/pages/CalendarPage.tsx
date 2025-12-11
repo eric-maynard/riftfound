@@ -73,9 +73,12 @@ function formatEventTime(event: Event): string {
   });
 }
 
-// Create display title: "Time | Shop Name"
-function formatEventTitle(event: Event): string {
+// Create display title: "Time | Shop Name" (desktop) or just "Time" (mobile)
+function formatEventTitle(event: Event, isMobile: boolean): string {
   const time = formatEventTime(event);
+  if (isMobile) {
+    return time;
+  }
   const shop = event.organizer || event.city || 'Event';
   return `${time} | ${shop}`;
 }
@@ -207,7 +210,7 @@ function CalendarPage() {
     const color = EVENT_COLORS[event.eventType || 'Other'] || EVENT_COLORS['Other'];
     return {
       id: event.id,
-      title: formatEventTitle(event),
+      title: formatEventTitle(event, isMobile),
       start: event.startDate,
       backgroundColor: color,
       borderColor: color,
