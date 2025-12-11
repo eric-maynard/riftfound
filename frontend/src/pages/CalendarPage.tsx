@@ -210,18 +210,12 @@ function CalendarPage() {
     setTooltipEvent(null);
   };
 
-  const handleDatesSet = (dateInfo: DatesSetArg) => {
-    const calendarApi = calendarRef.current?.getApi();
-    if (!calendarApi) return;
-
-    const currentStart = dateInfo.start;
-
-    if (currentStart < minDate) {
-      calendarApi.gotoDate(minDate);
-    } else if (currentStart > maxDate) {
-      calendarApi.gotoDate(maxDate);
-    }
-  };
+  // Note: validRange already restricts navigation, so we don't need manual date checking
+  // The handleDatesSet callback was causing navigation issues at boundaries
+  const handleDatesSet = useCallback((_dateInfo: DatesSetArg) => {
+    // FullCalendar's validRange handles boundary enforcement automatically
+    // We keep this callback for future use (e.g., analytics) but don't manipulate dates
+  }, []);
 
   return (
     <div className="calendar-page">
