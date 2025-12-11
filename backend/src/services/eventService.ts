@@ -72,13 +72,15 @@ function getEventsSqlite(query: EventQuery, offset: number, limit: number): { ev
     params.push(query.eventType);
   }
 
-  // Haversine distance filter
-  let distanceFilter = '';
+  // Haversine distance filter with bounding box pre-filter
   let distanceSelect = '';
   if (hasLocationFilter) {
-    // SQLite doesn't have built-in radians/acos, so we use a simplified formula
-    // Haversine: 6371 * 2 * asin(sqrt(sin((lat2-lat1)/2)^2 + cos(lat1)*cos(lat2)*sin((lng2-lng1)/2)^2))
-    // For SQLite, we'll filter in JavaScript after fetching (simpler and SQLite lacks trig functions)
+    // Add bounding box filter to reduce rows before JS-based Haversine filtering
+    const bbox = getBoundingBox(query.lat!, query.lng!, query.radiusKm);
+    where += ` AND s.latitude IS NOT NULL AND s.longitude IS NOT NULL`;
+    where += ` AND s.latitude BETWEEN ? AND ?`;
+    where += ` AND s.longitude BETWEEN ? AND ?`;
+    params.push(bbox.minLat, bbox.maxLat, bbox.minLng, bbox.maxLng);
     distanceSelect = `, s.latitude as shop_latitude, s.longitude as shop_longitude`;
   }
 
@@ -89,18 +91,16 @@ function getEventsSqlite(query: EventQuery, offset: number, limit: number): { ev
     WHERE ${where}
   `;
 
-  // For location filtering without SQLite trig functions, we fetch more and filter in JS
+  // For location filtering, bounding box is done in SQL, then refine with Haversine in JS
   if (hasLocationFilter) {
     const rows = db.prepare(
       `${baseQuery} ORDER BY e.start_date ASC`
     ).all(...params) as Record<string, unknown>[];
 
-    // Filter by distance in JavaScript
+    // Refine with exact Haversine distance (bounding box may include corner cases)
     const filteredRows = rows.filter(row => {
-      const shopLat = row.shop_latitude as number | null;
-      const shopLng = row.shop_longitude as number | null;
-      if (shopLat === null || shopLng === null) return false;
-
+      const shopLat = row.shop_latitude as number;
+      const shopLng = row.shop_longitude as number;
       const distance = haversineDistance(query.lat!, query.lng!, shopLat, shopLng);
       return distance <= query.radiusKm;
     });
@@ -144,6 +144,27 @@ function haversineDistance(lat1: number, lng1: number, lat2: number, lng2: numbe
 
 function toRad(deg: number): number {
   return deg * (Math.PI / 180);
+}
+
+// Calculate bounding box for a given center point and radius
+// This allows cheap rectangular filtering before expensive Haversine calculation
+function getBoundingBox(lat: number, lng: number, radiusKm: number): {
+  minLat: number;
+  maxLat: number;
+  minLng: number;
+  maxLng: number;
+} {
+  // 1 degree of latitude is ~111km
+  const latDelta = radiusKm / 111;
+  // 1 degree of longitude varies by latitude: ~111km * cos(lat)
+  const lngDelta = radiusKm / (111 * Math.cos(toRad(lat)));
+
+  return {
+    minLat: lat - latDelta,
+    maxLat: lat + latDelta,
+    minLng: lng - lngDelta,
+    maxLng: lng + lngDelta,
+  };
 }
 
 async function getEventsPostgres(query: EventQuery, offset: number, limit: number): Promise<{ events: Event[]; total: number }> {
@@ -197,9 +218,18 @@ async function getEventsPostgres(query: EventQuery, offset: number, limit: numbe
     paramIndex++;
   }
 
-  // Location filtering using PostgreSQL's built-in math functions
+  // Location filtering using bounding box pre-filter + Haversine refinement
   if (hasLocationFilter) {
+    const bbox = getBoundingBox(query.lat!, query.lng!, query.radiusKm);
+
+    // Bounding box filter (can use indexes on latitude/longitude)
     whereClause += ` AND s.latitude IS NOT NULL AND s.longitude IS NOT NULL`;
+    whereClause += ` AND s.latitude BETWEEN $${paramIndex} AND $${paramIndex + 1}`;
+    whereClause += ` AND s.longitude BETWEEN $${paramIndex + 2} AND $${paramIndex + 3}`;
+    params.push(bbox.minLat, bbox.maxLat, bbox.minLng, bbox.maxLng);
+    paramIndex += 4;
+
+    // Haversine refinement for exact distance (filters out corners of bounding box)
     whereClause += ` AND (
       6371 * acos(
         cos(radians($${paramIndex})) * cos(radians(s.latitude)) *

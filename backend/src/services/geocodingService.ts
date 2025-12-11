@@ -1,5 +1,17 @@
 import { getPool, getSqlite, useSqlite } from '../config/database.js';
 import { env } from '../config/env.js';
+import { appendFileSync } from 'fs';
+
+// Log public Photon queries for analysis
+function logPublicPhotonQuery(query: string): void {
+  try {
+    const timestamp = new Date().toISOString();
+    const logLine = `${timestamp}\t${query}\n`;
+    appendFileSync('public-queries.log', logLine);
+  } catch {
+    // Ignore logging errors
+  }
+}
 
 export interface GeocodeResult {
   latitude: number;
@@ -67,6 +79,7 @@ async function callPhotonWithFallback(query: string, limit: number, osmTag?: str
 
   // Fallback to public Photon API
   try {
+    logPublicPhotonQuery(query);
     return await callPhotonApi(PUBLIC_PHOTON_URL, query, limit, osmTag);
   } catch {
     // Both failed, return empty

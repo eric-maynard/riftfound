@@ -55,6 +55,7 @@ function initSqliteSchema(db: Database.Database) {
 
     CREATE INDEX IF NOT EXISTS idx_shops_name ON shops(name);
     CREATE INDEX IF NOT EXISTS idx_shops_geocode_status ON shops(geocode_status);
+    CREATE INDEX IF NOT EXISTS idx_shops_lat_lng ON shops(latitude, longitude);
 
     CREATE TABLE IF NOT EXISTS events (
       id INTEGER PRIMARY KEY AUTOINCREMENT,

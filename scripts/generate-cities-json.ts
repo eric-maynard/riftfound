@@ -42,23 +42,21 @@ interface PhotonResponse {
   features: PhotonFeature[];
 }
 
-// Photon document format for import
+// OpenSearch document format matching Photon's actual index structure
 interface PhotonDocument {
-  type: 'Place';
-  content: {
-    place_id?: number;
-    object_type?: string;
-    object_id?: number;
-    osm_key: string;
-    osm_value: string;
-    categories: string[];
-    rank_address: number;
-    importance: number;
-    name: Record<string, string>;
-    country_code: string;
-    centroid: [number, number]; // [lon, lat]
-    address?: Record<string, string>;
-  };
+  osm_id: number;
+  osm_type: string;
+  osm_key: string;
+  osm_value: string;
+  type: string;
+  importance: number;
+  name: { default: string };
+  coordinate: { lat: number; lon: number };
+  countrycode: string;
+  country?: { default: string };
+  state?: { default: string };
+  city?: { default: string };
+  context: Record<string, unknown>;
 }
 
 function sleep(ms: number): Promise<void> {
@@ -130,56 +128,37 @@ async function geocodeCity(city: string, state: string | null, country: string):
   }
 }
 
-function featureToPhotonDocument(feature: PhotonFeature, placeId: number): PhotonDocument {
+function featureToPhotonDocument(feature: PhotonFeature, docId: number): PhotonDocument {
   const props = feature.properties;
   const [lon, lat] = feature.geometry.coordinates;
 
-  // Build name object - Photon uses "name" as the key for default name
-  const name: Record<string, string> = {};
-  if (props.name) {
-    name['name'] = props.name;
-  }
+  const osmValue = props.osm_value || props.type || 'city';
 
-  // Build address object for parent location context
-  const address: Record<string, string> = {};
-  if (props.city && props.city !== props.name) {
-    address['city'] = props.city;
+  const doc: PhotonDocument = {
+    osm_id: props.osm_id || docId,
+    osm_type: props.osm_type?.charAt(0).toUpperCase() || 'N',
+    osm_key: props.osm_key || 'place',
+    osm_value: osmValue,
+    type: osmValue,
+    importance: 0.5,
+    name: { default: props.name || '' },
+    coordinate: { lat, lon },
+    countrycode: (props.countrycode || '').toUpperCase(),
+    context: {},
+  };
+
+  // Add address parts
+  if (props.country) {
+    doc.country = { default: props.country };
   }
   if (props.state) {
-    address['state'] = props.state;
+    doc.state = { default: props.state };
   }
-  if (props.country) {
-    address['country'] = props.country;
+  if (props.city && props.city !== props.name) {
+    doc.city = { default: props.city };
   }
 
-  // Determine rank_address based on place type
-  let rankAddress = 16; // Default city rank
-  const osmValue = props.osm_value || 'city';
-  if (osmValue === 'country') rankAddress = 4;
-  else if (osmValue === 'state') rankAddress = 8;
-  else if (osmValue === 'county') rankAddress = 12;
-  else if (osmValue === 'city') rankAddress = 16;
-  else if (osmValue === 'town') rankAddress = 18;
-  else if (osmValue === 'village') rankAddress = 19;
-  else if (osmValue === 'suburb' || osmValue === 'neighbourhood') rankAddress = 22;
-
-  return {
-    type: 'Place',
-    content: {
-      place_id: placeId,
-      object_type: props.osm_type?.charAt(0).toUpperCase() || 'N',
-      object_id: props.osm_id || placeId,
-      osm_key: props.osm_key || 'place',
-      osm_value: osmValue,
-      categories: [`osm.${props.osm_key || 'place'}.${osmValue}`],
-      rank_address: rankAddress,
-      importance: 0.5,
-      name,
-      country_code: (props.countrycode || '').toLowerCase(),
-      centroid: [lon, lat],
-      ...(Object.keys(address).length > 0 && { address }),
-    },
-  };
+  return doc;
 }
 
 async function main() {
