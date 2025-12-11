@@ -819,4 +819,10 @@ select:disabled {
   .fc .fc-daygrid-day-frame {
     min-height: 80px !important;
   }
+
+  /* Smaller event font on mobile so times fit */
+  .fc .fc-event {
+    font-size: 0.6rem;
+    padding: 1px 2px;
+  }
 }
