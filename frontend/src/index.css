@@ -357,6 +357,7 @@ select:disabled {
 .event-filters .use-location-link {
   display: inline-block;
   margin-top: 0.375rem;
+  margin-left: 0.25rem;
   font-size: 0.75rem;
   color: var(--color-cyan);
   text-decoration: none;
