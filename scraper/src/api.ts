@@ -2,6 +2,7 @@ import type { ScrapedEvent } from './database.js';
 
 const API_BASE = 'https://api.cloudflare.riftbound.uvsgames.com/hydraproxy/api/v2';
 const PAGE_SIZE = 1000;
+const DAYS_FORWARD = 90; // Only fetch events within 90 days
 
 // API response types
 interface ApiStore {
@@ -141,7 +142,9 @@ export async function* fetchEventsFromApi(
   console.log(`Fetching events from API (page size: ${PAGE_SIZE})...`);
 
   while (hasMore) {
-    const url = `${API_BASE}/events/?start_date_after=${encodeURIComponent(today)}&display_status=upcoming&latitude=0&longitude=0&num_miles=20000&upcoming_only=true&game_slug=riftbound&page=${page}&page_size=${PAGE_SIZE}`;
+    const endDate = new Date();
+    endDate.setDate(endDate.getDate() + DAYS_FORWARD);
+    const url = `${API_BASE}/events/?start_date_after=${encodeURIComponent(today)}&start_date_before=${encodeURIComponent(endDate.toISOString())}&display_status=upcoming&latitude=0&longitude=0&num_miles=20000&upcoming_only=true&game_slug=riftbound&page=${page}&page_size=${PAGE_SIZE}`;
 
     console.log(`Fetching page ${page}...`);
 
@@ -185,7 +188,9 @@ export async function* fetchEventsFromApi(
  */
 export async function getEventCount(): Promise<{ total: number; pageCount: number }> {
   const today = new Date().toISOString();
-  const url = `${API_BASE}/events/?start_date_after=${encodeURIComponent(today)}&display_status=upcoming&latitude=0&longitude=0&num_miles=20000&upcoming_only=true&game_slug=riftbound&page=1&page_size=${PAGE_SIZE}`;
+  const endDate = new Date();
+  endDate.setDate(endDate.getDate() + DAYS_FORWARD);
+  const url = `${API_BASE}/events/?start_date_after=${encodeURIComponent(today)}&start_date_before=${encodeURIComponent(endDate.toISOString())}&display_status=upcoming&latitude=0&longitude=0&num_miles=20000&upcoming_only=true&game_slug=riftbound&page=1&page_size=${PAGE_SIZE}`;
 
   const response = await fetch(url, {
     headers: {
@@ -211,7 +216,9 @@ export async function fetchEventsPage(
   page: number
 ): Promise<{ events: (ScrapedEvent & { storeInfo: ApiStore })[]; hasMore: boolean }> {
   const today = new Date().toISOString();
-  const url = `${API_BASE}/events/?start_date_after=${encodeURIComponent(today)}&display_status=upcoming&latitude=0&longitude=0&num_miles=20000&upcoming_only=true&game_slug=riftbound&page=${page}&page_size=${PAGE_SIZE}`;
+  const endDate = new Date();
+  endDate.setDate(endDate.getDate() + DAYS_FORWARD);
+  const url = `${API_BASE}/events/?start_date_after=${encodeURIComponent(today)}&start_date_before=${encodeURIComponent(endDate.toISOString())}&display_status=upcoming&latitude=0&longitude=0&num_miles=20000&upcoming_only=true&game_slug=riftbound&page=${page}&page_size=${PAGE_SIZE}`;
 
   const response = await fetch(url, {
     headers: {

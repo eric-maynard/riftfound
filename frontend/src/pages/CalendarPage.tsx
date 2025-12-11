@@ -225,8 +225,8 @@ function CalendarPage() {
 
   return (
     <div className="calendar-page">
+      <img src="/logo.png" alt="Riftfound" className="site-logo" />
       <div className="page-header">
-        <img src="/logo.png" alt="Riftfound" className="site-logo" />
         <EventFilters
           filters={stagedFilters}
           appliedFilters={appliedFilters}

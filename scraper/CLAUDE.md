@@ -28,6 +28,7 @@ This approach prevents burst traffic and maintains consistent, gentle load on th
 ```
 https://api.cloudflare.riftbound.uvsgames.com/hydraproxy/api/v2/events/
   ?start_date_after=<today>
+  &start_date_before=<today+90days>
   &display_status=upcoming
   &latitude=0&longitude=0
   &num_miles=20000
@@ -36,6 +37,8 @@ https://api.cloudflare.riftbound.uvsgames.com/hydraproxy/api/v2/events/
   &page=1
   &page_size=1000
 ```
+
+Only fetches events within 90 days to match the calendar display range.
 
 Returns JSON with:
 - Event details (name, description, date/time, format, price, capacity)

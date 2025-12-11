@@ -72,7 +72,7 @@ function TypeSelect({ value, options, onChange }: TypeSelectProps) {
             </>
           ) : (
             <>
-              All Types
+              Any
               <span className="type-color-dots">
                 {options.map((opt) => (
                   <ColorDot key={opt} type={opt} />
@@ -92,7 +92,7 @@ function TypeSelect({ value, options, onChange }: TypeSelectProps) {
             role="option"
             aria-selected={value === null}
           >
-            <span>All Types</span>
+            <span>Any</span>
             <span className="type-color-dots">
               {options.map((opt) => (
                 <ColorDot key={opt} type={opt} />

@@ -2,6 +2,7 @@ import { Router, Request, Response, NextFunction } from 'express';
 import { EventQuerySchema } from '../models/event.js';
 import * as eventService from '../services/eventService.js';
 import { geocodeCity, geocodeSuggestions } from '../services/geocodingService.js';
+import { geocodeLimiter } from '../middleware/rateLimit.js';
 
 const router = Router();
 
@@ -50,7 +51,7 @@ router.get('/info', async (_req: Request, res: Response, next: NextFunction) => 
 });
 
 // GET /api/events/geocode - Geocode a city/location for filtering
-router.get('/geocode', async (req: Request, res: Response, next: NextFunction) => {
+router.get('/geocode', geocodeLimiter, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const query = req.query.q as string;
 
@@ -79,7 +80,7 @@ router.get('/geocode', async (req: Request, res: Response, next: NextFunction) =
 });
 
 // GET /api/events/geocode/suggest - Autocomplete suggestions for location search
-router.get('/geocode/suggest', async (req: Request, res: Response, next: NextFunction) => {
+router.get('/geocode/suggest', geocodeLimiter, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const query = req.query.q as string;
 
