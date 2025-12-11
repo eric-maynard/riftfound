@@ -1,6 +1,6 @@
 # Riftfound
 
-A calendar view for Riftbound TCG event.
+A calendar view for Riftbound TCG events.
 
 ## Quick Start
 
