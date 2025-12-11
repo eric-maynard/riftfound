@@ -69,20 +69,21 @@ function EventFiltersComponent({ filters, appliedFilters, onFiltersChange, onSea
 
   // Debounced search for suggestions
   useEffect(() => {
-    if (cityInput.length < 2) {
+    const trimmedInput = cityInput.trim();
+    if (trimmedInput.length < 2) {
       setSuggestions([]);
       setShowSuggestions(false);
       return;
     }
 
     // Don't search if input matches current location
-    if (filters.location?.displayName === cityInput) {
+    if (filters.location?.displayName === trimmedInput) {
       return;
     }
 
     const timer = setTimeout(async () => {
       try {
-        const response = await getLocationSuggestions(cityInput);
+        const response = await getLocationSuggestions(trimmedInput);
         setSuggestions(response.data);
         setShowSuggestions(response.data.length > 0);
         setSelectedIndex(-1);
