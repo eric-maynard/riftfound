@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { getLocationSuggestions } from '../services/api';
 import type { GeocodeSuggestion } from '../types/event';
+import TypeSelect from './TypeSelect';
 
 export interface EventFilters {
   location: {
@@ -207,17 +208,11 @@ function EventFiltersComponent({ filters, appliedFilters, onFiltersChange, onSea
       <div className="filter-row">
         <div className="filter-group">
           <label>Type</label>
-          <select
-            value={filters.format ?? ''}
-            onChange={(e) => handleFormatChange(e.target.value || null)}
-          >
-            <option value="">All Types</option>
-            {availableFormats.map((format) => (
-              <option key={format} value={format}>
-                {format}
-              </option>
-            ))}
-          </select>
+          <TypeSelect
+            value={filters.format}
+            options={availableFormats}
+            onChange={handleFormatChange}
+          />
         </div>
 
         <div className="filter-group">

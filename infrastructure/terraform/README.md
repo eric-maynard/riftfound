@@ -1,186 +1,6 @@
 # Riftfound AWS Infrastructure
 
-Terraform configuration to deploy Riftfound infrastructure on AWS.
-
-## Prerequisites
-
-1. **AWS Account** with admin access
-2. **AWS CLI** installed and configured:
-   ```bash
-   # Install AWS CLI
-   curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
-   unzip awscliv2.zip && sudo ./aws/install
-
-   # Configure credentials
-   aws configure
-   # Enter your AWS Access Key ID, Secret Access Key, region (us-east-1), output format (json)
-   ```
-
-3. **Terraform** installed:
-   ```bash
-   # Ubuntu/Debian
-   wget -O- https://apt.releases.hashicorp.com/gpg | sudo gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg
-   echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/hashicorp.list
-   sudo apt update && sudo apt install terraform
-
-   # Or download from https://www.terraform.io/downloads
-   ```
-
-## Quick Start
-
-```bash
-cd infrastructure/terraform
-
-# Initialize Terraform (downloads AWS provider)
-terraform init
-
-# Preview what will be created
-terraform plan
-
-# Deploy! (type 'yes' when prompted)
-terraform apply
-```
-
-After ~2 minutes, you'll see outputs like:
-```
-photon_url = "http://1.2.3.4:2322"
-photon_test_command = "curl '1.2.3.4:2322/api?q=san+francisco&limit=1'"
-```
-
-**Note**: Photon takes 20-30 minutes to download US data on first boot. Check progress:
-```bash
-# Connect to instance via SSM (no SSH key needed)
-aws ssm start-session --target <instance-id>
-
-# Check Docker logs
-sudo docker logs -f photon
-```
-
-## What Gets Created
-
-| Resource | Purpose | Est. Cost |
-|----------|---------|-----------|
-| EC2 t3.medium (Photon) | Runs Photon geocoder | ~$30/mo |
-| EC2 t3.medium (Backend) | Runs API + Scraper | ~$30/mo |
-| EBS 100GB gp3 | Stores Photon/OSM data | ~$8/mo |
-| EBS 20GB gp3 | Backend root volume | ~$2/mo |
-| RDS db.t3.micro | PostgreSQL database | ~$15/mo |
-| S3 + CloudFront | Frontend hosting | ~$1/mo |
-| 2x Elastic IP | Stable public IPs | Free (while attached) |
-| Route53 (optional) | DNS hosting | ~$0.50/mo |
-
-**Total: ~$85/month** (worldwide data, no custom domain)
-
-For US-only Photon data, save ~$20/mo:
-```hcl
-photon_instance_type = "t3.small"
-photon_volume_size   = 20
-photon_country       = "us"
-```
-
-## Scaling Notes
-
-- **Photon**: t3.medium handles 100+ req/s. Upgrade to t3.large for more headroom.
-- **Backend**: t3.medium handles dozens of concurrent users. Upgrade to t3.large/xlarge if needed.
-
-Both scale vertically - just change instance type and `terraform apply`.
-
-## Configuration
-
-Create `terraform.tfvars` to customize:
-```hcl
-aws_region           = "us-west-2"        # Change region
-photon_instance_type = "t3.medium"        # More RAM for larger datasets
-photon_volume_size   = 100                # For worldwide data (~70GB)
-ssh_key_name         = "my-key"           # Optional: enable SSH
-allowed_ssh_cidr     = "1.2.3.4/32"       # Your IP for SSH
-domain_name          = "riftfound.com"    # Optional: custom domain
-```
-
-## Custom Domain Setup
-
-If you set `domain_name`, Terraform creates:
-- Route53 hosted zone
-- ACM SSL certificate (auto-validated via DNS)
-- CloudFront aliases for domain and www subdomain
-- API subdomain pointing to backend
-
-**After `terraform apply`**, update your domain registrar's nameservers:
-```bash
-terraform output nameservers
-# Copy these to your registrar (e.g., Namecheap, GoDaddy)
-```
-
-Certificate validation may take 10-30 minutes.
-
-## Connecting to the Instance
-
-**Option 1: SSM Session Manager (recommended, no SSH key needed)**
-```bash
-aws ssm start-session --target <instance-id>
-```
-
-**Option 2: SSH (requires ssh_key_name variable)**
-```bash
-ssh -i ~/.ssh/your-key.pem ec2-user@<public-ip>
-```
-
-## Updating Photon
-
-```bash
-# Connect to instance
-aws ssm start-session --target <instance-id>
-
-# Update container
-sudo docker pull komoot/photon
-sudo docker stop photon
-sudo docker rm photon
-sudo docker run -d --name photon --restart unless-stopped \
-  -p 2322:2322 -v /photon_data:/photon/photon_data \
-  -e PHOTON_COUNTRY=us komoot/photon
-```
-
-## Destroying Infrastructure
-
-```bash
-terraform destroy
-```
-
-**Warning**: This will delete the Photon instance. The EBS data volume is preserved by default (delete_on_termination = false), but you'll need to manually delete it if you want to remove everything.
-
-## Deploying the Frontend
-
-After `terraform apply`, deploy your frontend:
-```bash
-# Build the frontend
-cd frontend
-npm run build
-
-# Get bucket name and CloudFront distribution ID
-BUCKET=$(terraform -chdir=../infrastructure/terraform output -raw frontend_bucket)
-CF_ID=$(terraform -chdir=../infrastructure/terraform output -raw cloudfront_distribution_id)
-
-# Upload to S3 and invalidate cache
-aws s3 sync dist/ s3://$BUCKET --delete
-aws cloudfront create-invalidation --distribution-id $CF_ID --paths "/*"
-```
-
-Your site will be available at the CloudFront URL (or custom domain if configured):
-```bash
-terraform output frontend_url
-```
-
-## Database Access
-
-The database password is stored securely in SSM Parameter Store:
-```bash
-# Get the password (requires AWS CLI configured)
-aws ssm get-parameter --name "/riftfound/database/password" --with-decryption --query 'Parameter.Value' --output text
-
-# Connect via psql (from backend instance)
-aws ssm start-session --target <backend-instance-id>
-psql -h <rds-endpoint> -U riftfound -d riftfound
-```
+Terraform configuration to deploy Riftfound on AWS.
 
 ## Architecture
 
@@ -192,22 +12,129 @@ psql -h <rds-endpoint> -U riftfound -d riftfound
                              │
               ┌──────────────┼──────────────┐
               │              │              │
-              ▼              ▼              ▼
-        ┌─────────┐    ┌──────────┐   ┌─────────┐
-        │   S3    │    │ Backend  │   │ Photon  │
-        │Frontend │    │  EC2     │   │  EC2    │
-        └─────────┘    └────┬─────┘   └─────────┘
-                            │
-                       ┌────▼────┐
-                       │   RDS   │
-                       │PostgreSQL│
-                       └─────────┘
+              ▼              ▼              │
+        ┌─────────┐    ┌──────────┐         │
+        │   S3    │    │   EC2    │         │
+        │Frontend │    │ Backend  │         │
+        └─────────┘    │ Scraper  │         │
+                       │ SQLite   │         │
+                       └────┬─────┘         │
+                            │               │
+                       ┌────▼────┐          │
+                       │   EBS   │          │
+                       │  (data) │          │
+                       └─────────┘          │
 ```
 
-## Next Steps
+## What Gets Created
 
-After deployment:
-1. Update DNS nameservers at your registrar (if using custom domain)
-2. Wait for Photon to download data (~1-2 hours for worldwide)
-3. Deploy frontend to S3
-4. Verify everything works: `terraform output test_commands`
+| Resource | Purpose | Est. Cost |
+|----------|---------|-----------|
+| EC2 t3.small | Backend API + Scraper | ~$15/mo |
+| EBS 30GB gp3 | Root volume | ~$3/mo |
+| EBS 20GB gp3 | SQLite data (persistent) | ~$2/mo |
+| S3 bucket | Frontend static files | ~$1/mo |
+| CloudFront | CDN + HTTPS | ~$1/mo |
+| ACM Certificate | SSL for custom domain | Free |
+| Elastic IP | Stable public IP | Free (while attached) |
+
+**Total: ~$20-25/month**
+
+## Prerequisites
+
+1. **AWS Account** with admin access
+2. **AWS CLI** installed and configured:
+   ```bash
+   aws configure
+   # Enter your Access Key ID, Secret Access Key, region (us-west-2)
+   ```
+3. **Terraform** installed:
+   ```bash
+   # Download from https://www.terraform.io/downloads
+   ```
+4. **SSH Key Pair** created in AWS Console (EC2 → Key Pairs)
+
+## Quick Start
+
+```bash
+cd infrastructure/terraform
+
+# Create your config
+cp terraform.tfvars.example terraform.tfvars
+# Edit terraform.tfvars with your values
+
+# Initialize and deploy
+terraform init
+terraform plan     # Preview changes
+terraform apply    # Deploy (type 'yes')
+```
+
+After deployment, Terraform outputs:
+- CloudFront domain for DNS setup
+- EC2 public IP for SSH
+- S3 bucket name for frontend uploads
+- GoDaddy DNS instructions
+
+## Configuration
+
+Edit `terraform.tfvars`:
+
+```hcl
+aws_region       = "us-west-2"
+domain_name      = "riftfound.com"
+instance_type    = "t3.small"
+ssh_key_name     = "your-key-pair-name"
+allowed_ssh_cidr = "YOUR_IP/32"        # Your IP for SSH access
+ebs_volume_size  = 20
+```
+
+## DNS Setup (GoDaddy)
+
+After `terraform apply`, you need to:
+
+1. **Validate SSL Certificate**: Add the CNAME records shown in `acm_validation_records` output
+2. **Point www to CloudFront**: Add CNAME record `www` → `<cloudfront-domain>.cloudfront.net`
+3. **Root domain**: Either forward to www or use GoDaddy's forwarding feature
+
+## Connecting to the Server
+
+```bash
+ssh -i ~/.ssh/your-key.pem ec2-user@<EC2_PUBLIC_IP>
+
+# Check services
+pm2 status
+pm2 logs
+```
+
+## Deploying Updates
+
+Use the deploy script from the project root:
+
+```bash
+./deploy.sh frontend   # Build and upload React app
+./deploy.sh backend    # Package and deploy backend/scraper
+./deploy.sh all        # Both
+```
+
+## Destroying Infrastructure
+
+```bash
+terraform destroy
+```
+
+**Warning**: This deletes everything including the EBS data volume.
+
+## Troubleshooting
+
+### Certificate stuck in PENDING_VALIDATION
+- Verify DNS records are correct in GoDaddy
+- Wait up to 30 minutes for DNS propagation
+- Check: `aws acm describe-certificate --certificate-arn <ARN> --region us-east-1`
+
+### CloudFront returns 403
+- Ensure S3 bucket policy allows CloudFront access
+- Check CloudFront origin access control is configured
+
+### Can't SSH to EC2
+- Verify your IP in `allowed_ssh_cidr` matches `curl ifconfig.me`
+- Check security group allows port 22 from your IP

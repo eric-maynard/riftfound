@@ -1,222 +1,160 @@
 # AWS Deployment Guide
 
-This guide explains how to deploy Riftfound to AWS without exposing credentials in the open-source codebase.
+This guide explains the production deployment of Riftfound on AWS.
 
 ## Architecture
 
-- **Frontend**: S3 + CloudFront (static hosting)
-- **Backend API**: ECS Fargate (or Lambda + API Gateway)
-- **Scraper**: Lambda with EventBridge scheduled rule
-- **Database**: RDS PostgreSQL
-- **Geocoding**: Photon on ECS Fargate (self-hosted OSM geocoder)
-- **Secrets**: AWS Secrets Manager
+```
+User → CloudFront (HTTPS)
+         ├── /* → S3 (frontend static files)
+         └── /api/* → EC2:3001 (backend API)
 
-## Credential Management
-
-### Development
-- Copy `.env.local.example` to `.env`
-- Use `docker-compose up` for local PostgreSQL
-- Credentials are only in your local `.env` file (gitignored)
-
-### Production
-Credentials are managed through AWS Secrets Manager:
-
-1. **Create a Secret in AWS Secrets Manager:**
-   ```bash
-   aws secretsmanager create-secret \
-     --name riftfound/database \
-     --secret-string '{
-       "host": "your-rds-endpoint.region.rds.amazonaws.com",
-       "port": 5432,
-       "database": "riftfound",
-       "username": "your_db_user",
-       "password": "your_secure_password"
-     }'
-   ```
-
-2. **Set environment variable in your deployment:**
-   ```
-   AWS_SECRETS_DB_ARN=arn:aws:secretsmanager:region:account:secret:riftfound/database-xxxxx
-   ```
-
-3. **Grant IAM permissions to your Lambda/ECS task:**
-   ```json
-   {
-     "Version": "2012-10-17",
-     "Statement": [
-       {
-         "Effect": "Allow",
-         "Action": [
-           "secretsmanager:GetSecretValue"
-         ],
-         "Resource": "arn:aws:secretsmanager:region:account:secret:riftfound/database-*"
-       }
-     ]
-   }
-   ```
-
-## Deployment Steps
-
-### 1. Database (RDS)
-
-```bash
-# Create RDS instance (example using AWS CLI)
-aws rds create-db-instance \
-  --db-instance-identifier riftfound-db \
-  --db-instance-class db.t3.micro \
-  --engine postgres \
-  --engine-version 16 \
-  --master-username riftfound_admin \
-  --master-user-password <your-password> \
-  --allocated-storage 20 \
-  --vpc-security-group-ids sg-xxxxx \
-  --db-subnet-group-name your-subnet-group
-
-# Run migrations (connect via bastion or VPN)
-psql -h <rds-endpoint> -U riftfound_admin -d postgres -f infrastructure/init.sql
+EC2 Instance (t3.small)
+├── Backend API (Express.js on port 3001)
+├── Scraper (runs every 60min via PM2)
+└── SQLite database on EBS volume
 ```
 
-### 2. Backend API (Lambda)
+**Why this architecture?**
+- Simple and cost-effective (~$20-25/month)
+- SQLite on EBS is sufficient for read-heavy workload
+- No need for RDS/managed database
+- No need for containers or Lambda complexity
+
+## Components
+
+| Component | Service | Notes |
+|-----------|---------|-------|
+| Frontend | S3 + CloudFront | React SPA, HTTPS via ACM certificate |
+| Backend | EC2 t3.small | Express.js API on port 3001 |
+| Scraper | EC2 (same instance) | PM2-managed, distributes requests across 60min cycle |
+| Database | SQLite on EBS | 20GB gp3 volume, persists across restarts |
+| SSL | ACM + CloudFront | Free SSL certificate for custom domain |
+
+## Deployment
+
+### Prerequisites
+
+1. AWS account with admin access
+2. AWS CLI configured (`aws configure`)
+3. Terraform installed
+4. SSH key pair created in AWS Console
+
+### Initial Setup
 
 ```bash
-# Build
-cd backend
-npm run build
+cd infrastructure/terraform
 
-# Package (zip dist folder with node_modules)
-zip -r backend.zip dist node_modules package.json
+# Create config
+cp terraform.tfvars.example terraform.tfvars
+# Edit with your values:
+# - domain_name
+# - ssh_key_name
+# - allowed_ssh_cidr (your IP)
 
-# Deploy to Lambda
-aws lambda create-function \
-  --function-name riftfound-api \
-  --runtime nodejs20.x \
-  --handler dist/index.handler \
-  --zip-file fileb://backend.zip \
-  --role arn:aws:iam::account:role/riftfound-lambda-role \
-  --environment Variables="{AWS_SECRETS_DB_ARN=arn:aws:secretsmanager:...}"
+# Deploy infrastructure
+terraform init
+terraform apply
 ```
 
-### 3. Scraper (Lambda with Schedule)
+### DNS Setup (GoDaddy)
+
+After Terraform completes:
+
+1. Add ACM validation CNAME records (shown in Terraform output)
+2. Wait for certificate to validate (~5-30 minutes)
+3. Run `terraform apply` again to create CloudFront
+4. Add CNAME: `www` → `<cloudfront-domain>.cloudfront.net`
+
+### Application Deployment
+
+From project root:
 
 ```bash
-# Build
-cd scraper
-npm run build
+# First time: create deploy.env
+cp deploy.env.example deploy.env
+# Edit with values from Terraform output
 
-# Package
-zip -r scraper.zip dist node_modules package.json
-
-# Deploy to Lambda
-aws lambda create-function \
-  --function-name riftfound-scraper \
-  --runtime nodejs20.x \
-  --handler dist/index.handler \
-  --zip-file fileb://scraper.zip \
-  --role arn:aws:iam::account:role/riftfound-lambda-role \
-  --timeout 300 \
-  --environment Variables="{AWS_SECRETS_DB_ARN=arn:aws:secretsmanager:...}"
-
-# Create EventBridge rule for hourly execution
-aws events put-rule \
-  --name riftfound-scraper-schedule \
-  --schedule-expression "rate(1 hour)"
-
-aws events put-targets \
-  --rule riftfound-scraper-schedule \
-  --targets "Id=scraper,Arn=arn:aws:lambda:region:account:function:riftfound-scraper"
+# Deploy
+./deploy.sh all
 ```
 
-### 4. Frontend (S3 + CloudFront)
+## Server Management
+
+### SSH Access
 
 ```bash
-# Build
-cd frontend
-npm run build
-
-# Create S3 bucket
-aws s3 mb s3://riftfound-frontend
-
-# Upload build
-aws s3 sync dist/ s3://riftfound-frontend --delete
-
-# Create CloudFront distribution pointing to S3
-# (Use AWS Console or CloudFormation for easier configuration)
+ssh -i ~/.ssh/riftfound.pem ec2-user@<EC2_IP>
 ```
 
-### 5. Photon Geocoding Service (ECS Fargate)
-
-Photon is a self-hosted OSM geocoder. It requires ~70GB storage for worldwide data.
+### PM2 Commands
 
 ```bash
-# Create ECS cluster
-aws ecs create-cluster --cluster-name riftfound-cluster
-
-# Create task definition (photon-task.json):
-{
-  "family": "riftfound-photon",
-  "networkMode": "awsvpc",
-  "requiresCompatibilities": ["FARGATE"],
-  "cpu": "1024",
-  "memory": "2048",
-  "containerDefinitions": [
-    {
-      "name": "photon",
-      "image": "ghcr.io/komoot/photon:latest",
-      "portMappings": [
-        {
-          "containerPort": 2322,
-          "protocol": "tcp"
-        }
-      ],
-      "mountPoints": [
-        {
-          "sourceVolume": "photon-data",
-          "containerPath": "/photon/photon_data"
-        }
-      ]
-    }
-  ],
-  "volumes": [
-    {
-      "name": "photon-data",
-      "efsVolumeConfiguration": {
-        "fileSystemId": "fs-xxxxx"
-      }
-    }
-  ]
-}
-
-# Register task definition
-aws ecs register-task-definition --cli-input-json file://photon-task.json
-
-# Create service
-aws ecs create-service \
-  --cluster riftfound-cluster \
-  --service-name photon \
-  --task-definition riftfound-photon \
-  --desired-count 1 \
-  --launch-type FARGATE \
-  --network-configuration "awsvpcConfiguration={subnets=[subnet-xxx],securityGroups=[sg-xxx]}"
+pm2 status           # Check service status
+pm2 logs             # View logs
+pm2 logs --lines 50  # Last 50 lines
+pm2 restart all      # Restart services
+pm2 stop all         # Stop services
 ```
 
-**Note**: Photon requires EFS for persistent storage of OSM data (~70GB). First run will download the data automatically.
+### Database Location
 
-## Infrastructure as Code
+SQLite database is stored at `/data/riftfound.db` on the EBS volume. This persists across EC2 restarts and can be backed up:
 
-For production deployments, consider using:
-- **AWS CDK** (TypeScript) - add to `/infrastructure/cdk/`
-- **Terraform** - add to `/infrastructure/terraform/`
-- **CloudFormation** - add to `/infrastructure/cloudformation/`
+```bash
+# On EC2 instance
+sqlite3 /data/riftfound.db ".backup /tmp/backup.db"
+```
 
-These tools let you version control your infrastructure without exposing secrets,
-as secrets are referenced by ARN rather than stored in code.
+## Updating
 
-## Environment Variables Reference
+### Code Updates
 
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `AWS_SECRETS_DB_ARN` | Production | ARN of the Secrets Manager secret |
-| `AWS_REGION` | Production | AWS region (default: us-east-1) |
-| `NODE_ENV` | Yes | `development` or `production` |
-| `FRONTEND_URL` | Yes | Frontend URL for CORS |
-| `RIFTBOUND_EVENTS_URL` | Yes | Source URL to scrape |
+```bash
+./deploy.sh frontend   # React app changes
+./deploy.sh backend    # Backend/scraper changes
+./deploy.sh all        # Both
+```
+
+### Infrastructure Updates
+
+```bash
+cd infrastructure/terraform
+terraform plan         # Preview changes
+terraform apply        # Apply changes
+```
+
+## Costs
+
+| Resource | Monthly Cost |
+|----------|-------------|
+| EC2 t3.small | ~$15 |
+| EBS 30GB (root) | ~$3 |
+| EBS 20GB (data) | ~$2 |
+| S3 + CloudFront | ~$1-2 |
+| Elastic IP | Free |
+| **Total** | **~$20-25** |
+
+## Troubleshooting
+
+### Services not running
+```bash
+ssh -i ~/.ssh/riftfound.pem ec2-user@<IP>
+pm2 status
+pm2 logs --err
+```
+
+### API returns 502
+- Check backend is running: `pm2 status`
+- Check logs: `pm2 logs riftfound-backend`
+- Verify port 3001 is accessible: `curl localhost:3001/api/events/info`
+
+### CloudFront returns 403
+- Ensure frontend was deployed: `./deploy.sh frontend`
+- Check S3 bucket has files: `aws s3 ls s3://<bucket-name>`
+
+### Database issues
+```bash
+ssh -i ~/.ssh/riftfound.pem ec2-user@<IP>
+sqlite3 /data/riftfound.db "SELECT COUNT(*) FROM events;"
+```

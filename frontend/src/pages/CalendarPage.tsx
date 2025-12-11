@@ -1,5 +1,4 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
-import { useNavigate } from 'react-router-dom';
 import FullCalendar from '@fullcalendar/react';
 import dayGridPlugin from '@fullcalendar/daygrid';
 import type { EventClickArg, EventHoveringArg, DatesSetArg } from '@fullcalendar/core';
@@ -79,7 +78,6 @@ function formatEventTitle(event: Event): string {
 }
 
 function CalendarPage() {
-  const navigate = useNavigate();
   const [events, setEvents] = useState<Event[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -227,13 +225,16 @@ function CalendarPage() {
 
   return (
     <div className="calendar-page">
-      <EventFilters
-        filters={stagedFilters}
-        appliedFilters={appliedFilters}
-        onFiltersChange={setStagedFilters}
-        onSearch={handleSearch}
-        availableFormats={AVAILABLE_FORMATS}
-      />
+      <div className="page-header">
+        <img src="/logo.png" alt="Riftfound" className="site-logo" />
+        <EventFilters
+          filters={stagedFilters}
+          appliedFilters={appliedFilters}
+          onFiltersChange={setStagedFilters}
+          onSearch={handleSearch}
+          availableFormats={AVAILABLE_FORMATS}
+        />
+      </div>
 
       {error && (
         <div className="error-banner">
@@ -271,9 +272,11 @@ function CalendarPage() {
           height="auto"
           eventDisplay="block"
           displayEventTime={false}
-          eventOrder={(a, b) => {
-            const aType = (a.extendedProps?.event as Event)?.eventType || 'Other';
-            const bType = (b.extendedProps?.event as Event)?.eventType || 'Other';
+          eventOrder={(a: unknown, b: unknown) => {
+            const aEvent = (a as { extendedProps?: { event?: Event } })?.extendedProps?.event;
+            const bEvent = (b as { extendedProps?: { event?: Event } })?.extendedProps?.event;
+            const aType = aEvent?.eventType || 'Other';
+            const bType = bEvent?.eventType || 'Other';
             const aPriority = EVENT_TYPE_PRIORITY[aType] ?? 99;
             const bPriority = EVENT_TYPE_PRIORITY[bType] ?? 99;
             return aPriority - bPriority;

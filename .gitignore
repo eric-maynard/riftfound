@@ -17,6 +17,7 @@ build/
 .env.*.local
 .env.production
 .env.development
+deploy.env
 
 # AWS credentials and secrets
 .aws/

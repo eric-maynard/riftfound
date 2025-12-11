@@ -39,3 +39,50 @@ riftfound/
 Key vars (see `.env.example` for full list):
 - `DB_TYPE`: `sqlite` or `postgres`
 - `SCRAPE_INTERVAL_MINUTES`: How often scraper cycles (default: 60). Requests are distributed evenly across the cycle.
+
+## Deployment
+
+Production runs on AWS: S3/CloudFront for frontend, EC2 with EBS-backed SQLite for backend.
+
+### Setup (first time)
+
+```bash
+cp deploy.env.example deploy.env
+# Edit deploy.env with your AWS values
+```
+
+### Deploy Commands
+
+```bash
+./deploy.sh frontend   # Build React app, upload to S3, invalidate CloudFront
+./deploy.sh backend    # Package and deploy backend/scraper to EC2
+./deploy.sh all        # Deploy everything
+```
+
+### Manual Server Access
+
+```bash
+# SSH to server (values from deploy.env)
+ssh -i ~/.ssh/riftfound.pem ec2-user@34.210.147.185
+
+# Check service status
+pm2 status
+
+# View logs
+pm2 logs
+
+# Restart services
+pm2 restart all
+```
+
+### Infrastructure
+
+Terraform config in `infrastructure/terraform/`. To modify infrastructure:
+
+```bash
+cd infrastructure/terraform
+cp terraform.tfvars.example terraform.tfvars
+# Edit terraform.tfvars
+terraform plan
+terraform apply
+```
