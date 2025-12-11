@@ -804,10 +804,12 @@ select:disabled {
     text-align: center;
   }
 
-  /* Full width calendar wrapper */
+  /* Full width calendar wrapper - no padding on mobile */
   .fc-wrapper {
-    padding: 0.5rem;
-    border-radius: 0.25rem;
+    padding: 0;
+    border-radius: 0;
+    border-left: none;
+    border-right: none;
   }
 
   /* Smaller day cell height on mobile */
