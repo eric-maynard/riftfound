@@ -652,6 +652,7 @@ select:disabled {
   transform: none !important;
   max-width: 90vw;
   width: 320px;
+  pointer-events: auto;
 }
 
 /* Visit link in mobile tooltip */
