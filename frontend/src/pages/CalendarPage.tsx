@@ -90,10 +90,44 @@ function useIsMobile() {
   return useState(() => isMobileOrTablet())[0];
 }
 
+// localStorage key for settings
+const SETTINGS_KEY = 'riftfound_settings';
+
+interface Settings {
+  weekStartsOnMonday: boolean;
+}
+
+const DEFAULT_SETTINGS: Settings = {
+  weekStartsOnMonday: false,
+};
+
+function loadSettings(): Settings {
+  try {
+    const stored = localStorage.getItem(SETTINGS_KEY);
+    if (stored) {
+      return { ...DEFAULT_SETTINGS, ...JSON.parse(stored) };
+    }
+  } catch {
+    // Ignore parse errors
+  }
+  return DEFAULT_SETTINGS;
+}
+
+function saveSettings(settings: Settings): void {
+  try {
+    localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+  } catch {
+    // Ignore storage errors
+  }
+}
+
 function CalendarPage() {
   const [events, setEvents] = useState<Event[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [settings, setSettings] = useState<Settings>(loadSettings);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const settingsRef = useRef<HTMLDivElement>(null);
 
   // Staged filters (what user is editing)
   const [stagedFilters, setStagedFilters] = useState<Filters>({
@@ -190,6 +224,29 @@ function CalendarPage() {
 
     fetchEvents();
   }, [searchTrigger, appliedFilters]);
+
+  // Close settings popover when clicking outside
+  useEffect(() => {
+    if (!settingsOpen) return;
+
+    const handleClickOutside = (e: MouseEvent) => {
+      if (settingsRef.current && !settingsRef.current.contains(e.target as Node)) {
+        setSettingsOpen(false);
+      }
+    };
+
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [settingsOpen]);
+
+  // Toggle week start setting
+  const handleToggleWeekStart = useCallback(() => {
+    setSettings(prev => {
+      const updated = { ...prev, weekStartsOnMonday: !prev.weekStartsOnMonday };
+      saveSettings(updated);
+      return updated;
+    });
+  }, []);
 
   // Handle search button click
   // Accepts optional filters to apply directly (avoids race condition when geocoding)
@@ -343,6 +400,33 @@ function CalendarPage() {
           </div>
         )}
 
+        <div className="settings-container" ref={settingsRef}>
+          <button
+            className="settings-button"
+            onClick={() => setSettingsOpen(prev => !prev)}
+            aria-label="Settings"
+            title="Settings"
+          >
+            <svg width="18" height="18" viewBox="0 0 20 20" fill="currentColor">
+              <path fillRule="evenodd" d="M11.49 3.17c-.38-1.56-2.6-1.56-2.98 0a1.532 1.532 0 01-2.286.948c-1.372-.836-2.942.734-2.106 2.106.54.886.061 2.042-.947 2.287-1.561.379-1.561 2.6 0 2.978a1.532 1.532 0 01.947 2.287c-.836 1.372.734 2.942 2.106 2.106a1.532 1.532 0 012.287.947c.379 1.561 2.6 1.561 2.978 0a1.533 1.533 0 012.287-.947c1.372.836 2.942-.734 2.106-2.106a1.533 1.533 0 01.947-2.287c1.561-.379 1.561-2.6 0-2.978a1.532 1.532 0 01-.947-2.287c.836-1.372-.734-2.942-2.106-2.106a1.532 1.532 0 01-2.287-.947zM10 13a3 3 0 100-6 3 3 0 000 6z" clipRule="evenodd" />
+            </svg>
+          </button>
+          {settingsOpen && (
+            <div className="settings-popover">
+              <div className="settings-header">Settings</div>
+              <label className="settings-option">
+                <span>Week starts on Monday</span>
+                <input
+                  type="checkbox"
+                  checked={settings.weekStartsOnMonday}
+                  onChange={handleToggleWeekStart}
+                />
+                <span className="toggle-switch" />
+              </label>
+            </div>
+          )}
+        </div>
+
         <FullCalendar
           ref={calendarRef}
           plugins={[dayGridPlugin, interactionPlugin]}
@@ -358,6 +442,7 @@ function CalendarPage() {
             end: maxDate,
           }}
           fixedWeekCount={false}
+          firstDay={settings.weekStartsOnMonday ? 1 : 0}
           dayMaxEventRows={3}
           moreLinkContent={(arg) => isMobile ? `+${arg.num}` : `+${arg.num} more`}
           moreLinkClick={handleMoreLinkClick}
