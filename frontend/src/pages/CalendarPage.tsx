@@ -263,14 +263,15 @@ function CalendarPage() {
   }, [isMobile, getEventsForDate]);
 
   // Handle "+more" link click - use our custom modal instead of FullCalendar's popover
-  const handleMoreLinkClick = useCallback((info: MoreLinkArg) => {
-    if (!isMobile) return; // On desktop, let FullCalendar handle it with default popover
+  const handleMoreLinkClick = useCallback((info: MoreLinkArg): string => {
+    if (!isMobile) return 'popover'; // On desktop, use FullCalendar's default popover
     // Extract our Event objects from FullCalendar's event segments
     const dayEvents = info.allSegs.map(seg => seg.event.extendedProps.event as Event);
     if (dayEvents.length > 0) {
       setDayEventsModal({ date: info.date, events: dayEvents });
     }
-    // Return nothing to prevent FullCalendar's default popover
+    // Return 'none' to prevent FullCalendar's default popover on mobile
+    return 'none';
   }, [isMobile]);
 
   const handleDayEventsClose = useCallback(() => {
