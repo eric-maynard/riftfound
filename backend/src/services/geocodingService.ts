@@ -68,6 +68,9 @@ interface PhotonResponse {
 // Public Photon API as fallback for non-US queries
 const PUBLIC_PHOTON_URL = 'https://photon.komoot.io';
 
+// Detect US ZIP codes (5 digits, optionally with 4-digit extension)
+const US_ZIP_REGEX = /^\d{5}(-\d{4})?$/;
+
 // Elasticsearch URL for indexing (Photon uses ES internally on port 9200)
 // Derived from PHOTON_URL by replacing port 2322 with 9200
 function getElasticsearchUrl(): string {
@@ -246,7 +249,13 @@ export async function geocodeCity(query: string): Promise<GeocodeResult | null> 
     return cached;
   }
 
-  const data = await callPhotonWithFallback(query, 1);
+  const trimmedQuery = query.trim();
+
+  // If query looks like a ZIP code, search specifically for postcodes
+  const isZipCode = US_ZIP_REGEX.test(trimmedQuery);
+  const osmTag = isZipCode ? 'place:postcode' : undefined;
+
+  const data = await callPhotonWithFallback(trimmedQuery, 1, osmTag);
 
   if (data.features.length === 0) {
     return null;
@@ -279,10 +288,16 @@ export async function geocodeSuggestions(query: string, limit = 5): Promise<Geoc
     return [];
   }
 
+  const trimmedQuery = query.trim();
+
+  // If query looks like a ZIP code, search specifically for postcodes
+  const isZipCode = US_ZIP_REGEX.test(trimmedQuery);
+  const osmTag = isZipCode ? 'place:postcode' : 'place';
+
   // Only use local Photon - no public fallback for suggestions
   let data: PhotonResponse;
   try {
-    data = await callPhotonApi(env.PHOTON_URL, query, limit, 'place');
+    data = await callPhotonApi(env.PHOTON_URL, trimmedQuery, limit, osmTag);
   } catch {
     // Local Photon failed, return empty (no suggestions)
     return [];
