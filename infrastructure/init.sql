@@ -6,7 +6,8 @@ CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 -- Shops dimension table (stores/organizers with geocoded locations)
 CREATE TABLE IF NOT EXISTS shops (
     id SERIAL PRIMARY KEY,
-    name VARCHAR(500) UNIQUE NOT NULL,
+    external_id INTEGER UNIQUE NOT NULL,
+    name VARCHAR(500) NOT NULL,
     location_text VARCHAR(500),
     latitude DECIMAL(10, 8),
     longitude DECIMAL(11, 8),
@@ -16,6 +17,7 @@ CREATE TABLE IF NOT EXISTS shops (
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
+CREATE INDEX IF NOT EXISTS idx_shops_external_id ON shops(external_id);
 CREATE INDEX IF NOT EXISTS idx_shops_name ON shops(name);
 CREATE INDEX IF NOT EXISTS idx_shops_geocode_status ON shops(geocode_status);
 CREATE INDEX IF NOT EXISTS idx_shops_lat_lng ON shops(latitude, longitude);

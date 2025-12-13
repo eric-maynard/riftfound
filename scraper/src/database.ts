@@ -43,7 +43,8 @@ function initSqliteSchema(db: Database.Database) {
   db.exec(`
     CREATE TABLE IF NOT EXISTS shops (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      name TEXT UNIQUE NOT NULL,
+      external_id INTEGER UNIQUE NOT NULL,
+      name TEXT NOT NULL,
       location_text TEXT,
       latitude REAL,
       longitude REAL,
@@ -53,6 +54,7 @@ function initSqliteSchema(db: Database.Database) {
       updated_at TEXT DEFAULT (datetime('now'))
     );
 
+    CREATE INDEX IF NOT EXISTS idx_shops_external_id ON shops(external_id);
     CREATE INDEX IF NOT EXISTS idx_shops_name ON shops(name);
     CREATE INDEX IF NOT EXISTS idx_shops_geocode_status ON shops(geocode_status);
     CREATE INDEX IF NOT EXISTS idx_shops_lat_lng ON shops(latitude, longitude);
@@ -135,6 +137,43 @@ function initSqliteSchema(db: Database.Database) {
   try {
     db.exec(`ALTER TABLE events ADD COLUMN shop_id INTEGER REFERENCES shops(id)`);
   } catch { /* column exists */ }
+
+  // Migration: Add external_id to shops table if it doesn't exist
+  // Check if external_id column exists
+  const shopColumns = db.prepare(`PRAGMA table_info(shops)`).all() as Array<{ name: string }>;
+  const hasExternalId = shopColumns.some(col => col.name === 'external_id');
+
+  if (!hasExternalId) {
+    console.log('Migrating shops table: adding external_id column...');
+    // Old shops don't have external_id, so we need to rebuild the table
+    // Clear shop_id references from events first, then clear shops
+    // The next scrape will repopulate with correct external_ids
+    db.exec(`
+      UPDATE events SET shop_id = NULL;
+      DELETE FROM shops;
+    `);
+    // Now recreate the table with external_id
+    db.exec(`
+      DROP TABLE shops;
+      CREATE TABLE shops (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        external_id INTEGER UNIQUE NOT NULL,
+        name TEXT NOT NULL,
+        location_text TEXT,
+        latitude REAL,
+        longitude REAL,
+        geocode_status TEXT DEFAULT 'pending',
+        geocode_error TEXT,
+        created_at TEXT DEFAULT (datetime('now')),
+        updated_at TEXT DEFAULT (datetime('now'))
+      );
+      CREATE INDEX idx_shops_external_id ON shops(external_id);
+      CREATE INDEX idx_shops_name ON shops(name);
+      CREATE INDEX idx_shops_geocode_status ON shops(geocode_status);
+      CREATE INDEX idx_shops_lat_lng ON shops(latitude, longitude);
+    `);
+    console.log('Shops table migrated. Shops will be repopulated on next scrape.');
+  }
 }
 
 // PostgreSQL implementation
@@ -229,6 +268,7 @@ export async function failScrapeRun(runId: string, errorMessage: string): Promis
 // Shop interface for geocoding queue
 export interface Shop {
   id: number;
+  externalId: number;
   name: string;
   locationText: string | null;
   latitude: number | null;
@@ -251,84 +291,50 @@ export interface StoreInfo {
   email: string | null;
 }
 
-// Upsert a shop and return its id
-async function upsertShop(name: string, locationText: string | null): Promise<number> {
-  if (useSqlite()) {
-    const db = getSqliteDb();
-
-    // Check if exists
-    const existing = db.prepare('SELECT id FROM shops WHERE name = ?').get(name) as { id: number } | undefined;
-
-    if (existing) {
-      // Update location_text if we have a better one
-      if (locationText) {
-        db.prepare(`
-          UPDATE shops SET location_text = ?, updated_at = datetime('now')
-          WHERE name = ? AND (location_text IS NULL OR location_text = '')
-        `).run(locationText, name);
-      }
-      return existing.id;
-    } else {
-      const result = db.prepare(`
-        INSERT INTO shops (name, location_text) VALUES (?, ?)
-      `).run(name, locationText);
-      return result.lastInsertRowid as number;
-    }
-  } else {
-    const pool = getPgPool();
-    const result = await pool.query(
-      `INSERT INTO shops (name, location_text)
-       VALUES ($1, $2)
-       ON CONFLICT (name) DO UPDATE SET
-         location_text = COALESCE(NULLIF(shops.location_text, ''), EXCLUDED.location_text),
-         updated_at = NOW()
-       RETURNING id`,
-      [name, locationText]
-    );
-    return result.rows[0].id;
-  }
-}
 
 // Upsert a shop with full info from API (includes coordinates)
+// Uses external_id (API store ID) as unique identifier to handle stores with same name in different locations
 export async function upsertShopFromApi(store: StoreInfo): Promise<number> {
   if (useSqlite()) {
     const db = getSqliteDb();
 
-    // Check if exists
-    const existing = db.prepare('SELECT id FROM shops WHERE name = ?').get(store.name) as { id: number } | undefined;
+    // Check if exists by external_id (API store ID)
+    const existing = db.prepare('SELECT id FROM shops WHERE external_id = ?').get(store.id) as { id: number } | undefined;
 
     if (existing) {
       // Update with API data (always has better info)
       db.prepare(`
         UPDATE shops SET
+          name = ?,
           location_text = ?,
           latitude = ?,
           longitude = ?,
           geocode_status = 'completed',
           updated_at = datetime('now')
         WHERE id = ?
-      `).run(store.full_address, store.latitude, store.longitude, existing.id);
+      `).run(store.name, store.full_address, store.latitude, store.longitude, existing.id);
       return existing.id;
     } else {
       const result = db.prepare(`
-        INSERT INTO shops (name, location_text, latitude, longitude, geocode_status)
-        VALUES (?, ?, ?, ?, 'completed')
-      `).run(store.name, store.full_address, store.latitude, store.longitude);
+        INSERT INTO shops (external_id, name, location_text, latitude, longitude, geocode_status)
+        VALUES (?, ?, ?, ?, ?, 'completed')
+      `).run(store.id, store.name, store.full_address, store.latitude, store.longitude);
       return result.lastInsertRowid as number;
     }
   } else {
     const pool = getPgPool();
     const result = await pool.query(
-      `INSERT INTO shops (name, location_text, latitude, longitude, geocode_status)
-       VALUES ($1, $2, $3, $4, 'completed')
-       ON CONFLICT (name) DO UPDATE SET
+      `INSERT INTO shops (external_id, name, location_text, latitude, longitude, geocode_status)
+       VALUES ($1, $2, $3, $4, $5, 'completed')
+       ON CONFLICT (external_id) DO UPDATE SET
+         name = EXCLUDED.name,
          location_text = EXCLUDED.location_text,
          latitude = EXCLUDED.latitude,
          longitude = EXCLUDED.longitude,
          geocode_status = 'completed',
          updated_at = NOW()
        RETURNING id`,
-      [store.name, store.full_address, store.latitude, store.longitude]
+      [store.id, store.name, store.full_address, store.latitude, store.longitude]
     );
     return result.rows[0].id;
   }
@@ -346,15 +352,6 @@ export async function upsertEventWithStore(
   }
 
   // Then upsert the event with the shop reference
-  return upsertEventInternal(event, shopId);
-}
-
-export async function upsertEvent(event: ScrapedEvent): Promise<{ created: boolean }> {
-  // First, upsert the shop if we have an organizer
-  let shopId: number | null = null;
-  if (event.organizer) {
-    shopId = await upsertShop(event.organizer, event.location ?? null);
-  }
   return upsertEventInternal(event, shopId);
 }
 
@@ -440,11 +437,12 @@ export function getShopsToGeocode(): Shop[] {
   if (useSqlite()) {
     const db = getSqliteDb();
     const rows = db.prepare(`
-      SELECT id, name, location_text, latitude, longitude, geocode_status, geocode_error
+      SELECT id, external_id, name, location_text, latitude, longitude, geocode_status, geocode_error
       FROM shops
       WHERE geocode_status = 'pending' AND location_text IS NOT NULL AND location_text != ''
     `).all() as Array<{
       id: number;
+      external_id: number;
       name: string;
       location_text: string | null;
       latitude: number | null;
@@ -455,6 +453,7 @@ export function getShopsToGeocode(): Shop[] {
 
     return rows.map(row => ({
       id: row.id,
+      externalId: row.external_id,
       name: row.name,
       locationText: row.location_text,
       latitude: row.latitude,
