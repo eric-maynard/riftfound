@@ -132,7 +132,7 @@ function EventFiltersComponent({ filters, appliedFilters, onFiltersChange, onSea
       // Allow Enter to trigger search when no suggestions showing
       if (e.key === 'Enter' && canSearch) {
         e.preventDefault();
-        onSearch();
+        handleSearchClick();
       }
       return;
     }
@@ -150,6 +150,12 @@ function EventFiltersComponent({ filters, appliedFilters, onFiltersChange, onSea
         e.preventDefault();
         if (selectedIndex >= 0 && selectedIndex < suggestions.length) {
           handleSelectSuggestion(suggestions[selectedIndex]);
+        } else {
+          // No suggestion selected, trigger search with geocoding
+          if (canSearch) {
+            setShowSuggestions(false);
+            handleSearchClick();
+          }
         }
         break;
       case 'Escape':
