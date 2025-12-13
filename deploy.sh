@@ -32,13 +32,22 @@ deploy_frontend() {
     cd "$SCRIPT_DIR/frontend"
     npm run build
 
-    echo "==> Uploading to S3..."
-    aws s3 sync dist "s3://$S3_BUCKET" --delete --region "$AWS_REGION"
+    echo "==> Uploading hashed assets (cached 1 year)..."
+    aws s3 sync dist "s3://$S3_BUCKET" \
+        --delete \
+        --region "$AWS_REGION" \
+        --exclude "index.html" \
+        --cache-control "public, max-age=31536000, immutable"
 
-    echo "==> Invalidating CloudFront cache..."
+    echo "==> Uploading index.html (no cache)..."
+    aws s3 cp dist/index.html "s3://$S3_BUCKET/index.html" \
+        --region "$AWS_REGION" \
+        --cache-control "no-cache, no-store, must-revalidate"
+
+    echo "==> Invalidating CloudFront cache for index.html..."
     aws cloudfront create-invalidation \
         --distribution-id "$CLOUDFRONT_DISTRIBUTION_ID" \
-        --paths "/*" \
+        --paths "/index.html" "/" \
         --region "$AWS_REGION" > /dev/null
 
     echo "==> Frontend deployed!"
