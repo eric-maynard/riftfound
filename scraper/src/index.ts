@@ -7,13 +7,64 @@ import {
   updateShopDisplayCity,
   deleteOldEvents,
   UpsertShopResult,
+  getPhotonQueue,
+  clearPhotonQueue,
 } from './database.js';
 import { fetchEventsPage, getEventCount } from './api.js';
 import { env } from './config.js';
 import { reverseGeocodeCity } from './geocoding.js';
+import { execSync } from 'child_process';
 
 function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+/**
+ * Process the Photon queue - imports queued cities to Photon via docker exec.
+ * Runs at the start of each scrape cycle.
+ */
+async function processPhotonQueue(): Promise<void> {
+  const queue = getPhotonQueue();
+
+  if (queue.length === 0) {
+    return;
+  }
+
+  console.log(`\nProcessing Photon queue: ${queue.length} cities to import...`);
+
+  let imported = 0;
+  const importedIds: number[] = [];
+
+  for (const item of queue) {
+    try {
+      const doc = JSON.parse(item.photonData);
+
+      // Escape single quotes in JSON for shell
+      const jsonEscaped = item.photonData.replace(/'/g, "'\\''");
+
+      // Import to Photon via docker exec
+      const cmd = `docker exec photon curl -s -X PUT "http://localhost:9200/photon/place/${doc.osm_id}" ` +
+                  `-H "Content-Type: application/json" -d '${jsonEscaped}'`;
+
+      execSync(cmd, { encoding: 'utf8', stdio: 'pipe' });
+
+      imported++;
+      importedIds.push(item.id);
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      console.error(`Failed to import city (queue id ${item.id}):`, errorMsg);
+      // Continue processing remaining items
+    }
+  }
+
+  // Clear successfully imported items from queue
+  if (importedIds.length > 0) {
+    clearPhotonQueue(importedIds);
+  }
+
+  if (imported > 0) {
+    console.log(`Imported ${imported}/${queue.length} cities to Photon\n`);
+  }
 }
 
 /**
@@ -26,6 +77,9 @@ function sleep(ms: number): Promise<void> {
  */
 async function runDistributedScrape(): Promise<{ found: number; created: number }> {
   console.log('Starting distributed scrape run...');
+
+  // Process any queued Photon imports from previous searches/scrapes
+  await processPhotonQueue();
 
   // Get total count and pages needed
   const { total: totalExpected, pageCount } = await getEventCount();
@@ -186,7 +240,8 @@ async function main() {
         console.log(`Cycle took longer than interval, starting next immediately...`);
       }
     } catch (error) {
-      console.error('Scrape error, retrying in 5 minutes...');
+      console.error('Scrape error:', error);
+      console.error('Retrying in 5 minutes...');
       await sleep(5 * 60 * 1000);
     }
   }

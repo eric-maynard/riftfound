@@ -88,3 +88,13 @@ CREATE TABLE IF NOT EXISTS scrape_runs (
 );
 
 CREATE INDEX IF NOT EXISTS idx_scrape_runs_started_at ON scrape_runs(started_at DESC);
+
+-- Photon queue for batch import of cities to local Photon geocoder
+CREATE TABLE IF NOT EXISTS photon_queue (
+    id SERIAL PRIMARY KEY,
+    osm_id INTEGER UNIQUE NOT NULL,
+    photon_data JSONB NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_photon_queue_created_at ON photon_queue(created_at);

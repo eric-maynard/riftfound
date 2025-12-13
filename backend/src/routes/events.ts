@@ -1,7 +1,7 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { EventQuerySchema } from '../models/event.js';
 import * as eventService from '../services/eventService.js';
-import { geocodeCity, geocodeSuggestions } from '../services/geocodingService.js';
+import { geocodeCity, geocodeSuggestions, reverseGeocode } from '../services/geocodingService.js';
 import { geocodeLimiter } from '../middleware/rateLimit.js';
 
 const router = Router();
@@ -91,6 +91,36 @@ router.get('/geocode/suggest', geocodeLimiter, async (req: Request, res: Respons
 
     const suggestions = await geocodeSuggestions(query);
     res.json({ data: suggestions });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// GET /api/events/geocode/reverse - Reverse geocode coordinates to location name
+router.get('/geocode/reverse', geocodeLimiter, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const lat = parseFloat(req.query.lat as string);
+    const lon = parseFloat(req.query.lon as string);
+
+    if (isNaN(lat) || isNaN(lon)) {
+      res.status(400).json({ error: 'Query parameters "lat" and "lon" are required and must be valid numbers' });
+      return;
+    }
+
+    const result = await reverseGeocode(lat, lon);
+
+    if (!result) {
+      res.status(404).json({ error: 'Location not found' });
+      return;
+    }
+
+    res.json({
+      data: {
+        latitude: result.latitude,
+        longitude: result.longitude,
+        displayName: result.displayName,
+      },
+    });
   } catch (error) {
     next(error);
   }

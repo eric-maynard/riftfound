@@ -78,3 +78,59 @@ export async function testConnection(): Promise<boolean> {
     return false;
   }
 }
+
+// Photon queue for batch import
+export interface PhotonQueueItem {
+  id: number;
+  osmId: number;
+  photonData: string;
+  createdAt: string;
+}
+
+export function addToPhotonQueue(osmId: number, photonData: object): void {
+  if (useSqlite()) {
+    const db = getSqliteDb();
+    db.prepare(`
+      INSERT OR IGNORE INTO photon_queue (osm_id, photon_data)
+      VALUES (?, ?)
+    `).run(osmId, JSON.stringify(photonData));
+  } else {
+    throw new Error('addToPhotonQueue not implemented for PostgreSQL yet');
+  }
+}
+
+export function getPhotonQueue(): PhotonQueueItem[] {
+  if (useSqlite()) {
+    const db = getSqliteDb();
+    const rows = db.prepare(`
+      SELECT id, osm_id, photon_data, created_at
+      FROM photon_queue
+      ORDER BY created_at ASC
+    `).all() as Array<{
+      id: number;
+      osm_id: number;
+      photon_data: string;
+      created_at: string;
+    }>;
+
+    return rows.map(row => ({
+      id: row.id,
+      osmId: row.osm_id,
+      photonData: row.photon_data,
+      createdAt: row.created_at,
+    }));
+  } else {
+    throw new Error('getPhotonQueue not implemented for PostgreSQL yet');
+  }
+}
+
+export function clearPhotonQueue(itemIds: number[]): void {
+  if (useSqlite()) {
+    if (itemIds.length === 0) return;
+    const db = getSqliteDb();
+    const placeholders = itemIds.map(() => '?').join(',');
+    db.prepare(`DELETE FROM photon_queue WHERE id IN (${placeholders})`).run(...itemIds);
+  } else {
+    throw new Error('clearPhotonQueue not implemented for PostgreSQL yet');
+  }
+}

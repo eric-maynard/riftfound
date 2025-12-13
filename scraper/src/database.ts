@@ -120,6 +120,15 @@ function initSqliteSchema(db: Database.Database) {
       latitude REAL NOT NULL,
       longitude REAL NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS photon_queue (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      osm_id INTEGER NOT NULL UNIQUE,
+      photon_data TEXT NOT NULL,
+      created_at TEXT DEFAULT (datetime('now'))
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_photon_queue_created_at ON photon_queue(created_at);
   `);
 
   // Add new columns if they don't exist (migrations for existing DBs)
@@ -578,6 +587,67 @@ export async function deleteOldEvents(daysOld = 60): Promise<number> {
       [cutoffIso]
     );
     return result.rowCount || 0;
+  }
+}
+
+// Photon queue management
+export interface PhotonQueueItem {
+  id: number;
+  osmId: number;
+  photonData: string;
+  createdAt: string;
+}
+
+// Add a city to the Photon import queue
+// Uses IGNORE to skip duplicates (same osm_id)
+export function addToPhotonQueue(osmId: number, photonData: object): void {
+  if (useSqlite()) {
+    const db = getSqliteDb();
+    db.prepare(`
+      INSERT OR IGNORE INTO photon_queue (osm_id, photon_data)
+      VALUES (?, ?)
+    `).run(osmId, JSON.stringify(photonData));
+  } else {
+    throw new Error('addToPhotonQueue not implemented for PostgreSQL yet');
+  }
+}
+
+// Get all pending items from the Photon queue
+export function getPhotonQueue(): PhotonQueueItem[] {
+  if (useSqlite()) {
+    const db = getSqliteDb();
+    const rows = db.prepare(`
+      SELECT id, osm_id, photon_data, created_at
+      FROM photon_queue
+      ORDER BY created_at ASC
+    `).all() as Array<{
+      id: number;
+      osm_id: number;
+      photon_data: string;
+      created_at: string;
+    }>;
+
+    return rows.map(row => ({
+      id: row.id,
+      osmId: row.osm_id,
+      photonData: row.photon_data,
+      createdAt: row.created_at,
+    }));
+  } else {
+    throw new Error('getPhotonQueue not implemented for PostgreSQL yet');
+  }
+}
+
+// Clear the Photon queue after successful import
+export function clearPhotonQueue(itemIds: number[]): void {
+  if (useSqlite()) {
+    if (itemIds.length === 0) return;
+
+    const db = getSqliteDb();
+    const placeholders = itemIds.map(() => '?').join(',');
+    db.prepare(`DELETE FROM photon_queue WHERE id IN (${placeholders})`).run(...itemIds);
+  } else {
+    throw new Error('clearPhotonQueue not implemented for PostgreSQL yet');
   }
 }
 

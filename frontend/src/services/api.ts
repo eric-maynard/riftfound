@@ -49,3 +49,7 @@ export async function geocodeCity(query: string): Promise<GeocodeResponse> {
 export async function getLocationSuggestions(query: string): Promise<GeocodeSuggestionsResponse> {
   return fetchApi<GeocodeSuggestionsResponse>(`/events/geocode/suggest?q=${encodeURIComponent(query)}`);
 }
+
+export async function reverseGeocode(lat: number, lon: number): Promise<GeocodeResponse> {
+  return fetchApi<GeocodeResponse>(`/events/geocode/reverse?lat=${lat}&lon=${lon}`);
+}

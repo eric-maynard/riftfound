@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { getLocationSuggestions, geocodeCity } from '../services/api';
+import { getLocationSuggestions, geocodeCity, reverseGeocode } from '../services/api';
 import type { GeocodeSuggestion } from '../types/event';
 import TypeSelect from './TypeSelect';
 
@@ -175,16 +175,47 @@ function EventFiltersComponent({ filters, appliedFilters, onFiltersChange, onSea
     setError(null);
 
     navigator.geolocation.getCurrentPosition(
-      (position) => {
-        setCityInput('My Location');
-        onFiltersChange({
-          ...filters,
-          location: {
-            lat: position.coords.latitude,
-            lng: position.coords.longitude,
-            displayName: 'My Location',
-          },
-        });
+      async (position) => {
+        const lat = position.coords.latitude;
+        const lng = position.coords.longitude;
+
+        // Try to reverse geocode to get city name
+        try {
+          const response = await reverseGeocode(lat, lng);
+          if (response.data) {
+            setCityInput(response.data.displayName);
+            onFiltersChange({
+              ...filters,
+              location: {
+                lat: response.data.latitude,
+                lng: response.data.longitude,
+                displayName: response.data.displayName,
+              },
+            });
+          } else {
+            // Reverse geocoding failed, use 'My Location' as fallback
+            setCityInput('My Location');
+            onFiltersChange({
+              ...filters,
+              location: {
+                lat,
+                lng,
+                displayName: 'My Location',
+              },
+            });
+          }
+        } catch {
+          // Reverse geocoding failed, use 'My Location' as fallback
+          setCityInput('My Location');
+          onFiltersChange({
+            ...filters,
+            location: {
+              lat,
+              lng,
+              displayName: 'My Location',
+            },
+          });
+        }
         setLoading(false);
       },
       () => {

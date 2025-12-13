@@ -4,6 +4,7 @@
  */
 
 import { env } from './config.js';
+import { addToPhotonQueue } from './database.js';
 
 const PUBLIC_PHOTON_URL = 'https://photon.komoot.io';
 const LOCAL_PHOTON_URL = env.PHOTON_URL || 'http://localhost:2322';
@@ -14,6 +15,7 @@ interface PhotonFeature {
   properties: {
     name?: string;
     city?: string;
+    county?: string;
     state?: string;
     country?: string;
     countrycode?: string;
@@ -44,9 +46,9 @@ async function waitForRateLimit(): Promise<void> {
 export async function reverseGeocodeCity(lat: number, lon: number): Promise<string | null> {
   // Try local Photon first
   try {
-    const localResult = await callReverseGeocode(LOCAL_PHOTON_URL, lat, lon);
-    if (localResult) {
-      return localResult;
+    const localFeature = await callReverseGeocode(LOCAL_PHOTON_URL, lat, lon);
+    if (localFeature) {
+      return formatCityName(localFeature.properties);
     }
   } catch {
     // Local Photon failed or unavailable
@@ -55,11 +57,11 @@ export async function reverseGeocodeCity(lat: number, lon: number): Promise<stri
   // Fall back to public Photon with rate limiting
   try {
     await waitForRateLimit();
-    const publicResult = await callReverseGeocode(PUBLIC_PHOTON_URL, lat, lon);
-    if (publicResult) {
-      // Try to index this location to local Photon for future use
-      await indexToLocalPhoton(lat, lon, publicResult).catch(() => {});
-      return publicResult;
+    const publicFeature = await callReverseGeocode(PUBLIC_PHOTON_URL, lat, lon);
+    if (publicFeature) {
+      // Index city AND county to local Photon for future forward searches
+      await indexFeatureToLocalPhoton(publicFeature).catch(() => {});
+      return formatCityName(publicFeature.properties);
     }
   } catch (error) {
     console.error(`Reverse geocode failed for ${lat},${lon}:`, error);
@@ -68,7 +70,7 @@ export async function reverseGeocodeCity(lat: number, lon: number): Promise<stri
   return null;
 }
 
-async function callReverseGeocode(baseUrl: string, lat: number, lon: number): Promise<string | null> {
+async function callReverseGeocode(baseUrl: string, lat: number, lon: number): Promise<PhotonFeature | null> {
   const url = `${baseUrl}/reverse?lat=${lat}&lon=${lon}`;
 
   const response = await fetch(url, {
@@ -84,10 +86,12 @@ async function callReverseGeocode(baseUrl: string, lat: number, lon: number): Pr
     return null;
   }
 
-  const props = data.features[0].properties;
+  return data.features[0];
+}
 
+function formatCityName(props: PhotonFeature['properties']): string | null {
   // Build city display name
-  // Prefer city, fall back to name (for small towns), then state
+  // Prefer city, fall back to name (for small towns)
   const cityName = props.city || props.name;
   const country = props.country;
   const countrycode = props.countrycode?.toUpperCase();
@@ -96,7 +100,7 @@ async function callReverseGeocode(baseUrl: string, lat: number, lon: number): Pr
     return null;
   }
 
-  // Format: "City, Country" or "City, State" for US
+  // Format: "City, State" for US, "City, Country" for others
   if (countrycode === 'US' && props.state) {
     return `${cityName}, ${props.state}`;
   } else if (country) {
@@ -106,36 +110,53 @@ async function callReverseGeocode(baseUrl: string, lat: number, lon: number): Pr
   return cityName;
 }
 
-async function indexToLocalPhoton(lat: number, lon: number, cityName: string): Promise<void> {
-  // Get Elasticsearch URL from Photon URL
-  const esUrl = LOCAL_PHOTON_URL.replace(':2322', ':9200');
+// Queue a reverse geocode result for batch import to local Photon
+// Queues both the city AND county (if present) so searches for either will work
+async function indexFeatureToLocalPhoton(feature: PhotonFeature): Promise<void> {
+  const props = feature.properties;
+  const [lon, lat] = feature.geometry.coordinates;
 
-  // Create a simple document for this location
-  const doc = {
-    osm_id: Math.floor(Math.random() * 100000000) + 900000000,
-    osm_type: 'N',
-    osm_key: 'place',
-    osm_value: 'city',
-    type: 'city',
-    importance: 0.5,
-    name: { default: cityName },
-    coordinate: { lat, lon },
-    countrycode: '',
-    context: {},
-  };
+  const docsToIndex: Array<{
+    name: string;
+    type: string;
+  }> = [];
 
-  try {
-    const response = await fetch(`${esUrl}/photon/place/${doc.osm_id}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(doc),
-    });
+  // Index the city if present
+  if (props.city) {
+    docsToIndex.push({ name: props.city, type: 'city' });
+  } else if (props.name) {
+    // Small town without city property
+    docsToIndex.push({ name: props.name, type: 'town' });
+  }
 
-    if (!response.ok) {
-      console.error(`Failed to index to local Photon: ${response.status}`);
+  // Also index the county if present (so "essex" searches work)
+  if (props.county) {
+    docsToIndex.push({ name: props.county, type: 'county' });
+  }
+
+  for (const { name, type } of docsToIndex) {
+    const osmId = Math.floor(Math.random() * 100000000) + 900000000;
+    const doc = {
+      osm_id: osmId,
+      osm_type: 'N',
+      osm_key: 'place',
+      osm_value: type,
+      type: type,
+      importance: 0.5,
+      name: { default: name },
+      coordinate: { lat, lon },
+      countrycode: (props.countrycode || '').toUpperCase(),
+      country: props.country ? { default: props.country } : undefined,
+      state: props.state ? { default: props.state } : undefined,
+      context: {},
+    };
+
+    try {
+      // Add to queue for batch import (will be processed at start of scraper loop)
+      addToPhotonQueue(osmId, doc);
+    } catch {
+      // Silently fail - this is just a cache optimization
     }
-  } catch (error) {
-    // Silently fail - this is just a cache optimization
   }
 }
 

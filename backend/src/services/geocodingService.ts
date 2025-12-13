@@ -1,4 +1,4 @@
-import { getPool, getSqlite, useSqlite } from '../config/database.js';
+import { getPool, getSqlite, useSqlite, addToPhotonQueue } from '../config/database.js';
 import { env } from '../config/env.js';
 import { appendFileSync } from 'fs';
 
@@ -37,6 +37,7 @@ interface PhotonFeature {
     osm_value?: string; // e.g., "city", "town", "village"
     name?: string;
     city?: string;
+    county?: string;
     state?: string;
     country?: string;
     countrycode?: string;
@@ -112,12 +113,6 @@ function lookupZipCode(zipcode: string): ZipCodeResult | null {
   }
 }
 
-// Elasticsearch URL for indexing (Photon uses ES internally on port 9200)
-// Derived from PHOTON_URL by replacing port 2322 with 9200
-function getElasticsearchUrl(): string {
-  return env.PHOTON_URL.replace(':2322', ':9200');
-}
-
 // Convert a Photon feature to a document for indexing
 function featureToPhotonDocument(feature: PhotonFeature, query: string): PhotonDocument {
   const props = feature.properties;
@@ -150,27 +145,109 @@ function featureToPhotonDocument(feature: PhotonFeature, query: string): PhotonD
   return doc;
 }
 
-// Index a Photon feature into local Elasticsearch
+// Place-level types that are worth indexing to local Photon
+// We don't want to index addresses, businesses, landmarks, etc. - only actual places
+const INDEXABLE_PLACE_TYPES = new Set([
+  'city', 'town', 'village', 'hamlet', 'suburb', 'neighbourhood', 'borough',
+  'county', 'district', 'state', 'province', 'region', 'country',
+  'municipality', 'locality',
+]);
+
+// Check if a feature is a place-level result worth indexing
+function isIndexablePlace(feature: PhotonFeature): boolean {
+  const props = feature.properties;
+  const featureType = props.type || props.osm_value || '';
+  return INDEXABLE_PLACE_TYPES.has(featureType.toLowerCase());
+}
+
+// Queue a Photon feature for batch import
 async function indexFeatureToLocalPhoton(feature: PhotonFeature, query: string): Promise<void> {
+  // Only index place-level results (cities, towns, counties, etc.)
+  // Skip addresses, businesses, landmarks, POIs, etc.
+  if (!isIndexablePlace(feature)) {
+    const featureType = feature.properties.type || feature.properties.osm_value || 'unknown';
+    console.log(`Skipping queue for non-place result: ${query} (type: ${featureType})`);
+    return;
+  }
+
   try {
-    const esUrl = getElasticsearchUrl();
     const doc = featureToPhotonDocument(feature, query);
 
-    // Index the document using ES 5.x API (requires _type)
-    const response = await fetch(`${esUrl}/photon/place/${doc.osm_id}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(doc),
-    });
-
-    if (response.ok) {
-      console.log(`Indexed location to local Photon: ${query} (osm_id: ${doc.osm_id})`);
-    } else {
-      console.error(`Failed to index to local Photon: ${response.status}`);
-    }
+    // Add to queue for batch import (scraper will process it)
+    addToPhotonQueue(doc.osm_id, doc);
+    console.log(`Queued location for Photon import: ${query} (osm_id: ${doc.osm_id})`);
   } catch (error) {
-    // Don't fail the request if indexing fails - it's just a cache optimization
-    console.error('Error indexing to local Photon:', error);
+    // Don't fail the request if queueing fails - it's just a cache optimization
+    console.error('Error queueing to Photon:', error);
+  }
+}
+
+// Extract a place-level location from a non-place result's properties
+// e.g., "SATO UK" (industrial) has county: "Essex", country: "United Kingdom"
+// We can create a synthetic place document for "Essex, United Kingdom"
+function extractPlaceFromProperties(feature: PhotonFeature, query: string): PhotonDocument | null {
+  const props = feature.properties;
+  const [lon, lat] = feature.geometry.coordinates;
+
+  // Try to find the most specific place-level property
+  // Priority: city > county > state > country
+  let placeName: string | undefined;
+  let placeType: string;
+
+  if (props.city) {
+    placeName = props.city;
+    placeType = 'city';
+  } else if (props.county) {
+    placeName = props.county;
+    placeType = 'county';
+  } else if (props.state) {
+    placeName = props.state;
+    placeType = 'state';
+  } else if (props.country) {
+    placeName = props.country;
+    placeType = 'country';
+  } else {
+    return null;
+  }
+
+  // Build display name
+  const displayParts = [placeName];
+  if (placeType !== 'state' && props.state) displayParts.push(props.state);
+  if (placeType !== 'country' && props.country) displayParts.push(props.country);
+
+  const doc: PhotonDocument = {
+    osm_id: Math.floor(Math.random() * 100000000) + 800000000,
+    osm_type: 'N',
+    osm_key: 'place',
+    osm_value: placeType,
+    type: placeType,
+    importance: 0.5,
+    name: { default: placeName },
+    coordinate: { lat, lon },
+    countrycode: (props.countrycode || '').toUpperCase(),
+    context: {},
+  };
+
+  if (props.country) doc.country = { default: props.country };
+  if (props.state && placeType !== 'state') doc.state = { default: props.state };
+
+  return doc;
+}
+
+// Queue a synthetic place document extracted from a non-place result
+async function indexExtractedPlace(feature: PhotonFeature, query: string): Promise<void> {
+  const doc = extractPlaceFromProperties(feature, query);
+  if (!doc) {
+    console.log(`Could not extract place from result for: ${query}`);
+    return;
+  }
+
+  try {
+    // Add to queue for batch import (scraper will process it)
+    addToPhotonQueue(doc.osm_id, doc);
+    console.log(`Queued extracted place for Photon import: "${doc.name.default}" from query "${query}"`);
+  } catch (error) {
+    console.error('Error queueing extracted place:', error);
   }
 }
 
@@ -214,11 +291,17 @@ async function callPhotonWithFallback(query: string, limit: number, osmTag?: str
     logPublicPhotonQuery(query);
     const result = await callPhotonApi(PUBLIC_PHOTON_URL, query, limit, osmTag);
 
-    // If we got results from public Photon, index them to local Photon
-    // so future queries will find them locally
+    // If we got results, index for future autocomplete
     if (result.features.length > 0) {
-      // Index in background - don't block the response
-      indexFeatureToLocalPhoton(result.features[0], query).catch(() => {});
+      const feature = result.features[0];
+      if (isIndexablePlace(feature)) {
+        // Result is already a place (city/county/etc) - index it directly
+        indexFeatureToLocalPhoton(feature, query).catch(() => {});
+      } else {
+        // Result is not a place (industrial/shop/etc) - extract place from its location properties
+        // e.g., "SATO UK" has county: "Essex" we can index
+        indexExtractedPlace(feature, query).catch(() => {});
+      }
     }
 
     return result;
@@ -386,4 +469,79 @@ export async function geocodeSuggestions(query: string, limit = 5): Promise<Geoc
       type: props.osm_value || props.type || 'place',
     };
   });
+}
+
+// Reverse geocode coordinates to get location name
+// Uses self-hosted Photon with public fallback (like forward geocoding)
+export async function reverseGeocode(lat: number, lon: number): Promise<GeocodeResult | null> {
+  // Try self-hosted Photon first
+  try {
+    const url = new URL(`${env.PHOTON_URL}/reverse`);
+    url.searchParams.set('lat', String(lat));
+    url.searchParams.set('lon', String(lon));
+
+    const response = await fetch(url.toString());
+    if (response.ok) {
+      const data = await response.json() as PhotonResponse;
+      if (data.features.length > 0) {
+        const feature = data.features[0];
+        const props = feature.properties;
+
+        // Build display name from properties
+        const displayParts = [props.name, props.city, props.state, props.country].filter(Boolean);
+        // Remove duplicates (e.g., when name === city)
+        const uniqueParts = [...new Set(displayParts)];
+        const displayName = uniqueParts.join(', ') || 'Unknown Location';
+
+        return {
+          latitude: lat,
+          longitude: lon,
+          displayName,
+        };
+      }
+    }
+  } catch {
+    // Self-hosted failed, try public fallback
+  }
+
+  // Fallback to public Photon API
+  try {
+    logPublicPhotonQuery(`reverse:${lat},${lon}`);
+    const url = new URL(`${PUBLIC_PHOTON_URL}/reverse`);
+    url.searchParams.set('lat', String(lat));
+    url.searchParams.set('lon', String(lon));
+
+    const response = await fetch(url.toString());
+    if (!response.ok) {
+      throw new Error(`Public Photon reverse API error: ${response.status}`);
+    }
+
+    const data = await response.json() as PhotonResponse;
+    if (data.features.length === 0) {
+      return null;
+    }
+
+    const feature = data.features[0];
+    const props = feature.properties;
+
+    // Build display name from properties
+    const displayParts = [props.name, props.city, props.state, props.country].filter(Boolean);
+    // Remove duplicates (e.g., when name === city)
+    const uniqueParts = [...new Set(displayParts)];
+    const displayName = uniqueParts.join(', ') || 'Unknown Location';
+
+    // If we got a place-level result, index it for future autocomplete
+    if (isIndexablePlace(feature)) {
+      indexFeatureToLocalPhoton(feature, displayName).catch(() => {});
+    }
+
+    return {
+      latitude: lat,
+      longitude: lon,
+      displayName,
+    };
+  } catch {
+    // Both failed, return null
+    return null;
+  }
 }

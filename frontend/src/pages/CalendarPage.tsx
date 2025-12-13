@@ -4,7 +4,7 @@ import dayGridPlugin from '@fullcalendar/daygrid';
 import interactionPlugin from '@fullcalendar/interaction';
 import type { EventClickArg, EventHoveringArg, DatesSetArg, MoreLinkArg } from '@fullcalendar/core';
 import type { DateClickArg } from '@fullcalendar/interaction';
-import { getEvents } from '../services/api';
+import { getEvents, reverseGeocode } from '../services/api';
 import type { Event } from '../types/event';
 import EventFilters, { type EventFilters as Filters } from '../components/EventFilters';
 import EventTooltip from '../components/EventTooltip';
@@ -162,11 +162,25 @@ function CalendarPage() {
 
     if (navigator.geolocation) {
       navigator.geolocation.getCurrentPosition(
-        (position) => {
+        async (position) => {
+          const lat = position.coords.latitude;
+          const lng = position.coords.longitude;
+
+          // Try to reverse geocode to get city name
+          let displayName = 'My Location';
+          try {
+            const response = await reverseGeocode(lat, lng);
+            if (response.data) {
+              displayName = response.data.displayName;
+            }
+          } catch {
+            // Reverse geocoding failed, use 'My Location' as fallback
+          }
+
           const newLocation = {
-            lat: position.coords.latitude,
-            lng: position.coords.longitude,
-            displayName: 'My Location',
+            lat,
+            lng,
+            displayName,
           };
           setStagedFilters(prev => ({
             ...prev,
