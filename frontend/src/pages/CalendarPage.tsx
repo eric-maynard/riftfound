@@ -76,19 +76,41 @@ function formatEventTitle(event: Event, isMobile: boolean): string {
   return `${time} | ${shop}`;
 }
 
-// Mobile breakpoint (matches CSS)
-const MOBILE_BREAKPOINT = 600;
-
+// Mobile detection: use matchMedia for consistency with CSS media queries
+// Also consider touch-primary devices as mobile (for tablets and touch laptops)
 function useIsMobile() {
-  const [isMobile, setIsMobile] = useState(() => window.innerWidth <= MOBILE_BREAKPOINT);
+  const [isMobile, setIsMobile] = useState(() => {
+    // Check if viewport matches CSS mobile breakpoint
+    const viewportMobile = window.matchMedia('(max-width: 600px)').matches;
+    // Check if primary input is touch (coarse pointer = finger/stylus vs fine = mouse)
+    const touchPrimary = window.matchMedia('(pointer: coarse)').matches;
+    // Consider mobile if viewport is small OR if touch is primary input on moderately sized screen
+    const moderateScreen = window.matchMedia('(max-width: 1024px)').matches;
+    return viewportMobile || (touchPrimary && moderateScreen);
+  });
 
   useEffect(() => {
-    const handleResize = () => {
-      setIsMobile(window.innerWidth <= MOBILE_BREAKPOINT);
+    const viewportQuery = window.matchMedia('(max-width: 600px)');
+    const touchQuery = window.matchMedia('(pointer: coarse)');
+    const moderateQuery = window.matchMedia('(max-width: 1024px)');
+
+    const updateMobile = () => {
+      const viewportMobile = viewportQuery.matches;
+      const touchPrimary = touchQuery.matches;
+      const moderateScreen = moderateQuery.matches;
+      setIsMobile(viewportMobile || (touchPrimary && moderateScreen));
     };
 
-    window.addEventListener('resize', handleResize);
-    return () => window.removeEventListener('resize', handleResize);
+    // Modern browsers use addEventListener, older use addListener
+    viewportQuery.addEventListener?.('change', updateMobile) ?? viewportQuery.addListener?.(updateMobile);
+    touchQuery.addEventListener?.('change', updateMobile) ?? touchQuery.addListener?.(updateMobile);
+    moderateQuery.addEventListener?.('change', updateMobile) ?? moderateQuery.addListener?.(updateMobile);
+
+    return () => {
+      viewportQuery.removeEventListener?.('change', updateMobile) ?? viewportQuery.removeListener?.(updateMobile);
+      touchQuery.removeEventListener?.('change', updateMobile) ?? touchQuery.removeListener?.(updateMobile);
+      moderateQuery.removeEventListener?.('change', updateMobile) ?? moderateQuery.removeListener?.(updateMobile);
+    };
   }, []);
 
   return isMobile;
