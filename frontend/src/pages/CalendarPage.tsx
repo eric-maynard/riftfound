@@ -114,7 +114,8 @@ function CalendarPage() {
   const [tooltipPosition, setTooltipPosition] = useState({ x: 0, y: 0 });
   const [dayEventsModal, setDayEventsModal] = useState<{ date: Date; events: Event[] } | null>(null);
   // Track when tooltip just closed to prevent touch event from also closing the modal
-  const [modalDisabledUntil, setModalDisabledUntil] = useState(0);
+  // Use ref so we can check it at click time, not render time
+  const modalDisabledUntilRef = useRef(0);
   const calendarRef = useRef<FullCalendar>(null);
   const [searchTrigger, setSearchTrigger] = useState(0);
   const isMobile = useIsMobile();
@@ -271,8 +272,13 @@ function CalendarPage() {
   const handleTooltipCloseWithModal = useCallback(() => {
     setTooltipEvent(null);
     // Disable modal backdrop clicks for 300ms to prevent touch event double-firing
-    setModalDisabledUntil(Date.now() + 300);
+    modalDisabledUntilRef.current = Date.now() + 300;
   }, []);
+
+  // Callback to check if modal close should be disabled (checked at click time, not render time)
+  const isModalCloseDisabled = useCallback(() => {
+    return !!tooltipEvent || Date.now() < modalDisabledUntilRef.current;
+  }, [tooltipEvent]);
 
   const handleEventMouseEnter = (info: EventHoveringArg) => {
     // Disable hover tooltip on mobile (tap-to-view handles it)
@@ -365,7 +371,7 @@ function CalendarPage() {
           events={dayEventsModal.events}
           onClose={handleDayEventsClose}
           onEventClick={handleDayEventClick}
-          disabled={!!tooltipEvent || Date.now() < modalDisabledUntil}
+          isCloseDisabled={isModalCloseDisabled}
         />
       )}
 

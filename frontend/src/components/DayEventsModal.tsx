@@ -5,7 +5,7 @@ interface DayEventsModalProps {
   events: Event[];
   onClose: () => void;
   onEventClick: (event: Event) => void;
-  disabled?: boolean; // When true, backdrop click is disabled (e.g., when tooltip is showing on top)
+  isCloseDisabled?: () => boolean; // Called at click time to check if close should be prevented
 }
 
 // Colors per event type (Dracula palette)
@@ -23,7 +23,7 @@ function formatTime(event: Event): string {
   });
 }
 
-function DayEventsModal({ date, events, onClose, onEventClick, disabled }: DayEventsModalProps) {
+function DayEventsModal({ date, events, onClose, onEventClick, isCloseDisabled }: DayEventsModalProps) {
   const dateStr = date.toLocaleDateString(undefined, {
     weekday: 'short',
     month: 'short',
@@ -31,8 +31,8 @@ function DayEventsModal({ date, events, onClose, onEventClick, disabled }: DayEv
   });
 
   const handleBackdropClick = (e: React.MouseEvent) => {
-    // Don't close if disabled (e.g., tooltip is showing on top)
-    if (disabled) return;
+    // Check at click time if close should be prevented
+    if (isCloseDisabled?.()) return;
     if (e.target === e.currentTarget) {
       onClose();
     }
