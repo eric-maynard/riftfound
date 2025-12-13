@@ -6,6 +6,7 @@ interface DayEventsModalProps {
   onClose: () => void;
   onEventClick: (event: Event) => void;
   isCloseDisabled?: () => boolean; // Called at click time to check if close should be prevented
+  backdropDisabled?: boolean; // When true, backdrop pointer events are disabled entirely
 }
 
 // Colors per event type (Dracula palette)
@@ -23,7 +24,7 @@ function formatTime(event: Event): string {
   });
 }
 
-function DayEventsModal({ date, events, onClose, onEventClick, isCloseDisabled }: DayEventsModalProps) {
+function DayEventsModal({ date, events, onClose, onEventClick, isCloseDisabled, backdropDisabled }: DayEventsModalProps) {
   const dateStr = date.toLocaleDateString(undefined, {
     weekday: 'short',
     month: 'short',
@@ -39,7 +40,11 @@ function DayEventsModal({ date, events, onClose, onEventClick, isCloseDisabled }
   };
 
   return (
-    <div className="day-events-backdrop" onClick={handleBackdropClick}>
+    <div
+      className="day-events-backdrop"
+      onClick={handleBackdropClick}
+      style={backdropDisabled ? { pointerEvents: 'none' } : undefined}
+    >
       <div className="day-events-modal">
         <div className="day-events-header">{dateStr}</div>
         <div className="day-events-list">

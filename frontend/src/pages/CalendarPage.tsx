@@ -377,6 +377,7 @@ function CalendarPage() {
           onClose={handleDayEventsClose}
           onEventClick={handleDayEventClick}
           isCloseDisabled={isModalCloseDisabled}
+          backdropDisabled={!!tooltipEvent}
         />
       )}
 
