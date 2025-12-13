@@ -46,6 +46,7 @@ function initSqliteSchema(db: Database.Database) {
       external_id INTEGER UNIQUE NOT NULL,
       name TEXT NOT NULL,
       location_text TEXT,
+      display_city TEXT,
       latitude REAL,
       longitude REAL,
       geocode_status TEXT DEFAULT 'pending',
@@ -137,6 +138,9 @@ function initSqliteSchema(db: Database.Database) {
   try {
     db.exec(`ALTER TABLE events ADD COLUMN shop_id INTEGER REFERENCES shops(id)`);
   } catch { /* column exists */ }
+  try {
+    db.exec(`ALTER TABLE shops ADD COLUMN display_city TEXT`);
+  } catch { /* column exists */ }
 
   // Migration: Add external_id to shops table if it doesn't exist
   // Check if external_id column exists
@@ -160,6 +164,7 @@ function initSqliteSchema(db: Database.Database) {
         external_id INTEGER UNIQUE NOT NULL,
         name TEXT NOT NULL,
         location_text TEXT,
+        display_city TEXT,
         latitude REAL,
         longitude REAL,
         geocode_status TEXT DEFAULT 'pending',
@@ -292,14 +297,23 @@ export interface StoreInfo {
 }
 
 
+// Result from upserting a shop
+export interface UpsertShopResult {
+  shopId: number;
+  isNew: boolean;
+  needsCityGeocode: boolean;
+  latitude: number;
+  longitude: number;
+}
+
 // Upsert a shop with full info from API (includes coordinates)
 // Uses external_id (API store ID) as unique identifier to handle stores with same name in different locations
-export async function upsertShopFromApi(store: StoreInfo): Promise<number> {
+export async function upsertShopFromApi(store: StoreInfo): Promise<UpsertShopResult> {
   if (useSqlite()) {
     const db = getSqliteDb();
 
     // Check if exists by external_id (API store ID)
-    const existing = db.prepare('SELECT id FROM shops WHERE external_id = ?').get(store.id) as { id: number } | undefined;
+    const existing = db.prepare('SELECT id, display_city FROM shops WHERE external_id = ?').get(store.id) as { id: number; display_city: string | null } | undefined;
 
     if (existing) {
       // Update with API data (always has better info)
@@ -313,13 +327,25 @@ export async function upsertShopFromApi(store: StoreInfo): Promise<number> {
           updated_at = datetime('now')
         WHERE id = ?
       `).run(store.name, store.full_address, store.latitude, store.longitude, existing.id);
-      return existing.id;
+      return {
+        shopId: existing.id,
+        isNew: false,
+        needsCityGeocode: !existing.display_city,
+        latitude: store.latitude,
+        longitude: store.longitude,
+      };
     } else {
       const result = db.prepare(`
         INSERT INTO shops (external_id, name, location_text, latitude, longitude, geocode_status)
         VALUES (?, ?, ?, ?, ?, 'completed')
       `).run(store.id, store.name, store.full_address, store.latitude, store.longitude);
-      return result.lastInsertRowid as number;
+      return {
+        shopId: result.lastInsertRowid as number,
+        isNew: true,
+        needsCityGeocode: true,
+        latitude: store.latitude,
+        longitude: store.longitude,
+      };
     }
   } else {
     const pool = getPgPool();
@@ -333,26 +359,60 @@ export async function upsertShopFromApi(store: StoreInfo): Promise<number> {
          longitude = EXCLUDED.longitude,
          geocode_status = 'completed',
          updated_at = NOW()
-       RETURNING id`,
+       RETURNING id, (xmax = 0) as is_new, display_city`,
       [store.id, store.name, store.full_address, store.latitude, store.longitude]
     );
-    return result.rows[0].id;
+    return {
+      shopId: result.rows[0].id,
+      isNew: result.rows[0].is_new,
+      needsCityGeocode: !result.rows[0].display_city,
+      latitude: store.latitude,
+      longitude: store.longitude,
+    };
   }
+}
+
+// Update a shop's display city after reverse geocoding
+export function updateShopDisplayCity(shopId: number, displayCity: string): void {
+  if (useSqlite()) {
+    const db = getSqliteDb();
+    db.prepare(`
+      UPDATE shops SET display_city = ?, updated_at = datetime('now')
+      WHERE id = ?
+    `).run(displayCity, shopId);
+  } else {
+    // PostgreSQL - async version would be needed
+    throw new Error('updateShopDisplayCity not implemented for PostgreSQL yet');
+  }
+}
+
+// Result from upserting an event
+export interface UpsertEventResult {
+  created: boolean;
+  shopResult?: UpsertShopResult;
 }
 
 // Upsert event with store info from API (no geocoding needed)
 export async function upsertEventWithStore(
   event: ScrapedEvent,
   storeInfo: StoreInfo | null
-): Promise<{ created: boolean }> {
+): Promise<UpsertEventResult> {
   // First, upsert the shop with full coordinates from API
   let shopId: number | null = null;
+  let shopResult: UpsertShopResult | undefined;
+
   if (storeInfo) {
-    shopId = await upsertShopFromApi(storeInfo);
+    shopResult = await upsertShopFromApi(storeInfo);
+    shopId = shopResult.shopId;
   }
 
   // Then upsert the event with the shop reference
-  return upsertEventInternal(event, shopId);
+  const eventResult = await upsertEventInternal(event, shopId);
+
+  return {
+    created: eventResult.created,
+    shopResult,
+  };
 }
 
 async function upsertEventInternal(event: ScrapedEvent, shopId: number | null): Promise<{ created: boolean }> {

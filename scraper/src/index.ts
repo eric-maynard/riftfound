@@ -4,10 +4,13 @@ import {
   completeScrapeRun,
   failScrapeRun,
   upsertEventWithStore,
+  updateShopDisplayCity,
   deleteOldEvents,
+  UpsertShopResult,
 } from './database.js';
 import { fetchEventsPage, getEventCount } from './api.js';
 import { env } from './config.js';
+import { reverseGeocodeCity } from './geocoding.js';
 
 function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -51,8 +54,12 @@ async function runDistributedScrape(): Promise<{ found: number; created: number 
   let totalCreated = 0;
   let totalUpdated = 0;
   let totalStores = 0;
+  let totalCitiesGeocoded = 0;
   const storesSeen = new Set<string>();
   let currentPage = 1;
+
+  // Queue of shops that need city geocoding
+  const shopsToGeocode: UpsertShopResult[] = [];
 
   try {
     while (true) {
@@ -75,10 +82,15 @@ async function runDistributedScrape(): Promise<{ found: number; created: number 
           pageUpdated++;
         }
 
-        // Track unique stores
+        // Track unique stores and queue for geocoding if needed
         if (event.storeInfo && !storesSeen.has(event.storeInfo.name)) {
           storesSeen.add(event.storeInfo.name);
           totalStores++;
+
+          // Queue shop for city geocoding if needed
+          if (result.shopResult?.needsCityGeocode) {
+            shopsToGeocode.push(result.shopResult);
+          }
         }
       }
 
@@ -100,6 +112,23 @@ async function runDistributedScrape(): Promise<{ found: number; created: number 
       await sleep(waitTime);
     }
 
+    // Process shops that need city geocoding
+    if (shopsToGeocode.length > 0) {
+      console.log(`\nGeocoding cities for ${shopsToGeocode.length} shops...`);
+      for (const shop of shopsToGeocode) {
+        try {
+          const city = await reverseGeocodeCity(shop.latitude, shop.longitude);
+          if (city) {
+            updateShopDisplayCity(shop.shopId, city);
+            totalCitiesGeocoded++;
+          }
+        } catch (error) {
+          console.error(`Failed to geocode shop ${shop.shopId}:`, error);
+        }
+      }
+      console.log(`Geocoded ${totalCitiesGeocoded} shop cities`);
+    }
+
     await completeScrapeRun(runId, {
       eventsFound: totalFound,
       eventsCreated: totalCreated,
@@ -115,6 +144,9 @@ async function runDistributedScrape(): Promise<{ found: number; created: number 
     console.log(`  Events created: ${totalCreated}`);
     console.log(`  Events updated: ${totalUpdated}`);
     console.log(`  Unique stores: ${totalStores}`);
+    if (totalCitiesGeocoded > 0) {
+      console.log(`  Cities geocoded: ${totalCitiesGeocoded}`);
+    }
     console.log(`  Pages fetched: ${currentPage}`);
     if (deletedCount > 0) {
       console.log(`  Old events deleted: ${deletedCount}`);

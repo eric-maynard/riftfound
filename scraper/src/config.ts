@@ -23,6 +23,9 @@ const envSchema = z.object({
 
   // Scraper
   SCRAPE_INTERVAL_MINUTES: z.string().transform(Number).default('60'),
+
+  // Geocoding
+  PHOTON_URL: z.string().default('http://localhost:2322'),
 });
 
 export type Env = z.infer<typeof envSchema>;
