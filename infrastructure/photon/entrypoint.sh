@@ -31,4 +31,5 @@ fi
 
 cd /photon
 echo "Starting Photon with data-dir: $DATA_DIR"
-exec java -jar photon.jar -data-dir "$DATA_DIR"
+# -Dhttp.host=0.0.0.0 makes Elasticsearch accessible from outside container
+exec java -Dhttp.host=0.0.0.0 -jar photon.jar -data-dir "$DATA_DIR"
