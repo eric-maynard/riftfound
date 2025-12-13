@@ -470,13 +470,14 @@ export async function geocodeSuggestions(query: string, limit = 5): Promise<Geoc
     };
   });
 
-  // Deduplicate by displayName (same city may have multiple osm_ids in Photon)
+  // Deduplicate by displayName + type (e.g., "New York" city vs state, "Milano" city vs region)
   const seen = new Set<string>();
   return suggestions.filter(s => {
-    if (seen.has(s.displayName)) {
+    const key = `${s.displayName}|${s.type}`;
+    if (seen.has(key)) {
       return false;
     }
-    seen.add(s.displayName);
+    seen.add(key);
     return true;
   });
 }
