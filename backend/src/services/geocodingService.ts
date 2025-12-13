@@ -68,6 +68,24 @@ interface PhotonResponse {
 // Public Photon API as fallback for non-US queries
 const PUBLIC_PHOTON_URL = 'https://photon.komoot.io';
 
+// Non-US country indicators - if query contains these, skip local Photon (US-only) and go to public
+const NON_US_INDICATORS = [
+  'uk', 'united kingdom', 'england', 'scotland', 'wales', 'ireland',
+  'canada', 'australia', 'germany', 'france', 'spain', 'italy', 'japan',
+  'mexico', 'brazil', 'india', 'china', 'netherlands', 'belgium', 'sweden',
+  'norway', 'denmark', 'finland', 'poland', 'austria', 'switzerland',
+  'portugal', 'greece', 'new zealand', 'south africa', 'singapore',
+];
+
+// Check if query appears to be for a non-US location
+function isNonUsQuery(query: string): boolean {
+  const lowerQuery = query.toLowerCase();
+  return NON_US_INDICATORS.some(indicator => {
+    const regex = new RegExp(`\\b${indicator}\\b`);
+    return regex.test(lowerQuery);
+  });
+}
+
 // Detect US ZIP codes (5 digits only - we only store 5-digit ZIPs)
 const US_ZIP_REGEX = /^\d{5}$/;
 
@@ -174,16 +192,21 @@ async function callPhotonApi(baseUrl: string, query: string, limit: number, osmT
 
 // Try self-hosted Photon first, fall back to public API
 async function callPhotonWithFallback(query: string, limit: number, osmTag?: string): Promise<PhotonResponse> {
-  // Try self-hosted first
-  try {
-    const result = await callPhotonApi(env.PHOTON_URL, query, limit, osmTag);
-    // If we got results, return them
-    if (result.features.length > 0) {
-      return result;
+  // Skip local Photon for non-US queries (local Photon only has US data)
+  const skipLocal = isNonUsQuery(query);
+
+  // Try self-hosted first (unless query is clearly non-US)
+  if (!skipLocal) {
+    try {
+      const result = await callPhotonApi(env.PHOTON_URL, query, limit, osmTag);
+      // If we got results, return them
+      if (result.features.length > 0) {
+        return result;
+      }
+      // No results from self-hosted (might be non-US query), try public
+    } catch {
+      // Self-hosted failed, try public fallback
     }
-    // No results from self-hosted (might be non-US query), try public
-  } catch {
-    // Self-hosted failed, try public fallback
   }
 
   // Fallback to public Photon API
