@@ -76,40 +76,32 @@ function formatEventTitle(event: Event, isMobile: boolean): string {
   return `${time} | ${shop}`;
 }
 
-// Mobile detection: use matchMedia for consistency with CSS media queries
-// Also consider touch-primary devices as mobile (for tablets and touch laptops)
+// Mobile detection: detect devices that can't hover (touch-only)
+// This correctly identifies phones and tablets of any screen size
 function useIsMobile() {
   const [isMobile, setIsMobile] = useState(() => {
-    // Check if viewport matches CSS mobile breakpoint
-    const viewportMobile = window.matchMedia('(max-width: 600px)').matches;
-    // Check if primary input is touch (coarse pointer = finger/stylus vs fine = mouse)
-    const touchPrimary = window.matchMedia('(pointer: coarse)').matches;
-    // Consider mobile if viewport is small OR if touch is primary input on moderately sized screen
-    const moderateScreen = window.matchMedia('(max-width: 1024px)').matches;
-    return viewportMobile || (touchPrimary && moderateScreen);
+    // Primary check: device can't hover (touch-only devices like phones/tablets)
+    const cannotHover = window.matchMedia('(hover: none)').matches;
+    // Fallback: small viewport (for edge cases)
+    const smallViewport = window.matchMedia('(max-width: 600px)').matches;
+    return cannotHover || smallViewport;
   });
 
   useEffect(() => {
+    const hoverQuery = window.matchMedia('(hover: none)');
     const viewportQuery = window.matchMedia('(max-width: 600px)');
-    const touchQuery = window.matchMedia('(pointer: coarse)');
-    const moderateQuery = window.matchMedia('(max-width: 1024px)');
 
     const updateMobile = () => {
-      const viewportMobile = viewportQuery.matches;
-      const touchPrimary = touchQuery.matches;
-      const moderateScreen = moderateQuery.matches;
-      setIsMobile(viewportMobile || (touchPrimary && moderateScreen));
+      setIsMobile(hoverQuery.matches || viewportQuery.matches);
     };
 
     // Modern browsers use addEventListener, older use addListener
+    hoverQuery.addEventListener?.('change', updateMobile) ?? hoverQuery.addListener?.(updateMobile);
     viewportQuery.addEventListener?.('change', updateMobile) ?? viewportQuery.addListener?.(updateMobile);
-    touchQuery.addEventListener?.('change', updateMobile) ?? touchQuery.addListener?.(updateMobile);
-    moderateQuery.addEventListener?.('change', updateMobile) ?? moderateQuery.addListener?.(updateMobile);
 
     return () => {
+      hoverQuery.removeEventListener?.('change', updateMobile) ?? hoverQuery.removeListener?.(updateMobile);
       viewportQuery.removeEventListener?.('change', updateMobile) ?? viewportQuery.removeListener?.(updateMobile);
-      touchQuery.removeEventListener?.('change', updateMobile) ?? touchQuery.removeListener?.(updateMobile);
-      moderateQuery.removeEventListener?.('change', updateMobile) ?? moderateQuery.removeListener?.(updateMobile);
     };
   }, []);
 
