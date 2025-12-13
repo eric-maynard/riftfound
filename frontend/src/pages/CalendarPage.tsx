@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import FullCalendar from '@fullcalendar/react';
 import dayGridPlugin from '@fullcalendar/daygrid';
 import interactionPlugin from '@fullcalendar/interaction';
-import type { EventClickArg, EventHoveringArg, DatesSetArg } from '@fullcalendar/core';
+import type { EventClickArg, EventHoveringArg, DatesSetArg, MoreLinkArg } from '@fullcalendar/core';
 import type { DateClickArg } from '@fullcalendar/interaction';
 import { getEvents } from '../services/api';
 import type { Event } from '../types/event';
@@ -262,6 +262,16 @@ function CalendarPage() {
     }
   }, [isMobile, getEventsForDate]);
 
+  // Handle "+more" link click - use our custom modal instead of FullCalendar's popover
+  const handleMoreLinkClick = useCallback((info: MoreLinkArg) => {
+    if (!isMobile) return; // On desktop, let FullCalendar handle it with default popover
+    // Extract our Event objects from FullCalendar's event segments
+    const dayEvents = info.allSegs.map(seg => seg.event.extendedProps.event as Event);
+    if (dayEvents.length > 0) {
+      setDayEventsModal({ date: info.date, events: dayEvents });
+    }
+    // Return nothing to prevent FullCalendar's default popover
+  }, [isMobile]);
 
   const handleDayEventsClose = useCallback(() => {
     setDayEventsModal(null);
@@ -349,6 +359,7 @@ function CalendarPage() {
           fixedWeekCount={false}
           dayMaxEventRows={3}
           moreLinkContent={(arg) => isMobile ? `+${arg.num}` : `+${arg.num} more`}
+          moreLinkClick={handleMoreLinkClick}
           navLinks={isMobile}
           navLinkDayClick={handleNavLinkDayClick}
           headerToolbar={{
