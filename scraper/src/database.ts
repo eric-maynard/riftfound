@@ -108,6 +108,15 @@ function initSqliteSchema(db: Database.Database) {
       events_updated INTEGER DEFAULT 0,
       error_message TEXT
     );
+
+    CREATE TABLE IF NOT EXISTS us_zipcodes (
+      zipcode TEXT PRIMARY KEY,
+      city TEXT NOT NULL,
+      state TEXT NOT NULL,
+      state_code TEXT NOT NULL,
+      latitude REAL NOT NULL,
+      longitude REAL NOT NULL
+    );
   `);
 
   // Add new columns if they don't exist (migrations for existing DBs)
