@@ -452,7 +452,7 @@ export async function geocodeSuggestions(query: string, limit = 5): Promise<Geoc
     return [];
   }
 
-  return data.features.map((feature) => {
+  const suggestions = data.features.map((feature) => {
     const [lon, lat] = feature.geometry.coordinates;
     const props = feature.properties;
 
@@ -468,6 +468,16 @@ export async function geocodeSuggestions(query: string, limit = 5): Promise<Geoc
       displayName,
       type: props.osm_value || props.type || 'place',
     };
+  });
+
+  // Deduplicate by displayName (same city may have multiple osm_ids in Photon)
+  const seen = new Set<string>();
+  return suggestions.filter(s => {
+    if (seen.has(s.displayName)) {
+      return false;
+    }
+    seen.add(s.displayName);
+    return true;
   });
 }
 
