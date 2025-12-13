@@ -17,7 +17,7 @@ interface EventFiltersProps {
   filters: EventFilters;
   appliedFilters: EventFilters;
   onFiltersChange: (filters: EventFilters) => void;
-  onSearch: () => void;
+  onSearch: (filtersOverride?: EventFilters) => void;
   availableFormats: string[];
 }
 
@@ -218,12 +218,12 @@ function EventFiltersComponent({ filters, appliedFilters, onFiltersChange, onSea
             displayName: response.data.displayName,
           };
           setCityInput(response.data.displayName);
-          onFiltersChange({
+          // Pass new filters directly to onSearch to avoid state race condition
+          const newFilters = {
             ...filters,
             location: newLocation,
-          });
-          // Trigger search after state update
-          setTimeout(() => onSearch(), 0);
+          };
+          onSearch(newFilters);
         } else {
           setError('Location not found');
         }

@@ -192,8 +192,13 @@ function CalendarPage() {
   }, [searchTrigger, appliedFilters]);
 
   // Handle search button click
-  const handleSearch = useCallback(() => {
-    setAppliedFilters(stagedFilters);
+  // Accepts optional filters to apply directly (avoids race condition when geocoding)
+  const handleSearch = useCallback((filtersOverride?: Filters) => {
+    const filtersToApply = filtersOverride ?? stagedFilters;
+    setAppliedFilters(filtersToApply);
+    if (filtersOverride) {
+      setStagedFilters(filtersOverride);
+    }
     setSearchTrigger(t => t + 1);
   }, [stagedFilters]);
 
