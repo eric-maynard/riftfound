@@ -13,6 +13,19 @@ function logPublicPhotonQuery(query: string): void {
   }
 }
 
+// Geocoding metrics logging
+// Format: [GEOCODE] type=<type> key=value ...
+// Types: cache_hit, cache_miss, google_forward, google_reverse, google_autocomplete, photon_forward, photon_reverse
+type GeoMetricType = 'cache_hit' | 'cache_miss' | 'google_forward' | 'google_reverse' | 'google_autocomplete' | 'photon_forward' | 'photon_reverse';
+
+function logGeoMetric(type: GeoMetricType, data: Record<string, string | number | boolean>): void {
+  const parts = [`[GEOCODE] type=${type}`];
+  for (const [key, value] of Object.entries(data)) {
+    parts.push(`${key}=${typeof value === 'string' ? `"${value}"` : value}`);
+  }
+  console.log(parts.join(' '));
+}
+
 export interface GeocodeResult {
   latitude: number;
   longitude: number;
@@ -388,23 +401,25 @@ async function callGoogleMapsGeocode(query: string): Promise<GeocodeResult | nul
 
     const response = await fetch(url.toString());
     if (!response.ok) {
-      console.error(`Google Maps geocode error: ${response.status}`);
+      logGeoMetric('google_forward', { query, success: false, error: `HTTP ${response.status}` });
       return null;
     }
 
     const data = await response.json() as GoogleGeocodeResponse;
     if (data.status !== 'OK' || data.results.length === 0) {
+      logGeoMetric('google_forward', { query, success: false, error: data.status });
       return null;
     }
 
     const result = data.results[0];
+    logGeoMetric('google_forward', { query, success: true });
     return {
       latitude: result.geometry.location.lat,
       longitude: result.geometry.location.lng,
       displayName: result.formatted_address,
     };
   } catch (error) {
-    console.error('Google Maps geocode failed:', error);
+    logGeoMetric('google_forward', { query, success: false, error: 'exception' });
     return null;
   }
 }
@@ -413,6 +428,7 @@ async function callGoogleMapsGeocode(query: string): Promise<GeocodeResult | nul
 async function callGoogleMapsReverse(lat: number, lon: number): Promise<GeocodeResult | null> {
   if (!env.GOOGLE_MAPS_API_KEY) return null;
 
+  const coords = `${lat.toFixed(4)},${lon.toFixed(4)}`;
   try {
     const url = new URL(GOOGLE_MAPS_GEOCODE_URL);
     url.searchParams.set('latlng', `${lat},${lon}`);
@@ -420,12 +436,13 @@ async function callGoogleMapsReverse(lat: number, lon: number): Promise<GeocodeR
 
     const response = await fetch(url.toString());
     if (!response.ok) {
-      console.error(`Google Maps reverse geocode error: ${response.status}`);
+      logGeoMetric('google_reverse', { coords, success: false, error: `HTTP ${response.status}` });
       return null;
     }
 
     const data = await response.json() as GoogleGeocodeResponse;
     if (data.status !== 'OK' || data.results.length === 0) {
+      logGeoMetric('google_reverse', { coords, success: false, error: data.status });
       return null;
     }
 
@@ -445,13 +462,14 @@ async function callGoogleMapsReverse(lat: number, lon: number): Promise<GeocodeR
       displayName = result.formatted_address;
     }
 
+    logGeoMetric('google_reverse', { coords, success: true });
     return {
       latitude: lat,
       longitude: lon,
       displayName,
     };
   } catch (error) {
-    console.error('Google Maps reverse geocode failed:', error);
+    logGeoMetric('google_reverse', { coords, success: false, error: 'exception' });
     return null;
   }
 }
@@ -474,12 +492,13 @@ async function callGoogleMapsAutocomplete(query: string, limit: number): Promise
     });
 
     if (!response.ok) {
-      console.error(`Google Places autocomplete error: ${response.status}`);
+      logGeoMetric('google_autocomplete', { query, success: false, results: 0, error: `HTTP ${response.status}` });
       return [];
     }
 
     const data = await response.json() as PlacesAutocompleteResponse;
     if (!data.suggestions || data.suggestions.length === 0) {
+      logGeoMetric('google_autocomplete', { query, success: true, results: 0 });
       return [];
     }
 
@@ -503,9 +522,10 @@ async function callGoogleMapsAutocomplete(query: string, limit: number): Promise
       }
     }
 
+    logGeoMetric('google_autocomplete', { query, success: true, results: suggestions.length });
     return suggestions;
   } catch (error) {
-    console.error('Google Places autocomplete failed:', error);
+    logGeoMetric('google_autocomplete', { query, success: false, results: 0, error: 'exception' });
     return [];
   }
 }
@@ -621,8 +641,11 @@ export async function geocodeCity(query: string): Promise<GeocodeResult | null> 
   // Check cache for non-ZIP queries
   const cached = await getCachedGeocode(query);
   if (cached) {
+    logGeoMetric('cache_hit', { query: trimmedQuery });
     return cached;
   }
+
+  logGeoMetric('cache_miss', { query: trimmedQuery });
 
   // Try Google Maps API first (if available)
   if (hasGoogleMapsApiKey()) {
