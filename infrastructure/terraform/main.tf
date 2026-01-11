@@ -96,6 +96,33 @@ resource "aws_iam_role_policy_attachment" "ssm" {
   policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
 }
 
+resource "aws_iam_role_policy" "dynamodb" {
+  name = "riftfound-dynamodb-access"
+  role = aws_iam_role.riftfound_ec2.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Action = [
+        "dynamodb:GetItem",
+        "dynamodb:PutItem",
+        "dynamodb:UpdateItem",
+        "dynamodb:DeleteItem",
+        "dynamodb:Query",
+        "dynamodb:Scan",
+        "dynamodb:BatchGetItem",
+        "dynamodb:BatchWriteItem",
+        "dynamodb:DescribeTable"
+      ]
+      Resource = [
+        "arn:aws:dynamodb:us-west-2:*:table/riftfound-prod",
+        "arn:aws:dynamodb:us-west-2:*:table/riftfound-prod/index/*"
+      ]
+    }]
+  })
+}
+
 resource "aws_iam_instance_profile" "riftfound_ec2" {
   name = "riftfound-ec2-profile"
   role = aws_iam_role.riftfound_ec2.name
