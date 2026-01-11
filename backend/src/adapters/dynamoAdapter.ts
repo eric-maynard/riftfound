@@ -17,6 +17,7 @@ import {
   ScanCommand,
 } from '../config/dynamodb.js';
 import type { Event, EventQuery } from '../models/event.js';
+import geohash from 'ngeohash';
 
 // DynamoDB Event item structure
 export interface DynamoEventItem {
@@ -72,6 +73,7 @@ export interface DynamoShopItem {
   displayCity: string | null;
   latitude: number | null;
   longitude: number | null;
+  geohash4?: string; // 4-character geohash for spatial indexing
   geocodeStatus: string;
   geocodeError: string | null;
   createdAt: string;
@@ -192,39 +194,52 @@ function mapDynamoItemToEvent(item: DynamoEventItem): Event {
   };
 }
 
-// Shop cache for efficient location-based queries
-let shopCache: DynamoShopItem[] | null = null;
-let shopCacheTime = 0;
-const SHOP_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+// Get neighboring geohash cells (center + 8 neighbors)
+function getGeohashNeighbors(lat: number, lng: number, precision: number = 4): string[] {
+  const centerHash = geohash.encode(lat, lng, precision);
+  const neighbors = geohash.neighbors(centerHash);
+  // Return center plus all 8 neighbors
+  return [
+    centerHash,
+    neighbors.n, neighbors.ne, neighbors.e, neighbors.se,
+    neighbors.s, neighbors.sw, neighbors.w, neighbors.nw
+  ];
+}
 
-// Get all shops (cached)
-async function getAllShops(): Promise<DynamoShopItem[]> {
-  const now = Date.now();
-  if (shopCache && now - shopCacheTime < SHOP_CACHE_TTL) {
-    return shopCache;
-  }
-
+// Query shops by geohash using GeohashIndex
+async function getShopsByGeohash(geohashes: string[]): Promise<DynamoShopItem[]> {
   const client = getDynamoClient();
   const tableName = getTableName();
   const shops: DynamoShopItem[] = [];
-  let lastEvaluatedKey: Record<string, any> | undefined;
 
-  do {
-    const response = await client.send(new ScanCommand({
-      TableName: tableName,
-      FilterExpression: 'entityType = :shop',
-      ExpressionAttributeValues: {
-        ':shop': 'SHOP',
-      },
-      ExclusiveStartKey: lastEvaluatedKey,
-    }));
+  // Query each geohash in parallel
+  const promises = geohashes.map(async (gh) => {
+    let lastEvaluatedKey: Record<string, any> | undefined;
+    const results: DynamoShopItem[] = [];
 
-    shops.push(...(response.Items || []) as DynamoShopItem[]);
-    lastEvaluatedKey = response.LastEvaluatedKey;
-  } while (lastEvaluatedKey);
+    do {
+      const response = await client.send(new QueryCommand({
+        TableName: tableName,
+        IndexName: 'GeohashIndex',
+        KeyConditionExpression: 'geohash4 = :gh',
+        ExpressionAttributeValues: {
+          ':gh': gh,
+        },
+        ExclusiveStartKey: lastEvaluatedKey,
+      }));
 
-  shopCache = shops;
-  shopCacheTime = now;
+      results.push(...(response.Items || []) as DynamoShopItem[]);
+      lastEvaluatedKey = response.LastEvaluatedKey;
+    } while (lastEvaluatedKey);
+
+    return results;
+  });
+
+  const results = await Promise.all(promises);
+  for (const result of results) {
+    shops.push(...result);
+  }
+
   return shops;
 }
 
@@ -325,41 +340,30 @@ export async function getEventsDynamoDB(
   const hasLocationFilter = query.lat !== undefined && query.lng !== undefined;
 
   if (hasLocationFilter) {
-    // Shop-first approach: much faster for location-based queries
-    // 1. Get all shops (cached)
-    // 2. Filter shops by bounding box + Haversine
-    // 3. Query events for matching shops in parallel
+    // Geohash-based shop lookup: query only relevant geographic cells
+    // 1. Get geohash cells for search area (center + 8 neighbors)
+    // 2. Query shops in those cells using GeohashIndex
+    // 3. Filter by exact distance
+    // 4. Query events for matching shops
 
-    const bbox = getBoundingBox(query.lat!, query.lng!, query.radiusKm);
-    const allShops = await getAllShops();
+    const geohashes = getGeohashNeighbors(query.lat!, query.lng!, 4);
+    const nearbyShops = await getShopsByGeohash(geohashes);
 
-    // Filter shops by bounding box
-    let shopsInRange = allShops.filter(s =>
+    // Filter by exact Haversine distance
+    const shopsInRange = nearbyShops.filter(s =>
       s.latitude !== null &&
       s.longitude !== null &&
-      s.latitude >= bbox.minLat &&
-      s.latitude <= bbox.maxLat &&
-      s.longitude >= bbox.minLng &&
-      s.longitude <= bbox.maxLng
-    );
-
-    // Refine with Haversine distance
-    shopsInRange = shopsInRange.filter(s =>
       haversineDistance(query.lat!, query.lng!, s.latitude!, s.longitude!) <= query.radiusKm
     );
 
-    // Query events for each shop in parallel (batched)
+    // Query events for each shop in parallel
     allEvents = [];
-    const batchSize = 20; // Query 20 shops in parallel at a time
-    for (let i = 0; i < shopsInRange.length; i += batchSize) {
-      const batch = shopsInRange.slice(i, i + batchSize);
-      const promises = batch.map(shop =>
-        queryEventsByShopAndDateRange(shop.externalId, startDate, endDate)
-      );
-      const results = await Promise.all(promises);
-      for (const events of results) {
-        allEvents.push(...events);
-      }
+    const promises = shopsInRange.map(shop =>
+      queryEventsByShopAndDateRange(shop.externalId, startDate, endDate)
+    );
+    const results = await Promise.all(promises);
+    for (const events of results) {
+      allEvents.push(...events);
     }
   } else {
     // No location filter - use date-based query (slower but comprehensive)
