@@ -131,6 +131,7 @@ function CalendarPage() {
   const [events, setEvents] = useState<Event[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [tooManyEvents, setTooManyEvents] = useState(false);
   const [settings, setSettings] = useState<Settings>(loadSettings);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const settingsRef = useRef<HTMLDivElement>(null);
@@ -241,6 +242,7 @@ function CalendarPage() {
     async function fetchEvents() {
       setLoading(true);
       setError(null);
+      setTooManyEvents(false);
 
       try {
         const radiusKm = appliedFilters.distanceMiles * MILES_TO_KM;
@@ -257,6 +259,8 @@ function CalendarPage() {
           }),
         });
         setEvents(response.data);
+        // Show warning if we hit the 1000 event limit
+        setTooManyEvents(response.pagination.total >= 1000);
       } catch {
         setError('Failed to load events. Please try again.');
       } finally {
@@ -445,6 +449,12 @@ function CalendarPage() {
       {error && (
         <div className="error-banner">
           {error}
+        </div>
+      )}
+
+      {tooManyEvents && !error && (
+        <div className="warning-banner">
+          Warning: Too many events to display. Try reducing the search radius.
         </div>
       )}
 

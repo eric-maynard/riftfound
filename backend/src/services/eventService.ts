@@ -19,11 +19,11 @@ function getCalendarDateRange(): { startDate: string; endDate: string } {
   };
 }
 
-// Max events for calendar view: 35 days * 5 events per day = 175
-const CALENDAR_MAX_EVENTS = 175;
+// Max events for calendar view - frontend shows warning if this limit is hit
+const CALENDAR_MAX_EVENTS = 1000;
 
 export async function getEvents(query: EventQuery): Promise<{ events: Event[]; total: number }> {
-  // In calendar mode, limit to prevent overfetching (enough for 5 events per day for ~35 days)
+  // In calendar mode, use higher limit to handle dense metro areas with many events
   const limit = query.calendarMode ? CALENDAR_MAX_EVENTS : query.limit;
   const offset = query.calendarMode ? 0 : (query.page - 1) * query.limit;
 
