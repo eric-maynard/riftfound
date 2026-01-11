@@ -32,3 +32,22 @@ variable "ebs_volume_size" {
   type        = number
   default     = 20
 }
+
+# Serverless infrastructure variables
+variable "environment" {
+  description = "Environment name (dev/prod)"
+  type        = string
+  default     = "prod"
+}
+
+variable "use_dynamodb" {
+  description = "Enable DynamoDB-based serverless infrastructure"
+  type        = bool
+  default     = false
+}
+
+variable "use_ec2" {
+  description = "Enable EC2-based infrastructure (set to false when fully migrated to serverless)"
+  type        = bool
+  default     = true
+}

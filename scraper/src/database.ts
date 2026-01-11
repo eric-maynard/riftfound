@@ -1,6 +1,15 @@
 import { Pool } from 'pg';
 import Database from 'better-sqlite3';
 import { env } from './config.js';
+import {
+  startScrapeRunDynamoDB,
+  completeScrapeRunDynamoDB,
+  failScrapeRunDynamoDB,
+  upsertShopFromApiDynamoDB,
+  updateShopDisplayCityDynamoDB,
+  upsertEventWithStoreDynamoDB,
+  deleteOldEventsDynamoDB,
+} from './dynamodb.js';
 
 // Unified database interface
 export interface ScrapedEvent {
@@ -212,9 +221,15 @@ function useSqlite(): boolean {
   return env.DB_TYPE === 'sqlite';
 }
 
+function useDynamoDB(): boolean {
+  return env.DB_TYPE === 'dynamodb';
+}
+
 // Public API
 export async function startScrapeRun(): Promise<string> {
-  if (useSqlite()) {
+  if (useDynamoDB()) {
+    return startScrapeRunDynamoDB();
+  } else if (useSqlite()) {
     const db = getSqliteDb();
     const result = db.prepare(
       `INSERT INTO scrape_runs (started_at, status) VALUES (datetime('now'), 'running')`
@@ -232,7 +247,9 @@ export async function completeScrapeRun(
   runId: string,
   stats: { eventsFound: number; eventsCreated: number; eventsUpdated: number }
 ): Promise<void> {
-  if (useSqlite()) {
+  if (useDynamoDB()) {
+    return completeScrapeRunDynamoDB(runId, stats);
+  } else if (useSqlite()) {
     const db = getSqliteDb();
     db.prepare(`
       UPDATE scrape_runs SET
@@ -258,7 +275,9 @@ export async function completeScrapeRun(
 }
 
 export async function failScrapeRun(runId: string, errorMessage: string): Promise<void> {
-  if (useSqlite()) {
+  if (useDynamoDB()) {
+    return failScrapeRunDynamoDB(runId, errorMessage);
+  } else if (useSqlite()) {
     const db = getSqliteDb();
     db.prepare(`
       UPDATE scrape_runs SET
@@ -318,7 +337,9 @@ export interface UpsertShopResult {
 // Upsert a shop with full info from API (includes coordinates)
 // Uses external_id (API store ID) as unique identifier to handle stores with same name in different locations
 export async function upsertShopFromApi(store: StoreInfo): Promise<UpsertShopResult> {
-  if (useSqlite()) {
+  if (useDynamoDB()) {
+    return upsertShopFromApiDynamoDB(store);
+  } else if (useSqlite()) {
     const db = getSqliteDb();
 
     // Check if exists by external_id (API store ID)
@@ -383,7 +404,10 @@ export async function upsertShopFromApi(store: StoreInfo): Promise<UpsertShopRes
 
 // Update a shop's display city after reverse geocoding
 export function updateShopDisplayCity(shopId: number, displayCity: string): void {
-  if (useSqlite()) {
+  if (useDynamoDB()) {
+    // For DynamoDB, shopId is the external_id
+    updateShopDisplayCityDynamoDB(shopId, displayCity);
+  } else if (useSqlite()) {
     const db = getSqliteDb();
     db.prepare(`
       UPDATE shops SET display_city = ?, updated_at = datetime('now')
@@ -406,6 +430,10 @@ export async function upsertEventWithStore(
   event: ScrapedEvent,
   storeInfo: StoreInfo | null
 ): Promise<UpsertEventResult> {
+  if (useDynamoDB()) {
+    return upsertEventWithStoreDynamoDB(event, storeInfo);
+  }
+
   // First, upsert the shop with full coordinates from API
   let shopId: number | null = null;
   let shopResult: UpsertShopResult | undefined;
@@ -570,6 +598,10 @@ export function updateShopGeocode(
 
 // Delete events older than specified days
 export async function deleteOldEvents(daysOld = 60): Promise<number> {
+  if (useDynamoDB()) {
+    return deleteOldEventsDynamoDB(daysOld);
+  }
+
   const cutoffDate = new Date();
   cutoffDate.setDate(cutoffDate.getDate() - daysOld);
   const cutoffIso = cutoffDate.toISOString();

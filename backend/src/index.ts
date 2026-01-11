@@ -1,34 +1,6 @@
-import express from 'express';
-import cors from 'cors';
 import { env } from './config/env.js';
 import { closePool } from './config/database.js';
-import { errorHandler, notFoundHandler } from './middleware/errorHandler.js';
-import { generalLimiter } from './middleware/rateLimit.js';
-import eventsRouter from './routes/events.js';
-import healthRouter from './routes/health.js';
-
-const app = express();
-
-// Trust proxy for correct IP behind CloudFront/load balancers
-app.set('trust proxy', true);
-
-// Middleware
-app.use(cors({
-  origin: env.FRONTEND_URL,
-  credentials: true,
-}));
-app.use(express.json());
-
-// Rate limiting (100 req/min per IP)
-app.use('/api', generalLimiter);
-
-// Routes
-app.use('/api/events', eventsRouter);
-app.use('/api/health', healthRouter);
-
-// Error handling
-app.use(notFoundHandler);
-app.use(errorHandler);
+import app from './app.js';
 
 // Start server
 const server = app.listen(env.PORT, () => {

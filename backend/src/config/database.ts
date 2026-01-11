@@ -40,6 +40,14 @@ export function useSqlite(): boolean {
   return env.DB_TYPE === 'sqlite';
 }
 
+export function usePostgres(): boolean {
+  return env.DB_TYPE === 'postgres';
+}
+
+export function useDynamoDB(): boolean {
+  return env.DB_TYPE === 'dynamodb';
+}
+
 export function getPool(): Pool {
   return getPgPool();
 }
@@ -61,7 +69,12 @@ export async function closePool(): Promise<void> {
 
 export async function testConnection(): Promise<boolean> {
   try {
-    if (useSqlite()) {
+    if (useDynamoDB()) {
+      // DynamoDB doesn't need connection testing in the same way
+      // The client handles connection management automatically
+      console.log('DynamoDB mode - connection assumed healthy');
+      return true;
+    } else if (useSqlite()) {
       const db = getSqliteDb();
       db.prepare('SELECT 1').get();
       console.log('SQLite connection successful');

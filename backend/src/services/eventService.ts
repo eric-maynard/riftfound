@@ -1,5 +1,10 @@
-import { getPool, getSqlite, useSqlite } from '../config/database.js';
+import { getPool, getSqlite, useSqlite, useDynamoDB } from '../config/database.js';
 import type { Event, EventQuery } from '../models/event.js';
+import {
+  getEventsDynamoDB,
+  getEventByIdDynamoDB,
+  getScrapeInfoDynamoDB,
+} from '../adapters/dynamoAdapter.js';
 
 // Calculate date range for calendar mode (3 months forward/backward)
 function getCalendarDateRange(): { startDate: string; endDate: string } {
@@ -22,7 +27,9 @@ export async function getEvents(query: EventQuery): Promise<{ events: Event[]; t
   const limit = query.calendarMode ? CALENDAR_MAX_EVENTS : query.limit;
   const offset = query.calendarMode ? 0 : (query.page - 1) * query.limit;
 
-  if (useSqlite()) {
+  if (useDynamoDB()) {
+    return getEventsDynamoDB(query, offset, limit);
+  } else if (useSqlite()) {
     return getEventsSqlite(query, offset, limit);
   } else {
     return getEventsPostgres(query, offset, limit);
@@ -266,7 +273,9 @@ async function getEventsPostgres(query: EventQuery, offset: number, limit: numbe
 }
 
 export async function getEventById(id: string): Promise<Event | null> {
-  if (useSqlite()) {
+  if (useDynamoDB()) {
+    return getEventByIdDynamoDB(id);
+  } else if (useSqlite()) {
     const db = getSqlite();
     const row = db.prepare('SELECT * FROM events WHERE id = ?').get(id) as Record<string, unknown> | undefined;
     return row ? mapRowToEvent(row) : null;
@@ -315,7 +324,9 @@ export interface ScrapeInfo {
 }
 
 export async function getScrapeInfo(): Promise<ScrapeInfo> {
-  if (useSqlite()) {
+  if (useDynamoDB()) {
+    return getScrapeInfoDynamoDB();
+  } else if (useSqlite()) {
     const db = getSqlite();
 
     // Get the most recent scrape run that completed
