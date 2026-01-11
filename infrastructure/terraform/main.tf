@@ -143,6 +143,11 @@ resource "aws_instance" "riftfound" {
   USERDATA
 
   tags = { Name = "riftfound-server" }
+
+  # Prevent instance replacement when AMI updates
+  lifecycle {
+    ignore_changes = [ami, user_data]
+  }
 }
 
 resource "aws_volume_attachment" "riftfound_data" {
