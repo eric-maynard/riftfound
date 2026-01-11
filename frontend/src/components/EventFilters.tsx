@@ -309,7 +309,15 @@ function EventFiltersComponent({ filters, appliedFilters, onFiltersChange, onSea
               placeholder="Enter city or zip code..."
               value={cityInput}
               onChange={(e) => setCityInput(e.target.value)}
-              onFocus={() => suggestions.length > 0 && setShowSuggestions(true)}
+              onFocus={() => {
+                // Clear "My Location" placeholder when user clicks in to type a new location
+                if (cityInput === 'My Location') {
+                  setCityInput('');
+                }
+                if (suggestions.length > 0) {
+                  setShowSuggestions(true);
+                }
+              }}
               onKeyDown={handleKeyDown}
               disabled={loading}
               autoComplete="off"
