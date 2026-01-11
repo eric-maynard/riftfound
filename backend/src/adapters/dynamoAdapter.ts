@@ -3,13 +3,18 @@ import {
   getTableName,
   eventKeys,
   eventGSI1Keys,
+  eventGSI2Keys,
   shopKeys,
   geocacheKeys,
+  geocacheGSI3Keys,
   scrapeRunKeys,
   EntityPrefix,
   GetCommand,
   PutCommand,
   QueryCommand,
+  DeleteCommand,
+  BatchWriteCommand,
+  ScanCommand,
 } from '../config/dynamodb.js';
 import type { Event, EventQuery } from '../models/event.js';
 
@@ -19,6 +24,8 @@ export interface DynamoEventItem {
   SK: string;
   GSI1PK: string;
   GSI1SK: string;
+  GSI2PK?: string; // SHOP#<shopExternalId>
+  GSI2SK?: string; // startDate ISO string
   entityType: 'EVENT';
   externalId: string;
   name: string;
@@ -75,13 +82,20 @@ export interface DynamoShopItem {
 export interface DynamoGeocacheItem {
   PK: string;
   SK: string;
+  GSI3PK: string; // 'GEOCACHE_LRU' - constant for all geocache items
+  GSI3SK: string; // lastAccessedAt ISO timestamp for LRU sorting
   entityType: 'GEOCACHE';
   query: string;
   latitude: number;
   longitude: number;
   displayName: string | null;
+  lastAccessedAt: string;
   createdAt: string;
 }
+
+// Maximum geocache entries before LRU eviction
+const GEOCACHE_MAX_ENTRIES = 10000;
+const GEOCACHE_EVICTION_BATCH = 100; // Delete oldest 100 when limit exceeded
 
 // DynamoDB ScrapeRun item structure
 export interface DynamoScrapeRunItem {
@@ -178,7 +192,74 @@ function mapDynamoItemToEvent(item: DynamoEventItem): Event {
   };
 }
 
-// Query events by date range using GSI1
+// Shop cache for efficient location-based queries
+let shopCache: DynamoShopItem[] | null = null;
+let shopCacheTime = 0;
+const SHOP_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+
+// Get all shops (cached)
+async function getAllShops(): Promise<DynamoShopItem[]> {
+  const now = Date.now();
+  if (shopCache && now - shopCacheTime < SHOP_CACHE_TTL) {
+    return shopCache;
+  }
+
+  const client = getDynamoClient();
+  const tableName = getTableName();
+  const shops: DynamoShopItem[] = [];
+  let lastEvaluatedKey: Record<string, any> | undefined;
+
+  do {
+    const response = await client.send(new ScanCommand({
+      TableName: tableName,
+      FilterExpression: 'entityType = :shop',
+      ExpressionAttributeValues: {
+        ':shop': 'SHOP',
+      },
+      ExclusiveStartKey: lastEvaluatedKey,
+    }));
+
+    shops.push(...(response.Items || []) as DynamoShopItem[]);
+    lastEvaluatedKey = response.LastEvaluatedKey;
+  } while (lastEvaluatedKey);
+
+  shopCache = shops;
+  shopCacheTime = now;
+  return shops;
+}
+
+// Query events by shop ID and date range using GSI2
+async function queryEventsByShopAndDateRange(
+  shopExternalId: number,
+  startDate: string,
+  endDate: string
+): Promise<DynamoEventItem[]> {
+  const client = getDynamoClient();
+  const tableName = getTableName();
+  const events: DynamoEventItem[] = [];
+  let lastEvaluatedKey: Record<string, any> | undefined;
+
+  do {
+    const response = await client.send(new QueryCommand({
+      TableName: tableName,
+      IndexName: 'GSI2',
+      KeyConditionExpression: 'GSI2PK = :pk AND GSI2SK BETWEEN :start AND :end',
+      ExpressionAttributeValues: {
+        ':pk': `SHOP#${shopExternalId}`,
+        ':start': startDate,
+        ':end': endDate,
+      },
+      ExclusiveStartKey: lastEvaluatedKey,
+    }));
+
+    events.push(...(response.Items || []) as DynamoEventItem[]);
+    lastEvaluatedKey = response.LastEvaluatedKey;
+  } while (lastEvaluatedKey);
+
+  return events;
+}
+
+// Query events by date range using GSI1 (legacy - slower, used as fallback)
 async function queryEventsByDateRange(startDate: string, endDate: string): Promise<DynamoEventItem[]> {
   const client = getDynamoClient();
   const tableName = getTableName();
@@ -239,32 +320,54 @@ export async function getEventsDynamoDB(
     endDate = query.startDateTo || new Date(Date.now() + 90 * 24 * 60 * 60 * 1000).toISOString();
   }
 
-  // Step 2: Query events by date range
-  const allEvents = await queryEventsByDateRange(startDate, endDate);
-
-  // Step 3: Apply filters
-  let filtered = allEvents;
-
-  // Location filter (bounding box + Haversine)
+  // Step 2: Query events - use shop-first approach when location filter is present
+  let allEvents: DynamoEventItem[];
   const hasLocationFilter = query.lat !== undefined && query.lng !== undefined;
+
   if (hasLocationFilter) {
+    // Shop-first approach: much faster for location-based queries
+    // 1. Get all shops (cached)
+    // 2. Filter shops by bounding box + Haversine
+    // 3. Query events for matching shops in parallel
+
     const bbox = getBoundingBox(query.lat!, query.lng!, query.radiusKm);
+    const allShops = await getAllShops();
 
-    // Pre-filter with bounding box
-    filtered = filtered.filter(e =>
-      e.shopLatitude !== null &&
-      e.shopLongitude !== null &&
-      e.shopLatitude >= bbox.minLat &&
-      e.shopLatitude <= bbox.maxLat &&
-      e.shopLongitude >= bbox.minLng &&
-      e.shopLongitude <= bbox.maxLng
+    // Filter shops by bounding box
+    let shopsInRange = allShops.filter(s =>
+      s.latitude !== null &&
+      s.longitude !== null &&
+      s.latitude >= bbox.minLat &&
+      s.latitude <= bbox.maxLat &&
+      s.longitude >= bbox.minLng &&
+      s.longitude <= bbox.maxLng
     );
 
-    // Refine with exact Haversine distance
-    filtered = filtered.filter(e =>
-      haversineDistance(query.lat!, query.lng!, e.shopLatitude!, e.shopLongitude!) <= query.radiusKm
+    // Refine with Haversine distance
+    shopsInRange = shopsInRange.filter(s =>
+      haversineDistance(query.lat!, query.lng!, s.latitude!, s.longitude!) <= query.radiusKm
     );
+
+    // Query events for each shop in parallel (batched)
+    allEvents = [];
+    const batchSize = 20; // Query 20 shops in parallel at a time
+    for (let i = 0; i < shopsInRange.length; i += batchSize) {
+      const batch = shopsInRange.slice(i, i + batchSize);
+      const promises = batch.map(shop =>
+        queryEventsByShopAndDateRange(shop.externalId, startDate, endDate)
+      );
+      const results = await Promise.all(promises);
+      for (const events of results) {
+        allEvents.push(...events);
+      }
+    }
+  } else {
+    // No location filter - use date-based query (slower but comprehensive)
+    allEvents = await queryEventsByDateRange(startDate, endDate);
   }
+
+  // Step 3: Apply remaining filters
+  let filtered = allEvents;
 
   // City filter (case-insensitive partial match)
   if (query.city) {
@@ -377,7 +480,9 @@ export async function getScrapeInfoDynamoDB(): Promise<{ lastScrapeAt: Date | nu
   };
 }
 
-// Geocache operations
+// Geocache operations with LRU eviction
+
+// Get geocache entry and update lastAccessedAt
 export async function getGeocacheDynamoDB(normalizedQuery: string): Promise<{
   latitude: number;
   longitude: number;
@@ -397,6 +502,19 @@ export async function getGeocacheDynamoDB(normalizedQuery: string): Promise<{
   }
 
   const item = response.Item as DynamoGeocacheItem;
+
+  // Update lastAccessedAt (fire and forget - don't block on this)
+  const now = new Date().toISOString();
+  const gsi3Keys = geocacheGSI3Keys(now);
+  client.send(new PutCommand({
+    TableName: tableName,
+    Item: {
+      ...item,
+      ...gsi3Keys,
+      lastAccessedAt: now,
+    },
+  })).catch(() => {}); // Ignore errors - cache hit is more important
+
   return {
     latitude: item.latitude,
     longitude: item.longitude,
@@ -404,6 +522,7 @@ export async function getGeocacheDynamoDB(normalizedQuery: string): Promise<{
   };
 }
 
+// Set geocache entry with LRU eviction
 export async function setGeocacheDynamoDB(
   normalizedQuery: string,
   latitude: number,
@@ -413,19 +532,102 @@ export async function setGeocacheDynamoDB(
   const client = getDynamoClient();
   const tableName = getTableName();
   const keys = geocacheKeys(normalizedQuery);
+  const now = new Date().toISOString();
+  const gsi3Keys = geocacheGSI3Keys(now);
 
   const item: DynamoGeocacheItem = {
     ...keys,
+    ...gsi3Keys,
     entityType: 'GEOCACHE',
     query: normalizedQuery,
     latitude,
     longitude,
     displayName,
-    createdAt: new Date().toISOString(),
+    lastAccessedAt: now,
+    createdAt: now,
   };
 
   await client.send(new PutCommand({
     TableName: tableName,
     Item: item,
   }));
+
+  // Trigger eviction check (fire and forget)
+  evictOldGeocacheEntries().catch(() => {});
+}
+
+// Count geocache entries using GSI3
+async function countGeocacheEntries(): Promise<number> {
+  const client = getDynamoClient();
+  const tableName = getTableName();
+
+  const response = await client.send(new QueryCommand({
+    TableName: tableName,
+    IndexName: 'GSI3',
+    KeyConditionExpression: 'GSI3PK = :pk',
+    ExpressionAttributeValues: {
+      ':pk': 'GEOCACHE_LRU',
+    },
+    Select: 'COUNT',
+  }));
+
+  return response.Count || 0;
+}
+
+// Get oldest geocache entries for eviction
+async function getOldestGeocacheEntries(limit: number): Promise<{ PK: string; SK: string }[]> {
+  const client = getDynamoClient();
+  const tableName = getTableName();
+
+  const response = await client.send(new QueryCommand({
+    TableName: tableName,
+    IndexName: 'GSI3',
+    KeyConditionExpression: 'GSI3PK = :pk',
+    ExpressionAttributeValues: {
+      ':pk': 'GEOCACHE_LRU',
+    },
+    ScanIndexForward: true, // Ascending order (oldest first)
+    Limit: limit,
+    ProjectionExpression: 'PK, SK',
+  }));
+
+  return (response.Items || []).map(item => ({
+    PK: item.PK as string,
+    SK: item.SK as string,
+  }));
+}
+
+// Evict oldest geocache entries if over limit
+async function evictOldGeocacheEntries(): Promise<void> {
+  const count = await countGeocacheEntries();
+
+  if (count <= GEOCACHE_MAX_ENTRIES) {
+    return;
+  }
+
+  const entriesToDelete = await getOldestGeocacheEntries(GEOCACHE_EVICTION_BATCH);
+
+  if (entriesToDelete.length === 0) {
+    return;
+  }
+
+  const client = getDynamoClient();
+  const tableName = getTableName();
+
+  // BatchWrite can handle up to 25 items at a time
+  const batchSize = 25;
+  for (let i = 0; i < entriesToDelete.length; i += batchSize) {
+    const batch = entriesToDelete.slice(i, i + batchSize);
+    const deleteRequests = batch.map(key => ({
+      DeleteRequest: { Key: key },
+    }));
+
+    await client.send(new BatchWriteCommand({
+      RequestItems: {
+        [tableName]: deleteRequests,
+      },
+    }));
+  }
+
+  console.log(`Evicted ${entriesToDelete.length} old geocache entries`);
 }

@@ -69,6 +69,14 @@ export function eventGSI1Keys(startDate: Date, externalId: string) {
   };
 }
 
+// Helper to create event GSI2 keys (for shop-based queries)
+export function eventGSI2Keys(shopExternalId: number, startDate: string) {
+  return {
+    GSI2PK: `${EntityPrefix.SHOP}${shopExternalId}`,
+    GSI2SK: startDate,
+  };
+}
+
 // Helper to create shop keys
 export function shopKeys(externalId: number) {
   return {
@@ -82,6 +90,15 @@ export function geocacheKeys(normalizedQuery: string) {
   return {
     PK: `${EntityPrefix.GEOCACHE}${normalizedQuery}`,
     SK: 'GEOCACHE',
+  };
+}
+
+// Helper to create geocache GSI3 keys (for LRU eviction)
+// All geocache items share the same GSI3PK, sorted by lastAccessedAt
+export function geocacheGSI3Keys(lastAccessedAt: string) {
+  return {
+    GSI3PK: 'GEOCACHE_LRU',
+    GSI3SK: lastAccessedAt,
   };
 }
 
