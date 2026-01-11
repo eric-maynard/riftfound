@@ -198,16 +198,20 @@ function mapDynamoItemToEvent(item: DynamoEventItem): Event {
 function getGeohashNeighbors(lat: number, lng: number, precision: number = 4): string[] {
   const centerHash = geohash.encode(lat, lng, precision);
   const neighbors = geohash.neighbors(centerHash);
-  // Return center plus all 8 neighbors
+  // Return center plus all 8 neighbors, filtering out any undefined/empty values
   return [
     centerHash,
     neighbors.n, neighbors.ne, neighbors.e, neighbors.se,
     neighbors.s, neighbors.sw, neighbors.w, neighbors.nw
-  ];
+  ].filter((h): h is string => !!h && h.length > 0);
 }
 
 // Query shops by geohash using GeohashIndex
 async function getShopsByGeohash(geohashes: string[]): Promise<DynamoShopItem[]> {
+  if (!geohashes.length) {
+    return [];
+  }
+
   const client = getDynamoClient();
   const tableName = getTableName();
   const shops: DynamoShopItem[] = [];

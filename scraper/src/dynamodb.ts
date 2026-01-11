@@ -7,6 +7,7 @@ import {
   DeleteCommand,
   BatchWriteCommand,
 } from '@aws-sdk/lib-dynamodb';
+import geohash from 'ngeohash';
 import { env } from './config.js';
 import type { ScrapedEvent, StoreInfo, UpsertEventResult, UpsertShopResult } from './database.js';
 
@@ -90,6 +91,8 @@ interface DynamoEventItem {
   SK: string;
   GSI1PK: string;
   GSI1SK: string;
+  GSI2PK?: string;
+  GSI2SK?: string;
   entityType: 'EVENT';
   externalId: string;
   name: string;
@@ -133,6 +136,7 @@ interface DynamoShopItem {
   displayCity: string | null;
   latitude: number | null;
   longitude: number | null;
+  geohash4?: string;
   geocodeStatus: string;
   geocodeError: string | null;
   createdAt: string;
@@ -249,6 +253,11 @@ export async function upsertShopFromApiDynamoDB(store: StoreInfo): Promise<Upser
   const now = new Date().toISOString();
   const isNew = !existing.Item;
 
+  // Calculate geohash4 for spatial indexing
+  const geohash4 = store.latitude && store.longitude
+    ? geohash.encode(store.latitude, store.longitude, 4)
+    : undefined;
+
   const item: DynamoShopItem = {
     ...keys,
     entityType: 'SHOP',
@@ -258,6 +267,7 @@ export async function upsertShopFromApiDynamoDB(store: StoreInfo): Promise<Upser
     displayCity: existing.Item ? (existing.Item as DynamoShopItem).displayCity : null,
     latitude: store.latitude,
     longitude: store.longitude,
+    geohash4,
     geocodeStatus: 'completed',
     geocodeError: null,
     createdAt: existing.Item ? (existing.Item as DynamoShopItem).createdAt : now,
@@ -326,6 +336,12 @@ export async function upsertEventWithStoreDynamoDB(
   const now = new Date().toISOString();
   const gsi1Keys = eventGSI1Keys(event.startDate, event.externalId);
 
+  // GSI2 keys for shop-based event queries
+  const gsi2Keys = storeInfo?.id ? {
+    GSI2PK: `SHOP#${storeInfo.id}`,
+    GSI2SK: event.startDate.toISOString(),
+  } : {};
+
   // Calculate TTL (90 days after event date)
   const eventDate = new Date(event.startDate);
   const ttlDate = new Date(eventDate);
@@ -335,6 +351,7 @@ export async function upsertEventWithStoreDynamoDB(
   const item: DynamoEventItem = {
     ...eventKeysVal,
     ...gsi1Keys,
+    ...gsi2Keys,
     entityType: 'EVENT',
     externalId: event.externalId,
     name: event.name,
