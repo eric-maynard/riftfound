@@ -95,6 +95,12 @@ const SETTINGS_KEY = 'riftfound_settings';
 
 interface Settings {
   weekStartsOnMonday: boolean;
+  location?: {
+    lat: number;
+    lng: number;
+    displayName: string;
+  };
+  distanceMiles?: number;
 }
 
 const DEFAULT_SETTINGS: Settings = {
@@ -129,19 +135,23 @@ function CalendarPage() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const settingsRef = useRef<HTMLDivElement>(null);
 
+  // Get initial location from saved settings or use default
+  const initialLocation = settings.location ?? DEFAULT_LOCATION;
+  const initialDistance = settings.distanceMiles ?? DEFAULT_DISTANCE_MILES;
+
   // Staged filters (what user is editing)
-  const [stagedFilters, setStagedFilters] = useState<Filters>({
-    location: DEFAULT_LOCATION,
-    distanceMiles: DEFAULT_DISTANCE_MILES,
+  const [stagedFilters, setStagedFilters] = useState<Filters>(() => ({
+    location: initialLocation,
+    distanceMiles: initialDistance,
     format: null,
-  });
+  }));
 
   // Applied filters (what's actually being used for the query)
-  const [appliedFilters, setAppliedFilters] = useState<Filters>({
-    location: DEFAULT_LOCATION,
-    distanceMiles: DEFAULT_DISTANCE_MILES,
+  const [appliedFilters, setAppliedFilters] = useState<Filters>(() => ({
+    location: initialLocation,
+    distanceMiles: initialDistance,
     format: null,
-  });
+  }));
 
   const [locationInitialized, setLocationInitialized] = useState(false);
   const [tooltipEvent, setTooltipEvent] = useState<Event | null>(null);
@@ -156,10 +166,18 @@ function CalendarPage() {
 
   const { minDate, maxDate } = useMemo(() => getValidDateRange(), []);
 
-  // Try to get user's location on mount, fallback to San Francisco
+  // Try to get user's location on mount, unless we have a saved location
   useEffect(() => {
     if (locationInitialized) return;
 
+    // If we have a saved location, use it and skip geolocation
+    if (settings.location) {
+      setLocationInitialized(true);
+      setSearchTrigger(t => t + 1); // Trigger search with saved location
+      return;
+    }
+
+    // No saved location - try geolocation, fallback to San Francisco
     if (navigator.geolocation) {
       navigator.geolocation.getCurrentPosition(
         async (position) => {
@@ -204,7 +222,7 @@ function CalendarPage() {
       setLocationInitialized(true);
       setSearchTrigger(t => t + 1); // Trigger initial search
     }
-  }, [locationInitialized]);
+  }, [locationInitialized, settings.location]);
 
   // Fetch events when search is triggered
   useEffect(() => {
@@ -269,6 +287,19 @@ function CalendarPage() {
     setAppliedFilters(filtersToApply);
     if (filtersOverride) {
       setStagedFilters(filtersOverride);
+    }
+    // Save location and distance to settings
+    if (filtersToApply.location) {
+      const locationToSave = filtersToApply.location;
+      setSettings(prev => {
+        const updated = {
+          ...prev,
+          location: locationToSave,
+          distanceMiles: filtersToApply.distanceMiles,
+        };
+        saveSettings(updated);
+        return updated;
+      });
     }
     setSearchTrigger(t => t + 1);
   }, [stagedFilters]);
