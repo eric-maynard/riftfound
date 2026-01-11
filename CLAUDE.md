@@ -86,3 +86,26 @@ cp terraform.tfvars.example terraform.tfvars
 terraform plan
 terraform apply
 ```
+
+## Metrics
+
+Site analytics and database stats are in `scripts/metrics/`. See the [Metrics README](scripts/metrics/README.md) for full docs.
+
+```bash
+cd scripts/metrics
+
+# Traffic metrics (CloudFront logs)
+./download-logs.sh 30         # Download last 30 days of logs
+./analyze-logs.sh week        # Quick summary
+python analyze-logs.py        # Detailed analysis
+
+# Database metrics (shops/events)
+./db-metrics.sh --remote      # Production stats
+
+# Interactive analysis
+jupyter notebook metrics.ipynb
+```
+
+Key metrics tracked:
+- **Traffic**: unique visitors, page views, event clicks, location searches
+- **Database**: events/shops added per day, distribution by type/state

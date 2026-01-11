@@ -18,6 +18,11 @@ output "s3_bucket_name" {
   value = aws_s3_bucket.frontend.id
 }
 
+output "logs_bucket_name" {
+  value       = aws_s3_bucket.logs.id
+  description = "S3 bucket containing CloudFront access logs"
+}
+
 output "acm_validation_records" {
   description = "Add these DNS records to GoDaddy for SSL certificate validation"
   value = {

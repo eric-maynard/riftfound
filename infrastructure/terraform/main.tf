@@ -163,6 +163,42 @@ resource "aws_s3_bucket" "frontend" {
   tags = { Name = "riftfound-frontend" }
 }
 
+# S3 Bucket for CloudFront Logs
+resource "aws_s3_bucket" "logs" {
+  bucket = "riftfound-logs-${random_id.bucket_suffix.hex}"
+  tags   = { Name = "riftfound-logs" }
+}
+
+resource "aws_s3_bucket_ownership_controls" "logs" {
+  bucket = aws_s3_bucket.logs.id
+  rule {
+    object_ownership = "BucketOwnerPreferred"
+  }
+}
+
+resource "aws_s3_bucket_acl" "logs" {
+  depends_on = [aws_s3_bucket_ownership_controls.logs]
+  bucket     = aws_s3_bucket.logs.id
+  acl        = "private"
+}
+
+resource "aws_s3_bucket_lifecycle_configuration" "logs" {
+  bucket = aws_s3_bucket.logs.id
+
+  rule {
+    id     = "expire-old-logs"
+    status = "Enabled"
+
+    expiration {
+      days = 90
+    }
+
+    noncurrent_version_expiration {
+      noncurrent_days = 30
+    }
+  }
+}
+
 resource "aws_s3_bucket_public_access_block" "frontend" {
   bucket                  = aws_s3_bucket.frontend.id
   block_public_acls       = true
@@ -212,6 +248,12 @@ resource "aws_cloudfront_distribution" "main" {
   default_root_object = "index.html"
   aliases             = [var.domain_name, "www.${var.domain_name}"]
   price_class         = "PriceClass_100"
+
+  logging_config {
+    include_cookies = false
+    bucket          = aws_s3_bucket.logs.bucket_domain_name
+    prefix          = "cloudfront/"
+  }
 
   origin {
     domain_name              = aws_s3_bucket.frontend.bucket_regional_domain_name
