@@ -1,6 +1,6 @@
 /**
  * Geocoding utilities for the scraper.
- * Uses local Photon first, falls back to public Photon with rate limiting.
+ * Precedence: Google Maps → local Photon (if enabled) → public Photon (with rate limiting)
  */
 
 import { env } from './config.js';
@@ -8,7 +8,18 @@ import { addToPhotonQueue } from './database.js';
 
 const PUBLIC_PHOTON_URL = 'https://photon.komoot.io';
 const LOCAL_PHOTON_URL = env.PHOTON_URL || 'http://localhost:2322';
+const GOOGLE_MAPS_GEOCODE_URL = 'https://maps.googleapis.com/maps/api/geocode/json';
 const RATE_LIMIT_MS = 1100; // ~1 request per second for public Photon
+
+// Check if Google Maps API is available
+function hasGoogleMapsApiKey(): boolean {
+  return Boolean(env.GOOGLE_MAPS_API_KEY);
+}
+
+// Check if local Photon is enabled
+function isPhotonEnabled(): boolean {
+  return env.PHOTON_ENABLED;
+}
 
 interface PhotonFeature {
   geometry: { coordinates: [number, number] };
@@ -38,20 +49,90 @@ async function waitForRateLimit(): Promise<void> {
   lastPublicRequest = Date.now();
 }
 
+interface GoogleGeocodeResult {
+  formatted_address: string;
+  address_components: Array<{
+    long_name: string;
+    short_name: string;
+    types: string[];
+  }>;
+}
+
+interface GoogleGeocodeResponse {
+  status: string;
+  results: GoogleGeocodeResult[];
+}
+
+/**
+ * Reverse geocode using Google Maps API
+ */
+async function callGoogleMapsReverse(lat: number, lon: number): Promise<string | null> {
+  if (!env.GOOGLE_MAPS_API_KEY) return null;
+
+  try {
+    const url = new URL(GOOGLE_MAPS_GEOCODE_URL);
+    url.searchParams.set('latlng', `${lat},${lon}`);
+    url.searchParams.set('key', env.GOOGLE_MAPS_API_KEY);
+
+    const response = await fetch(url.toString(), {
+      headers: { 'User-Agent': 'Riftfound/1.0 (Scraper)' },
+    });
+
+    if (!response.ok) {
+      console.error(`Google Maps reverse geocode error: ${response.status}`);
+      return null;
+    }
+
+    const data = await response.json() as GoogleGeocodeResponse;
+    if (data.status !== 'OK' || data.results.length === 0) {
+      return null;
+    }
+
+    const result = data.results[0];
+    const components = result.address_components;
+    const city = components.find(c => c.types.includes('locality'))?.long_name;
+    const state = components.find(c => c.types.includes('administrative_area_level_1'))?.short_name;
+    const country = components.find(c => c.types.includes('country'))?.long_name;
+
+    if (city && state) {
+      return `${city}, ${state}`;
+    } else if (city && country) {
+      return `${city}, ${country}`;
+    } else if (city) {
+      return city;
+    }
+
+    return null;
+  } catch (error) {
+    console.error('Google Maps reverse geocode failed:', error);
+    return null;
+  }
+}
+
 /**
  * Reverse geocode coordinates to get city name.
- * Tries local Photon first, falls back to public Photon with rate limiting.
+ * Precedence: Google Maps → local Photon (if enabled) → public Photon (with rate limiting)
  * Returns the city name or null if not found.
  */
 export async function reverseGeocodeCity(lat: number, lon: number): Promise<string | null> {
-  // Try local Photon first
-  try {
-    const localFeature = await callReverseGeocode(LOCAL_PHOTON_URL, lat, lon);
-    if (localFeature) {
-      return formatCityName(localFeature.properties);
+  // Try Google Maps API first (if available)
+  if (hasGoogleMapsApiKey()) {
+    const googleResult = await callGoogleMapsReverse(lat, lon);
+    if (googleResult) {
+      return googleResult;
     }
-  } catch {
-    // Local Photon failed or unavailable
+  }
+
+  // Try local Photon (if enabled)
+  if (isPhotonEnabled()) {
+    try {
+      const localFeature = await callReverseGeocode(LOCAL_PHOTON_URL, lat, lon);
+      if (localFeature) {
+        return formatCityName(localFeature.properties);
+      }
+    } catch {
+      // Local Photon failed or unavailable
+    }
   }
 
   // Fall back to public Photon with rate limiting
@@ -59,8 +140,10 @@ export async function reverseGeocodeCity(lat: number, lon: number): Promise<stri
     await waitForRateLimit();
     const publicFeature = await callReverseGeocode(PUBLIC_PHOTON_URL, lat, lon);
     if (publicFeature) {
-      // Index city AND county to local Photon for future forward searches
-      await indexFeatureToLocalPhoton(publicFeature).catch(() => {});
+      // Index city AND county to local Photon for future forward searches (if enabled)
+      if (isPhotonEnabled()) {
+        await indexFeatureToLocalPhoton(publicFeature).catch(() => {});
+      }
       return formatCityName(publicFeature.properties);
     }
   } catch (error) {

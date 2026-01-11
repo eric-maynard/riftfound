@@ -8,8 +8,8 @@ dotenv.config(); // Also check current directory
 const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
 
-  // Database type: sqlite (default for dev) or postgres
-  DB_TYPE: z.enum(['sqlite', 'postgres']).default('sqlite'),
+  // Database type: sqlite (default for dev), postgres, or dynamodb
+  DB_TYPE: z.enum(['sqlite', 'postgres', 'dynamodb']).default('sqlite'),
 
   // SQLite config - relative to project root
   SQLITE_PATH: z.string().default('../riftfound.db'),
@@ -21,11 +21,20 @@ const envSchema = z.object({
   DB_USER: z.string().optional(),
   DB_PASSWORD: z.string().optional(),
 
+  // DynamoDB config (only required if DB_TYPE=dynamodb)
+  DYNAMODB_TABLE_NAME: z.string().default('riftfound'),
+  AWS_REGION: z.string().default('us-west-2'),
+  DYNAMODB_ENDPOINT: z.string().optional(), // For local development with DynamoDB Local
+
   // Scraper
   SCRAPE_INTERVAL_MINUTES: z.string().transform(Number).default('60'),
 
-  // Geocoding
+  // Geocoding - Photon (self-hosted)
   PHOTON_URL: z.string().default('http://localhost:2322'),
+  PHOTON_ENABLED: z.string().transform(v => v !== 'false').default('true'),
+
+  // Geocoding - Google Maps API (optional, takes precedence over Photon)
+  GOOGLE_MAPS_API_KEY: z.string().optional(),
 });
 
 export type Env = z.infer<typeof envSchema>;

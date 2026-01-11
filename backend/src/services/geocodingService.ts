@@ -311,6 +311,236 @@ async function callPhotonWithFallback(query: string, limit: number, osmTag?: str
   }
 }
 
+// ============================================================================
+// Google Maps API Functions
+// ============================================================================
+
+const GOOGLE_MAPS_GEOCODE_URL = 'https://maps.googleapis.com/maps/api/geocode/json';
+const GOOGLE_PLACES_AUTOCOMPLETE_URL = 'https://places.googleapis.com/v1/places:autocomplete';
+
+interface GoogleGeocodeResult {
+  formatted_address: string;
+  geometry: {
+    location: {
+      lat: number;
+      lng: number;
+    };
+  };
+  address_components: Array<{
+    long_name: string;
+    short_name: string;
+    types: string[];
+  }>;
+}
+
+interface GoogleGeocodeResponse {
+  status: string;
+  results: GoogleGeocodeResult[];
+}
+
+// Places API (New) response types
+interface PlacesAutocompleteSuggestion {
+  placePrediction?: {
+    placeId: string;
+    text: {
+      text: string;
+    };
+    structuredFormat?: {
+      mainText: { text: string };
+      secondaryText?: { text: string };
+    };
+    types: string[];
+  };
+}
+
+interface PlacesAutocompleteResponse {
+  suggestions: PlacesAutocompleteSuggestion[];
+}
+
+interface PlaceDetailsResponse {
+  location: {
+    latitude: number;
+    longitude: number;
+  };
+  displayName: {
+    text: string;
+  };
+}
+
+// Check if Google Maps API is available
+function hasGoogleMapsApiKey(): boolean {
+  return Boolean(env.GOOGLE_MAPS_API_KEY);
+}
+
+// Check if local Photon is enabled
+function isPhotonEnabled(): boolean {
+  return env.PHOTON_ENABLED;
+}
+
+// Forward geocode using Google Maps API
+async function callGoogleMapsGeocode(query: string): Promise<GeocodeResult | null> {
+  if (!env.GOOGLE_MAPS_API_KEY) return null;
+
+  try {
+    const url = new URL(GOOGLE_MAPS_GEOCODE_URL);
+    url.searchParams.set('address', query);
+    url.searchParams.set('key', env.GOOGLE_MAPS_API_KEY);
+
+    const response = await fetch(url.toString());
+    if (!response.ok) {
+      console.error(`Google Maps geocode error: ${response.status}`);
+      return null;
+    }
+
+    const data = await response.json() as GoogleGeocodeResponse;
+    if (data.status !== 'OK' || data.results.length === 0) {
+      return null;
+    }
+
+    const result = data.results[0];
+    return {
+      latitude: result.geometry.location.lat,
+      longitude: result.geometry.location.lng,
+      displayName: result.formatted_address,
+    };
+  } catch (error) {
+    console.error('Google Maps geocode failed:', error);
+    return null;
+  }
+}
+
+// Reverse geocode using Google Maps API
+async function callGoogleMapsReverse(lat: number, lon: number): Promise<GeocodeResult | null> {
+  if (!env.GOOGLE_MAPS_API_KEY) return null;
+
+  try {
+    const url = new URL(GOOGLE_MAPS_GEOCODE_URL);
+    url.searchParams.set('latlng', `${lat},${lon}`);
+    url.searchParams.set('key', env.GOOGLE_MAPS_API_KEY);
+
+    const response = await fetch(url.toString());
+    if (!response.ok) {
+      console.error(`Google Maps reverse geocode error: ${response.status}`);
+      return null;
+    }
+
+    const data = await response.json() as GoogleGeocodeResponse;
+    if (data.status !== 'OK' || data.results.length === 0) {
+      return null;
+    }
+
+    const result = data.results[0];
+    // Extract city/state for cleaner display
+    const components = result.address_components;
+    const city = components.find(c => c.types.includes('locality'))?.long_name;
+    const state = components.find(c => c.types.includes('administrative_area_level_1'))?.short_name;
+    const country = components.find(c => c.types.includes('country'))?.long_name;
+
+    let displayName: string;
+    if (city && state) {
+      displayName = `${city}, ${state}`;
+    } else if (city && country) {
+      displayName = `${city}, ${country}`;
+    } else {
+      displayName = result.formatted_address;
+    }
+
+    return {
+      latitude: lat,
+      longitude: lon,
+      displayName,
+    };
+  } catch (error) {
+    console.error('Google Maps reverse geocode failed:', error);
+    return null;
+  }
+}
+
+// Get autocomplete suggestions using Google Places API (New)
+async function callGoogleMapsAutocomplete(query: string, limit: number): Promise<GeocodeSuggestion[]> {
+  if (!env.GOOGLE_MAPS_API_KEY) return [];
+
+  try {
+    const response = await fetch(GOOGLE_PLACES_AUTOCOMPLETE_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Goog-Api-Key': env.GOOGLE_MAPS_API_KEY,
+      },
+      body: JSON.stringify({
+        input: query,
+        includedPrimaryTypes: ['locality', 'administrative_area_level_1', 'administrative_area_level_2'],
+      }),
+    });
+
+    if (!response.ok) {
+      console.error(`Google Places autocomplete error: ${response.status}`);
+      return [];
+    }
+
+    const data = await response.json() as PlacesAutocompleteResponse;
+    if (!data.suggestions || data.suggestions.length === 0) {
+      return [];
+    }
+
+    // Limit predictions and fetch details for each to get coordinates
+    const predictions = data.suggestions.slice(0, limit);
+    const suggestions: GeocodeSuggestion[] = [];
+
+    for (const suggestion of predictions) {
+      if (!suggestion.placePrediction) continue;
+
+      const details = await fetchPlaceDetails(suggestion.placePrediction.placeId);
+      if (details) {
+        const displayName = suggestion.placePrediction.text.text;
+        const types = suggestion.placePrediction.types || [];
+        suggestions.push({
+          latitude: details.lat,
+          longitude: details.lng,
+          displayName,
+          type: types.includes('locality') ? 'city' : 'place',
+        });
+      }
+    }
+
+    return suggestions;
+  } catch (error) {
+    console.error('Google Places autocomplete failed:', error);
+    return [];
+  }
+}
+
+// Fetch place details to get coordinates using Places API (New)
+async function fetchPlaceDetails(placeId: string): Promise<{ lat: number; lng: number } | null> {
+  if (!env.GOOGLE_MAPS_API_KEY) return null;
+
+  try {
+    const url = `https://places.googleapis.com/v1/places/${placeId}`;
+    const response = await fetch(url, {
+      headers: {
+        'X-Goog-Api-Key': env.GOOGLE_MAPS_API_KEY,
+        'X-Goog-FieldMask': 'location',
+      },
+    });
+
+    if (!response.ok) return null;
+
+    const data = await response.json() as PlaceDetailsResponse;
+    if (!data.location) return null;
+
+    return {
+      lat: data.location.latitude,
+      lng: data.location.longitude,
+    };
+  } catch {
+    return null;
+  }
+}
+
+// ============================================================================
+// Cache Functions
+// ============================================================================
+
 // Check cache for geocoded location
 async function getCachedGeocode(query: string): Promise<GeocodeResult | null> {
   const normalizedQuery = query.toLowerCase().trim();
@@ -370,7 +600,8 @@ async function cacheGeocode(query: string, result: GeocodeResult): Promise<void>
   }
 }
 
-// Geocode a city/location using Photon API (with fallback)
+// Geocode a city/location
+// Precedence: ZIP lookup → cache → Google Maps → local Photon → public Photon
 export async function geocodeCity(query: string): Promise<GeocodeResult | null> {
   const trimmedQuery = query.trim();
 
@@ -384,7 +615,7 @@ export async function geocodeCity(query: string): Promise<GeocodeResult | null> 
         displayName: `${zipResult.city}, ${zipResult.state_code} ${zipResult.zipcode}`,
       };
     }
-    // ZIP not found in our table, fall through to Photon
+    // ZIP not found in our table, fall through to geocoding
   }
 
   // Check cache for non-ZIP queries
@@ -393,34 +624,70 @@ export async function geocodeCity(query: string): Promise<GeocodeResult | null> 
     return cached;
   }
 
-  const data = await callPhotonWithFallback(trimmedQuery, 1);
-
-  if (data.features.length === 0) {
-    return null;
+  // Try Google Maps API first (if available)
+  if (hasGoogleMapsApiKey()) {
+    const googleResult = await callGoogleMapsGeocode(trimmedQuery);
+    if (googleResult) {
+      await cacheGeocode(query, googleResult);
+      return googleResult;
+    }
   }
 
-  const feature = data.features[0];
-  const [lon, lat] = feature.geometry.coordinates;
-  const props = feature.properties;
+  // Fall back to Photon (if enabled) with public fallback
+  if (isPhotonEnabled()) {
+    const data = await callPhotonWithFallback(trimmedQuery, 1);
 
-  // Build display name from properties
-  const displayParts = [props.name, props.city, props.state, props.country].filter(Boolean);
-  const displayName = displayParts.join(', ') || query;
+    if (data.features.length > 0) {
+      const feature = data.features[0];
+      const [lon, lat] = feature.geometry.coordinates;
+      const props = feature.properties;
 
-  const result: GeocodeResult = {
-    latitude: lat,
-    longitude: lon,
-    displayName,
-  };
+      // Build display name from properties
+      const displayParts = [props.name, props.city, props.state, props.country].filter(Boolean);
+      const displayName = displayParts.join(', ') || query;
 
-  // Cache the result
-  await cacheGeocode(query, result);
+      const result: GeocodeResult = {
+        latitude: lat,
+        longitude: lon,
+        displayName,
+      };
 
-  return result;
+      // Cache the result
+      await cacheGeocode(query, result);
+      return result;
+    }
+  } else {
+    // Photon disabled, try public Photon as last resort
+    try {
+      logPublicPhotonQuery(query);
+      const data = await callPhotonApi(PUBLIC_PHOTON_URL, trimmedQuery, 1);
+      if (data.features.length > 0) {
+        const feature = data.features[0];
+        const [lon, lat] = feature.geometry.coordinates;
+        const props = feature.properties;
+
+        const displayParts = [props.name, props.city, props.state, props.country].filter(Boolean);
+        const displayName = displayParts.join(', ') || query;
+
+        const result: GeocodeResult = {
+          latitude: lat,
+          longitude: lon,
+          displayName,
+        };
+
+        await cacheGeocode(query, result);
+        return result;
+      }
+    } catch {
+      // Public Photon failed
+    }
+  }
+
+  return null;
 }
 
-// Get autocomplete suggestions - local Photon only (no public fallback to avoid rate limits)
-// Public Photon is only used when user clicks Search without selecting from autocomplete
+// Get autocomplete suggestions
+// Precedence: ZIP lookup → Google Places (if available) → local Photon (if enabled)
 export async function geocodeSuggestions(query: string, limit = 5): Promise<GeocodeSuggestion[]> {
   if (!query || query.length < 2) {
     return [];
@@ -439,11 +706,23 @@ export async function geocodeSuggestions(query: string, limit = 5): Promise<Geoc
         type: 'postcode',
       }];
     }
-    // ZIP not found, return empty (don't fall through to Photon for ZIPs)
+    // ZIP not found, return empty (don't fall through for ZIPs)
     return [];
   }
 
-  // Only use local Photon for non-ZIP queries - no public fallback for suggestions
+  // Try Google Places API first (if available)
+  if (hasGoogleMapsApiKey()) {
+    const googleSuggestions = await callGoogleMapsAutocomplete(trimmedQuery, limit);
+    if (googleSuggestions.length > 0) {
+      return googleSuggestions;
+    }
+  }
+
+  // Fall back to local Photon (if enabled)
+  if (!isPhotonEnabled()) {
+    return [];
+  }
+
   let data: PhotonResponse;
   try {
     data = await callPhotonApi(env.PHOTON_URL, trimmedQuery, limit, 'place');
@@ -483,36 +762,46 @@ export async function geocodeSuggestions(query: string, limit = 5): Promise<Geoc
 }
 
 // Reverse geocode coordinates to get location name
-// Uses self-hosted Photon with public fallback (like forward geocoding)
+// Precedence: Google Maps → local Photon (if enabled) → public Photon
 export async function reverseGeocode(lat: number, lon: number): Promise<GeocodeResult | null> {
-  // Try self-hosted Photon first
-  try {
-    const url = new URL(`${env.PHOTON_URL}/reverse`);
-    url.searchParams.set('lat', String(lat));
-    url.searchParams.set('lon', String(lon));
-
-    const response = await fetch(url.toString());
-    if (response.ok) {
-      const data = await response.json() as PhotonResponse;
-      if (data.features.length > 0) {
-        const feature = data.features[0];
-        const props = feature.properties;
-
-        // Build display name from properties
-        const displayParts = [props.name, props.city, props.state, props.country].filter(Boolean);
-        // Remove duplicates (e.g., when name === city)
-        const uniqueParts = [...new Set(displayParts)];
-        const displayName = uniqueParts.join(', ') || 'Unknown Location';
-
-        return {
-          latitude: lat,
-          longitude: lon,
-          displayName,
-        };
-      }
+  // Try Google Maps API first (if available)
+  if (hasGoogleMapsApiKey()) {
+    const googleResult = await callGoogleMapsReverse(lat, lon);
+    if (googleResult) {
+      return googleResult;
     }
-  } catch {
-    // Self-hosted failed, try public fallback
+  }
+
+  // Try self-hosted Photon (if enabled)
+  if (isPhotonEnabled()) {
+    try {
+      const url = new URL(`${env.PHOTON_URL}/reverse`);
+      url.searchParams.set('lat', String(lat));
+      url.searchParams.set('lon', String(lon));
+
+      const response = await fetch(url.toString());
+      if (response.ok) {
+        const data = await response.json() as PhotonResponse;
+        if (data.features.length > 0) {
+          const feature = data.features[0];
+          const props = feature.properties;
+
+          // Build display name from properties
+          const displayParts = [props.name, props.city, props.state, props.country].filter(Boolean);
+          // Remove duplicates (e.g., when name === city)
+          const uniqueParts = [...new Set(displayParts)];
+          const displayName = uniqueParts.join(', ') || 'Unknown Location';
+
+          return {
+            latitude: lat,
+            longitude: lon,
+            displayName,
+          };
+        }
+      }
+    } catch {
+      // Self-hosted failed, try public fallback
+    }
   }
 
   // Fallback to public Photon API
@@ -541,8 +830,8 @@ export async function reverseGeocode(lat: number, lon: number): Promise<GeocodeR
     const uniqueParts = [...new Set(displayParts)];
     const displayName = uniqueParts.join(', ') || 'Unknown Location';
 
-    // If we got a place-level result, index it for future autocomplete
-    if (isIndexablePlace(feature)) {
+    // If we got a place-level result and Photon is enabled, index it for future autocomplete
+    if (isPhotonEnabled() && isIndexablePlace(feature)) {
       indexFeatureToLocalPhoton(feature, displayName).catch(() => {});
     }
 
@@ -552,7 +841,7 @@ export async function reverseGeocode(lat: number, lon: number): Promise<GeocodeR
       displayName,
     };
   } catch {
-    // Both failed, return null
+    // All methods failed, return null
     return null;
   }
 }
