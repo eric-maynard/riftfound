@@ -128,12 +128,29 @@ function EventFiltersComponent({ filters, appliedFilters, onFiltersChange, onSea
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (!showSuggestions || suggestions.length === 0) {
-      // Allow Enter to trigger search when no suggestions showing
-      if (e.key === 'Enter' && canSearch) {
-        e.preventDefault();
-        handleSearchClick();
+    // Handle Enter key specially - always allow geocoding typed text
+    if (e.key === 'Enter') {
+      e.preventDefault();
+
+      // If a suggestion is selected, use it
+      if (showSuggestions && selectedIndex >= 0 && selectedIndex < suggestions.length) {
+        handleSelectSuggestion(suggestions[selectedIndex]);
+        return;
       }
+
+      // Otherwise, geocode the typed text if it's at least 2 characters
+      const trimmedInput = cityInput.trim();
+      if (trimmedInput.length >= 2) {
+        setShowSuggestions(false);
+        setSelectedIndex(-1);
+        // Force geocoding by calling handleSearchClick, but we need to ensure
+        // it geocodes even if the text matches current location
+        handleSearchWithGeocode();
+      }
+      return;
+    }
+
+    if (!showSuggestions || suggestions.length === 0) {
       return;
     }
 
@@ -145,18 +162,6 @@ function EventFiltersComponent({ filters, appliedFilters, onFiltersChange, onSea
       case 'ArrowUp':
         e.preventDefault();
         setSelectedIndex((prev) => (prev > 0 ? prev - 1 : -1));
-        break;
-      case 'Enter':
-        e.preventDefault();
-        if (selectedIndex >= 0 && selectedIndex < suggestions.length) {
-          handleSelectSuggestion(suggestions[selectedIndex]);
-        } else {
-          // No suggestion selected, trigger search with geocoding
-          if (canSearch) {
-            setShowSuggestions(false);
-            handleSearchClick();
-          }
-        }
         break;
       case 'Escape':
         setShowSuggestions(false);
@@ -237,6 +242,37 @@ function EventFiltersComponent({ filters, appliedFilters, onFiltersChange, onSea
       ...filters,
       format: value,
     });
+  };
+
+  // Force geocode the typed text and search (used when pressing Enter)
+  const handleSearchWithGeocode = async () => {
+    const trimmedInput = cityInput.trim();
+    if (trimmedInput.length < 2) return;
+
+    setLoading(true);
+    setError(null);
+    try {
+      const response = await geocodeCity(trimmedInput);
+      if (response.data) {
+        const newLocation = {
+          lat: response.data.latitude,
+          lng: response.data.longitude,
+          displayName: response.data.displayName,
+        };
+        setCityInput(response.data.displayName);
+        const newFilters = {
+          ...filters,
+          location: newLocation,
+        };
+        onSearch(newFilters);
+      } else {
+        setError('Location not found');
+      }
+    } catch {
+      setError('Unable to find location');
+    } finally {
+      setLoading(false);
+    }
   };
 
   const handleSearchClick = async () => {
