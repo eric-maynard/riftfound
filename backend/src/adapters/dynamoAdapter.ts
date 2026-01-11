@@ -194,16 +194,23 @@ function mapDynamoItemToEvent(item: DynamoEventItem): Event {
   };
 }
 
-// Get neighboring geohash cells (center + 8 neighbors)
-function getGeohashNeighbors(lat: number, lng: number, precision: number = 4): string[] {
-  const centerHash = geohash.encode(lat, lng, precision);
-  const neighbors = geohash.neighbors(centerHash);
-  // Return center plus all 8 neighbors, filtering out any undefined/empty values
-  return [
-    centerHash,
-    neighbors.n, neighbors.ne, neighbors.e, neighbors.se,
-    neighbors.s, neighbors.sw, neighbors.w, neighbors.nw
-  ].filter((h): h is string => !!h && h.length > 0);
+// Get all geohash cells that cover a bounding box around a point
+function getGeohashesForRadius(lat: number, lng: number, radiusKm: number, precision: number = 4): string[] {
+  // Calculate bounding box
+  const latDelta = radiusKm / 111; // 1 degree latitude ≈ 111km
+  const lngDelta = radiusKm / (111 * Math.cos(lat * Math.PI / 180));
+
+  const minLat = lat - latDelta;
+  const maxLat = lat + latDelta;
+  const minLng = lng - lngDelta;
+  const maxLng = lng + lngDelta;
+
+  // Get all geohashes that cover this bounding box
+  // ngeohash.bboxes returns all geohashes of given precision within the bbox
+  const hashes = geohash.bboxes(minLat, minLng, maxLat, maxLng, precision);
+
+  // Filter out any undefined/empty values and dedupe
+  return [...new Set(hashes.filter((h: string) => !!h && h.length > 0))];
 }
 
 // Query shops by geohash using GeohashIndex
@@ -345,12 +352,12 @@ export async function getEventsDynamoDB(
 
   if (hasLocationFilter) {
     // Geohash-based shop lookup: query only relevant geographic cells
-    // 1. Get geohash cells for search area (center + 8 neighbors)
+    // 1. Get geohash cells that cover the search radius bounding box
     // 2. Query shops in those cells using GeohashIndex
     // 3. Filter by exact distance
     // 4. Query events for matching shops
 
-    const geohashes = getGeohashNeighbors(query.lat!, query.lng!, 4);
+    const geohashes = getGeohashesForRadius(query.lat!, query.lng!, query.radiusKm, 4);
     const nearbyShops = await getShopsByGeohash(geohashes);
 
     // Filter by exact Haversine distance
