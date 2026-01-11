@@ -417,10 +417,8 @@ function CalendarPage() {
         return updated;
       });
     }
-    // Update URL with current filters for shareable links
-    updateURLFromFilters(filtersToApply, setSearchParams);
     setSearchTrigger(t => t + 1);
-  }, [stagedFilters, setSearchParams]);
+  }, [stagedFilters]);
 
   // Convert events to FullCalendar format
   const calendarEvents: CalendarEvent[] = events.map((event) => {

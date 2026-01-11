@@ -1,4 +1,4 @@
-import { getPool, getSqlite, useSqlite, addToPhotonQueue } from '../config/database.js';
+import { getPool, getSqlite, useSqlite, useDynamoDB, addToPhotonQueue } from '../config/database.js';
 import { env } from '../config/env.js';
 import { appendFileSync } from 'fs';
 
@@ -565,6 +565,11 @@ async function fetchPlaceDetails(placeId: string): Promise<{ lat: number; lng: n
 async function getCachedGeocode(query: string): Promise<GeocodeResult | null> {
   const normalizedQuery = query.toLowerCase().trim();
 
+  // DynamoDB: skip cache for now (TODO: implement DynamoDB geocache)
+  if (useDynamoDB()) {
+    return null;
+  }
+
   if (useSqlite()) {
     const db = getSqlite();
     const row = db.prepare(
@@ -600,6 +605,11 @@ async function getCachedGeocode(query: string): Promise<GeocodeResult | null> {
 // Save geocoded location to cache
 async function cacheGeocode(query: string, result: GeocodeResult): Promise<void> {
   const normalizedQuery = query.toLowerCase().trim();
+
+  // DynamoDB: skip cache for now (TODO: implement DynamoDB geocache)
+  if (useDynamoDB()) {
+    return;
+  }
 
   if (useSqlite()) {
     const db = getSqlite();
