@@ -22,8 +22,8 @@ riftfound/
 
 ## Key Design Decisions
 
-- **Database**: SQLite for dev, PostgreSQL for production. Controlled by `DB_TYPE` env var.
-- **Geocoding**: Self-hosted Photon (OSM-based) for production. No external API dependencies.
+- **Database**: SQLite for dev, PostgreSQL or DynamoDB for production. Controlled by `DB_TYPE` env var.
+- **Geocoding**: Google Maps API (primary) with Photon fallback. Cache stores ~10k recent queries with LRU eviction.
 - **Shops table**: Stores geocoded locations to avoid re-geocoding. Events reference shops via `shop_id`.
 - **Calendar mode**: API returns all events in 3-month window without pagination when `calendarMode=true`.
 - **Distance filtering**: Haversine formula. Frontend uses miles, backend uses km internally.
@@ -102,6 +102,9 @@ python analyze-logs.py        # Detailed analysis
 # Database metrics (shops/events)
 ./db-metrics.sh --remote      # Production stats
 
+# Geocoding metrics (cache vs Google API usage)
+./geocode-metrics.sh --remote # Analyze from PM2 logs
+
 # Interactive analysis
 jupyter notebook metrics.ipynb
 ```
@@ -109,3 +112,4 @@ jupyter notebook metrics.ipynb
 Key metrics tracked:
 - **Traffic**: unique visitors, page views, event clicks, location searches
 - **Database**: events/shops added per day, distribution by type/state
+- **Geocoding**: cache hit rate, Google API calls (forward/reverse/autocomplete), error rates
