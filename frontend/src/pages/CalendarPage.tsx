@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import FullCalendar from '@fullcalendar/react';
 import dayGridPlugin from '@fullcalendar/daygrid';
 import interactionPlugin from '@fullcalendar/interaction';
@@ -129,7 +130,86 @@ function saveSettings(settings: Settings): void {
   }
 }
 
+// URL param names
+const URL_PARAMS = {
+  LAT: 'lat',
+  LNG: 'lng',
+  DISTANCE: 'distance',
+  LOCATION: 'location',
+  FORMAT: 'format',
+} as const;
+
+// Parse filters from URL search params
+function parseFiltersFromURL(searchParams: URLSearchParams): Partial<Filters> | null {
+  const lat = searchParams.get(URL_PARAMS.LAT);
+  const lng = searchParams.get(URL_PARAMS.LNG);
+  const distance = searchParams.get(URL_PARAMS.DISTANCE);
+  const locationName = searchParams.get(URL_PARAMS.LOCATION);
+  const format = searchParams.get(URL_PARAMS.FORMAT);
+
+  // Need at least lat/lng to have a valid location from URL
+  if (!lat || !lng) {
+    return null;
+  }
+
+  const parsedLat = parseFloat(lat);
+  const parsedLng = parseFloat(lng);
+
+  if (isNaN(parsedLat) || isNaN(parsedLng)) {
+    return null;
+  }
+
+  const filters: Partial<Filters> = {
+    location: {
+      lat: parsedLat,
+      lng: parsedLng,
+      displayName: locationName || 'Shared Location',
+    },
+  };
+
+  if (distance) {
+    const parsedDistance = parseInt(distance, 10);
+    if (!isNaN(parsedDistance) && parsedDistance > 0) {
+      filters.distanceMiles = parsedDistance;
+    }
+  }
+
+  if (format && AVAILABLE_FORMATS.includes(format)) {
+    filters.format = format;
+  }
+
+  return filters;
+}
+
+// Update URL search params from filters (without triggering navigation)
+function updateURLFromFilters(
+  filters: Filters,
+  setSearchParams: (params: URLSearchParams, options?: { replace?: boolean }) => void
+): void {
+  const params = new URLSearchParams();
+
+  if (filters.location) {
+    params.set(URL_PARAMS.LAT, filters.location.lat.toFixed(4));
+    params.set(URL_PARAMS.LNG, filters.location.lng.toFixed(4));
+    if (filters.location.displayName && filters.location.displayName !== 'Shared Location') {
+      params.set(URL_PARAMS.LOCATION, filters.location.displayName);
+    }
+  }
+
+  if (filters.distanceMiles !== DEFAULT_DISTANCE_MILES) {
+    params.set(URL_PARAMS.DISTANCE, filters.distanceMiles.toString());
+  }
+
+  if (filters.format) {
+    params.set(URL_PARAMS.FORMAT, filters.format);
+  }
+
+  // Use replace to avoid polluting browser history on every search
+  setSearchParams(params, { replace: true });
+}
+
 function CalendarPage() {
+  const [searchParams, setSearchParams] = useSearchParams();
   const [events, setEvents] = useState<Event[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -138,22 +218,24 @@ function CalendarPage() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const settingsRef = useRef<HTMLDivElement>(null);
 
-  // Get initial location from saved settings or use default
-  const initialLocation = settings.location ?? DEFAULT_LOCATION;
-  const initialDistance = settings.distanceMiles ?? DEFAULT_DISTANCE_MILES;
+  // Check URL params first, then fall back to saved settings, then default
+  const urlFilters = useMemo(() => parseFiltersFromURL(searchParams), [searchParams]);
+  const initialLocation = urlFilters?.location ?? settings.location ?? DEFAULT_LOCATION;
+  const initialDistance = urlFilters?.distanceMiles ?? settings.distanceMiles ?? DEFAULT_DISTANCE_MILES;
+  const initialFormat = urlFilters?.format ?? null;
 
   // Staged filters (what user is editing)
   const [stagedFilters, setStagedFilters] = useState<Filters>(() => ({
     location: initialLocation,
     distanceMiles: initialDistance,
-    format: null,
+    format: initialFormat,
   }));
 
   // Applied filters (what's actually being used for the query)
   const [appliedFilters, setAppliedFilters] = useState<Filters>(() => ({
     location: initialLocation,
     distanceMiles: initialDistance,
-    format: null,
+    format: initialFormat,
   }));
 
   const [locationInitialized, setLocationInitialized] = useState(false);
@@ -169,9 +251,16 @@ function CalendarPage() {
 
   const { minDate, maxDate } = useMemo(() => getValidDateRange(), []);
 
-  // Try to get user's location on mount, unless we have a saved location
+  // Try to get user's location on mount, unless we have URL params or a saved location
   useEffect(() => {
     if (locationInitialized) return;
+
+    // If we have URL params, use them and skip geolocation
+    if (urlFilters?.location) {
+      setLocationInitialized(true);
+      setSearchTrigger(t => t + 1); // Trigger search with URL params
+      return;
+    }
 
     // If we have a saved location, use it and skip geolocation
     if (settings.location) {
@@ -180,7 +269,7 @@ function CalendarPage() {
       return;
     }
 
-    // No saved location - try geolocation, fallback to San Francisco
+    // No URL params or saved location - try geolocation, fallback to San Francisco
     if (navigator.geolocation) {
       navigator.geolocation.getCurrentPosition(
         async (position) => {
@@ -235,7 +324,7 @@ function CalendarPage() {
       setLocationInitialized(true);
       setSearchTrigger(t => t + 1); // Trigger initial search
     }
-  }, [locationInitialized, settings.location]);
+  }, [locationInitialized, urlFilters?.location, settings.location]);
 
   // Fetch events when search is triggered
   useEffect(() => {
@@ -328,8 +417,10 @@ function CalendarPage() {
         return updated;
       });
     }
+    // Update URL with current filters for shareable links
+    updateURLFromFilters(filtersToApply, setSearchParams);
     setSearchTrigger(t => t + 1);
-  }, [stagedFilters]);
+  }, [stagedFilters, setSearchParams]);
 
   // Convert events to FullCalendar format
   const calendarEvents: CalendarEvent[] = events.map((event) => {
