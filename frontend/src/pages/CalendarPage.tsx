@@ -95,6 +95,7 @@ const SETTINGS_KEY = 'riftfound_settings';
 
 interface Settings {
   weekStartsOnMonday: boolean;
+  useKilometers: boolean;
   location?: {
     lat: number;
     lng: number;
@@ -105,6 +106,7 @@ interface Settings {
 
 const DEFAULT_SETTINGS: Settings = {
   weekStartsOnMonday: false,
+  useKilometers: false,
 };
 
 function loadSettings(): Settings {
@@ -245,7 +247,9 @@ function CalendarPage() {
       setTooManyEvents(false);
 
       try {
-        const radiusKm = appliedFilters.distanceMiles * MILES_TO_KM;
+        const radiusKm = settings.useKilometers
+          ? appliedFilters.distanceMiles  // Already in km
+          : appliedFilters.distanceMiles * MILES_TO_KM;
 
         const response = await getEvents({
           calendarMode: true,
@@ -269,7 +273,7 @@ function CalendarPage() {
     }
 
     fetchEvents();
-  }, [searchTrigger, appliedFilters]);
+  }, [searchTrigger, appliedFilters, settings.useKilometers]);
 
   // Close settings popover when clicking outside
   useEffect(() => {
@@ -289,6 +293,15 @@ function CalendarPage() {
   const handleToggleWeekStart = useCallback(() => {
     setSettings(prev => {
       const updated = { ...prev, weekStartsOnMonday: !prev.weekStartsOnMonday };
+      saveSettings(updated);
+      return updated;
+    });
+  }, []);
+
+  // Toggle distance units setting
+  const handleToggleUnits = useCallback(() => {
+    setSettings(prev => {
+      const updated = { ...prev, useKilometers: !prev.useKilometers };
       saveSettings(updated);
       return updated;
     });
@@ -443,6 +456,7 @@ function CalendarPage() {
           onFiltersChange={setStagedFilters}
           onSearch={handleSearch}
           availableFormats={AVAILABLE_FORMATS}
+          useKilometers={settings.useKilometers}
         />
       </div>
 
@@ -485,6 +499,15 @@ function CalendarPage() {
                   type="checkbox"
                   checked={settings.weekStartsOnMonday}
                   onChange={handleToggleWeekStart}
+                />
+                <span className="toggle-switch" />
+              </label>
+              <label className="settings-option">
+                <span>Use kilometers</span>
+                <input
+                  type="checkbox"
+                  checked={settings.useKilometers}
+                  onChange={handleToggleUnits}
                 />
                 <span className="toggle-switch" />
               </label>

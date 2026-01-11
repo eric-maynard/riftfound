@@ -19,15 +19,18 @@ interface EventFiltersProps {
   onFiltersChange: (filters: EventFilters) => void;
   onSearch: (filtersOverride?: EventFilters) => void;
   availableFormats: string[];
+  useKilometers?: boolean;
 }
 
-const DISTANCE_OPTIONS = [
-  { value: 5, label: '5 mi' },
-  { value: 10, label: '10 mi' },
-  { value: 25, label: '25 mi' },
-  { value: 50, label: '50 mi' },
-  { value: 100, label: '100 mi' },
-];
+const DISTANCE_VALUES = [5, 10, 25, 50, 100];
+
+function getDistanceOptions(useKilometers: boolean) {
+  const unit = useKilometers ? 'km' : 'mi';
+  return DISTANCE_VALUES.map(value => ({
+    value,
+    label: `${value} ${unit}`,
+  }));
+}
 
 // Check if two filter states are equal
 function filtersEqual(a: EventFilters, b: EventFilters): boolean {
@@ -42,7 +45,8 @@ function filtersEqual(a: EventFilters, b: EventFilters): boolean {
   );
 }
 
-function EventFiltersComponent({ filters, appliedFilters, onFiltersChange, onSearch, availableFormats }: EventFiltersProps) {
+function EventFiltersComponent({ filters, appliedFilters, onFiltersChange, onSearch, availableFormats, useKilometers = false }: EventFiltersProps) {
+  const distanceOptions = getDistanceOptions(useKilometers);
   const [cityInput, setCityInput] = useState(filters.location?.displayName || '');
   const [suggestions, setSuggestions] = useState<GeocodeSuggestion[]>([]);
   const [showSuggestions, setShowSuggestions] = useState(false);
@@ -328,8 +332,8 @@ function EventFiltersComponent({ filters, appliedFilters, onFiltersChange, onSea
             value={filters.distanceMiles}
             onChange={(e) => handleDistanceChange(Number(e.target.value))}
           >
-            {DISTANCE_OPTIONS.map((opt) => (
-              <option key={opt.label} value={opt.value}>
+            {distanceOptions.map((opt) => (
+              <option key={opt.value} value={opt.value}>
                 {opt.label}
               </option>
             ))}
