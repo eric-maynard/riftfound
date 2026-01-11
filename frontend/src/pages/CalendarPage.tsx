@@ -208,6 +208,16 @@ function CalendarPage() {
             ...prev,
             location: newLocation,
           }));
+          // Save location to localStorage so we don't prompt again on next visit
+          setSettings(prev => {
+            const updated = {
+              ...prev,
+              location: newLocation,
+              distanceMiles: initialDistance,
+            };
+            saveSettings(updated);
+            return updated;
+          });
           setLocationInitialized(true);
           setSearchTrigger(t => t + 1); // Trigger search after geolocation
         },
