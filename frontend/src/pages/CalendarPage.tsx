@@ -103,6 +103,7 @@ interface Settings {
     displayName: string;
   };
   distanceMiles?: number;
+  metricId?: string;
 }
 
 const DEFAULT_SETTINGS: Settings = {
@@ -111,15 +112,26 @@ const DEFAULT_SETTINGS: Settings = {
 };
 
 function loadSettings(): Settings {
+  let settings = DEFAULT_SETTINGS;
   try {
     const stored = localStorage.getItem(SETTINGS_KEY);
     if (stored) {
-      return { ...DEFAULT_SETTINGS, ...JSON.parse(stored) };
+      settings = { ...DEFAULT_SETTINGS, ...JSON.parse(stored) };
     }
   } catch {
     // Ignore parse errors
   }
-  return DEFAULT_SETTINGS;
+
+  // Generate metricId if missing (for analytics deduplication across IP changes)
+  if (!settings.metricId) {
+    settings = { ...settings, metricId: crypto.randomUUID() };
+    saveSettings(settings);
+  }
+
+  // Set as cookie so CloudFront logs capture it
+  document.cookie = `mid=${settings.metricId}; path=/; max-age=31536000; SameSite=Lax`;
+
+  return settings;
 }
 
 function saveSettings(settings: Settings): void {

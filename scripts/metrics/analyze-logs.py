@@ -44,6 +44,17 @@ def parse_log_line(line: str) -> dict | None:
     return {FIELDS[i]: parts[i] if i < len(parts) else '' for i in range(len(FIELDS))}
 
 
+def get_visitor_id(record: dict) -> str:
+    """Extract metricId from cookie, fall back to IP.
+
+    The frontend sets a 'mid' cookie with a persistent UUID to track
+    visitors across IP changes (e.g., mobile users switching networks).
+    """
+    cookie = record.get('cookie', '')
+    match = re.search(r'mid=([a-f0-9-]+)', cookie)
+    return match.group(1) if match else record['client_ip']
+
+
 def load_logs(logs_dir: Path, days: int | None = None) -> list[dict]:
     """Load all log files from the logs directory."""
     records = []
@@ -80,17 +91,17 @@ def analyze_logs(records: list[dict]) -> dict:
 
     # Basic counts
     total_requests = len(records)
-    unique_ips = set(r['client_ip'] for r in records)
+    unique_visitors = set(get_visitor_id(r) for r in records)
     successful = [r for r in records if r['status'].startswith(('2', '3'))]
 
     # Page views
     homepage = [r for r in records if r['uri_stem'] in ('/', '/index.html')]
-    homepage_ips = set(r['client_ip'] for r in homepage)
+    homepage_visitors = set(get_visitor_id(r) for r in homepage)
 
     # Event detail pages (pattern: /event/UUID or /events/UUID)
     event_pattern = re.compile(r'^/events?/[a-f0-9-]+$')
     event_pages = [r for r in records if event_pattern.match(r['uri_stem'])]
-    event_page_ips = set(r['client_ip'] for r in event_pages)
+    event_page_visitors = set(get_visitor_id(r) for r in event_pages)
     unique_events = set(r['uri_stem'] for r in event_pages)
 
     # API usage
@@ -101,16 +112,16 @@ def analyze_logs(records: list[dict]) -> dict:
     # Visit clicks (if tracking endpoint exists)
     visit_pattern = re.compile(r'/(visit|register)$')
     visit_clicks = [r for r in records if visit_pattern.search(r['uri_stem'])]
-    visit_ips = set(r['client_ip'] for r in visit_clicks)
+    visit_click_visitors = set(get_visitor_id(r) for r in visit_clicks)
 
     # Traffic by day
-    daily_traffic = defaultdict(lambda: {'requests': 0, 'unique_ips': set()})
+    daily_traffic = defaultdict(lambda: {'requests': 0, 'visitors': set()})
     for r in records:
         daily_traffic[r['date']]['requests'] += 1
-        daily_traffic[r['date']]['unique_ips'].add(r['client_ip'])
+        daily_traffic[r['date']]['visitors'].add(get_visitor_id(r))
 
     daily_stats = {
-        date: {'requests': data['requests'], 'unique_visitors': len(data['unique_ips'])}
+        date: {'requests': data['requests'], 'unique_visitors': len(data['visitors'])}
         for date, data in sorted(daily_traffic.items())
     }
 
@@ -148,7 +159,7 @@ def analyze_logs(records: list[dict]) -> dict:
     return {
         'summary': {
             'total_requests': total_requests,
-            'unique_visitors': len(unique_ips),
+            'unique_visitors': len(unique_visitors),
             'successful_requests': len(successful),
             'date_range': {
                 'start': min(r['date'] for r in records),
@@ -156,8 +167,8 @@ def analyze_logs(records: list[dict]) -> dict:
             }
         },
         'page_views': {
-            'homepage': {'total': len(homepage), 'unique': len(homepage_ips)},
-            'event_details': {'total': len(event_pages), 'unique': len(event_page_ips)},
+            'homepage': {'total': len(homepage), 'unique': len(homepage_visitors)},
+            'event_details': {'total': len(event_pages), 'unique': len(event_page_visitors)},
             'unique_events_viewed': len(unique_events),
         },
         'api_usage': {
@@ -166,7 +177,7 @@ def analyze_logs(records: list[dict]) -> dict:
             'location_searches': len(geocode_api),
         },
         'external_clicks': {
-            'visit_store_clicks': {'total': len(visit_clicks), 'unique': len(visit_ips)},
+            'visit_store_clicks': {'total': len(visit_clicks), 'unique': len(visit_click_visitors)},
             'note': 'Requires /visit tracking endpoint' if not visit_clicks else None,
         },
         'daily_stats': daily_stats,
