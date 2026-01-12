@@ -84,8 +84,11 @@ a:hover {
   top: 0.75rem;
   right: 0.75rem;
   z-index: 50;
+  display: flex;
+  gap: 0.5rem;
 }
 
+.share-button,
 .settings-button {
   display: flex;
   align-items: center;
@@ -101,6 +104,7 @@ a:hover {
   transition: color 0.15s ease, border-color 0.15s ease;
 }
 
+.share-button:hover,
 .settings-button:hover {
   color: var(--color-cyan);
   border-color: var(--color-primary);
@@ -944,5 +948,32 @@ select:disabled {
   .fc .fc-event {
     font-size: 0.6rem;
     padding: 1px 2px;
+  }
+}
+
+/* Toast notification */
+.toast {
+  position: fixed;
+  bottom: 2rem;
+  left: 50%;
+  transform: translateX(-50%);
+  background-color: var(--color-bg-tertiary);
+  border: 1px solid var(--color-cyan);
+  color: var(--color-text);
+  padding: 0.75rem 1.5rem;
+  border-radius: 0.5rem;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+  z-index: 10000;
+  animation: toast-fade-in 0.2s ease;
+}
+
+@keyframes toast-fade-in {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) translateY(1rem);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
   }
 }

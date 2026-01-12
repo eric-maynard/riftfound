@@ -181,11 +181,8 @@ function parseFiltersFromURL(searchParams: URLSearchParams): Partial<Filters> | 
   return filters;
 }
 
-// Update URL search params from filters (without triggering navigation)
-function updateURLFromFilters(
-  filters: Filters,
-  setSearchParams: (params: URLSearchParams, options?: { replace?: boolean }) => void
-): void {
+// Build a shareable URL from filters
+function buildShareableURL(filters: Filters): string {
   const params = new URLSearchParams();
 
   if (filters.location) {
@@ -204,18 +201,19 @@ function updateURLFromFilters(
     params.set(URL_PARAMS.FORMAT, filters.format);
   }
 
-  // Use replace to avoid polluting browser history on every search
-  setSearchParams(params, { replace: true });
+  const queryString = params.toString();
+  return `${window.location.origin}${window.location.pathname}${queryString ? `?${queryString}` : ''}`;
 }
 
 function CalendarPage() {
-  const [searchParams, setSearchParams] = useSearchParams();
+  const [searchParams] = useSearchParams();
   const [events, setEvents] = useState<Event[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [tooManyEvents, setTooManyEvents] = useState(false);
   const [settings, setSettings] = useState<Settings>(loadSettings);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
   const settingsRef = useRef<HTMLDivElement>(null);
 
   // Check URL params first, then fall back to saved settings, then default
@@ -396,6 +394,21 @@ function CalendarPage() {
     });
   }, []);
 
+  // Handle share button click - copy shareable URL to clipboard
+  const handleShare = useCallback(async () => {
+    const url = buildShareableURL(appliedFilters);
+    try {
+      await navigator.clipboard.writeText(url);
+      setToastMessage('Copied shareable link to clipboard!');
+      // Auto-hide toast after 3 seconds
+      setTimeout(() => setToastMessage(null), 3000);
+    } catch {
+      // Fallback for browsers that don't support clipboard API
+      setToastMessage('Could not copy link. URL: ' + url);
+      setTimeout(() => setToastMessage(null), 5000);
+    }
+  }, [appliedFilters]);
+
   // Handle search button click
   // Accepts optional filters to apply directly (avoids race condition when geocoding)
   const handleSearch = useCallback((filtersOverride?: Filters) => {
@@ -570,6 +583,16 @@ function CalendarPage() {
 
         <div className="settings-container" ref={settingsRef}>
           <button
+            className="share-button"
+            onClick={handleShare}
+            aria-label="Share"
+            title="Share this search"
+          >
+            <svg width="18" height="18" viewBox="0 0 20 20" fill="currentColor">
+              <path d="M15 8a3 3 0 10-2.977-2.63l-4.94 2.47a3 3 0 100 4.319l4.94 2.47a3 3 0 10.895-1.789l-4.94-2.47a3.027 3.027 0 000-.74l4.94-2.47C13.456 7.68 14.19 8 15 8z" />
+            </svg>
+          </button>
+          <button
             className="settings-button"
             onClick={() => setSettingsOpen(prev => !prev)}
             aria-label="Settings"
@@ -662,6 +685,12 @@ function CalendarPage() {
           isMobile={isMobile}
           onClose={dayEventsModal ? handleTooltipCloseWithModal : handleTooltipClose}
         />
+      )}
+
+      {toastMessage && (
+        <div className="toast">
+          {toastMessage}
+        </div>
       )}
     </div>
   );
