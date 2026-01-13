@@ -136,7 +136,8 @@ interface DynamoShopItem {
   displayCity: string | null;
   latitude: number | null;
   longitude: number | null;
-  geohash4?: string;
+  geohash3?: string;  // Precision 3 (~156km cells) for large radius queries
+  geohash4?: string;  // Precision 4 (~39km cells) for small radius queries
   geocodeStatus: string;
   geocodeError: string | null;
   createdAt: string;
@@ -253,7 +254,10 @@ export async function upsertShopFromApiDynamoDB(store: StoreInfo): Promise<Upser
   const now = new Date().toISOString();
   const isNew = !existing.Item;
 
-  // Calculate geohash4 for spatial indexing
+  // Calculate geohashes for spatial indexing at multiple precisions
+  const geohash3 = store.latitude && store.longitude
+    ? geohash.encode(store.latitude, store.longitude, 3)
+    : undefined;
   const geohash4 = store.latitude && store.longitude
     ? geohash.encode(store.latitude, store.longitude, 4)
     : undefined;
@@ -267,6 +271,7 @@ export async function upsertShopFromApiDynamoDB(store: StoreInfo): Promise<Upser
     displayCity: existing.Item ? (existing.Item as DynamoShopItem).displayCity : null,
     latitude: store.latitude,
     longitude: store.longitude,
+    geohash3,
     geohash4,
     geocodeStatus: 'completed',
     geocodeError: null,

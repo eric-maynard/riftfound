@@ -195,12 +195,24 @@ function mapDynamoItemToEvent(item: DynamoEventItem): Event {
 }
 
 // Maximum number of geohash queries before falling back to date-based query
-// DynamoDB handles parallel queries well, so we can afford a higher threshold
-const MAX_GEOHASH_QUERIES = 100;
+const MAX_GEOHASH_QUERIES = 50;
+
+// Geohash precision thresholds (approximate cell sizes):
+// Precision 3: ~156km x 156km cells - use for radius > 40km
+// Precision 4: ~39km x 20km cells - use for radius <= 40km
+const GEOHASH_PRECISION_THRESHOLD_KM = 40;
+
+// Choose optimal geohash precision based on search radius
+function chooseGeohashPrecision(radiusKm: number): { precision: number; indexName: string; keyName: string } {
+  if (radiusKm > GEOHASH_PRECISION_THRESHOLD_KM) {
+    return { precision: 3, indexName: 'GeohashIndex3', keyName: 'geohash3' };
+  }
+  return { precision: 4, indexName: 'GeohashIndex', keyName: 'geohash4' };
+}
 
 // Get all geohash cells that cover a bounding box around a point
 // Returns null if too many cells (caller should use fallback)
-function getGeohashesForRadius(lat: number, lng: number, radiusKm: number, precision: number = 4): string[] | null {
+function getGeohashesForRadius(lat: number, lng: number, radiusKm: number, precision: number): string[] | null {
   // Calculate bounding box
   const latDelta = radiusKm / 111; // 1 degree latitude ≈ 111km
   const lngDelta = radiusKm / (111 * Math.cos(lat * Math.PI / 180));
@@ -226,9 +238,13 @@ function getGeohashesForRadius(lat: number, lng: number, radiusKm: number, preci
   return uniqueHashes;
 }
 
-// Query shops by geohash using GeohashIndex
-// Returns null if GeohashIndex doesn't exist (fallback to date-based query)
-async function getShopsByGeohash(geohashes: string[]): Promise<DynamoShopItem[] | null> {
+// Query shops by geohash using the appropriate GeohashIndex
+// Returns null if index doesn't exist (fallback to date-based query)
+async function getShopsByGeohash(
+  geohashes: string[],
+  indexName: string,
+  keyName: string
+): Promise<DynamoShopItem[] | null> {
   if (!geohashes.length) {
     return [];
   }
@@ -245,8 +261,8 @@ async function getShopsByGeohash(geohashes: string[]): Promise<DynamoShopItem[] 
     do {
       const response = await client.send(new QueryCommand({
         TableName: tableName,
-        IndexName: 'GeohashIndex',
-        KeyConditionExpression: 'geohash4 = :gh',
+        IndexName: indexName,
+        KeyConditionExpression: `${keyName} = :gh`,
         ExpressionAttributeValues: {
           ':gh': gh,
         },
@@ -269,9 +285,9 @@ async function getShopsByGeohash(geohashes: string[]): Promise<DynamoShopItem[] 
 
     return shops;
   } catch (error: any) {
-    // If GeohashIndex doesn't exist or is still being created, return null to trigger fallback
+    // If index doesn't exist or is still being created, return null to trigger fallback
     if (error.message?.includes('specified index') || error.name === 'ValidationException') {
-      console.warn('GeohashIndex not available, falling back to date-based query');
+      console.warn(`${indexName} not available, falling back to date-based query`);
       return null;
     }
     throw error;
@@ -376,15 +392,17 @@ export async function getEventsDynamoDB(
 
   if (hasLocationFilter) {
     // Geohash-based shop lookup: query only relevant geographic cells
-    // 1. Get geohash cells that cover the search radius bounding box
-    // 2. Query shops in those cells using GeohashIndex
-    // 3. Filter by exact distance
-    // 4. Query events for matching shops
+    // 1. Choose optimal precision based on search radius
+    // 2. Get geohash cells that cover the search radius bounding box
+    // 3. Query shops in those cells using appropriate GeohashIndex
+    // 4. Filter by exact distance
+    // 5. Query events for matching shops
 
-    const geohashes = getGeohashesForRadius(query.lat!, query.lng!, query.radiusKm, 4);
+    const { precision, indexName, keyName } = chooseGeohashPrecision(query.radiusKm);
+    const geohashes = getGeohashesForRadius(query.lat!, query.lng!, query.radiusKm, precision);
 
     // If too many geohash cells or GeohashIndex unavailable, fall back to date-based query
-    const nearbyShops = geohashes ? await getShopsByGeohash(geohashes) : null;
+    const nearbyShops = geohashes ? await getShopsByGeohash(geohashes, indexName, keyName) : null;
 
     // Fall back to date-based query with in-memory filtering
     if (nearbyShops === null) {

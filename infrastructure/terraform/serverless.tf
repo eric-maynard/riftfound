@@ -54,6 +54,11 @@ resource "aws_dynamodb_table" "riftfound" {
   }
 
   attribute {
+    name = "geohash3"
+    type = "S"
+  }
+
+  attribute {
     name = "geohash4"
     type = "S"
   }
@@ -81,10 +86,18 @@ resource "aws_dynamodb_table" "riftfound" {
     projection_type = "KEYS_ONLY"
   }
 
-  # GeohashIndex: Spatial queries for shops by geohash4
+  # GeohashIndex: Spatial queries for shops by geohash4 (~39km cells)
   global_secondary_index {
     name            = "GeohashIndex"
     hash_key        = "geohash4"
+    projection_type = "ALL"
+  }
+
+  # GeohashIndex3: Spatial queries for shops by geohash3 (~156km cells)
+  # Used for large radius queries to reduce number of index lookups
+  global_secondary_index {
+    name            = "GeohashIndex3"
+    hash_key        = "geohash3"
     projection_type = "ALL"
   }
 
