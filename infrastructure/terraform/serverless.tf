@@ -53,6 +53,11 @@ resource "aws_dynamodb_table" "riftfound" {
     type = "S"
   }
 
+  attribute {
+    name = "geohash4"
+    type = "S"
+  }
+
   global_secondary_index {
     name            = "GSI1"
     hash_key        = "GSI1PK"
@@ -74,6 +79,13 @@ resource "aws_dynamodb_table" "riftfound" {
     hash_key        = "GSI3PK"
     range_key       = "GSI3SK"
     projection_type = "KEYS_ONLY"
+  }
+
+  # GeohashIndex: Spatial queries for shops by geohash4
+  global_secondary_index {
+    name            = "GeohashIndex"
+    hash_key        = "geohash4"
+    projection_type = "ALL"
   }
 
   ttl {

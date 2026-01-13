@@ -214,7 +214,8 @@ function getGeohashesForRadius(lat: number, lng: number, radiusKm: number, preci
 }
 
 // Query shops by geohash using GeohashIndex
-async function getShopsByGeohash(geohashes: string[]): Promise<DynamoShopItem[]> {
+// Returns null if GeohashIndex doesn't exist (fallback to date-based query)
+async function getShopsByGeohash(geohashes: string[]): Promise<DynamoShopItem[] | null> {
   if (!geohashes.length) {
     return [];
   }
@@ -223,35 +224,44 @@ async function getShopsByGeohash(geohashes: string[]): Promise<DynamoShopItem[]>
   const tableName = getTableName();
   const shops: DynamoShopItem[] = [];
 
-  // Query each geohash in parallel
-  const promises = geohashes.map(async (gh) => {
-    let lastEvaluatedKey: Record<string, any> | undefined;
-    const results: DynamoShopItem[] = [];
+  try {
+    // Query each geohash in parallel
+    const promises = geohashes.map(async (gh) => {
+      let lastEvaluatedKey: Record<string, any> | undefined;
+      const results: DynamoShopItem[] = [];
 
-    do {
-      const response = await client.send(new QueryCommand({
-        TableName: tableName,
-        IndexName: 'GeohashIndex',
-        KeyConditionExpression: 'geohash4 = :gh',
-        ExpressionAttributeValues: {
-          ':gh': gh,
-        },
-        ExclusiveStartKey: lastEvaluatedKey,
-      }));
+      do {
+        const response = await client.send(new QueryCommand({
+          TableName: tableName,
+          IndexName: 'GeohashIndex',
+          KeyConditionExpression: 'geohash4 = :gh',
+          ExpressionAttributeValues: {
+            ':gh': gh,
+          },
+          ExclusiveStartKey: lastEvaluatedKey,
+        }));
 
-      results.push(...(response.Items || []) as DynamoShopItem[]);
-      lastEvaluatedKey = response.LastEvaluatedKey;
-    } while (lastEvaluatedKey);
+        results.push(...(response.Items || []) as DynamoShopItem[]);
+        lastEvaluatedKey = response.LastEvaluatedKey;
+      } while (lastEvaluatedKey);
 
-    return results;
-  });
+      return results;
+    });
 
-  const results = await Promise.all(promises);
-  for (const result of results) {
-    shops.push(...result);
+    const results = await Promise.all(promises);
+    for (const result of results) {
+      shops.push(...result);
+    }
+
+    return shops;
+  } catch (error: any) {
+    // If GeohashIndex doesn't exist or is still being created, return null to trigger fallback
+    if (error.message?.includes('specified index') || error.name === 'ValidationException') {
+      console.warn('GeohashIndex not available, falling back to date-based query');
+      return null;
+    }
+    throw error;
   }
-
-  return shops;
 }
 
 // Query events by shop ID and date range using GSI2
@@ -360,21 +370,32 @@ export async function getEventsDynamoDB(
     const geohashes = getGeohashesForRadius(query.lat!, query.lng!, query.radiusKm, 4);
     const nearbyShops = await getShopsByGeohash(geohashes);
 
-    // Filter by exact Haversine distance
-    const shopsInRange = nearbyShops.filter(s =>
-      s.latitude !== null &&
-      s.longitude !== null &&
-      haversineDistance(query.lat!, query.lng!, s.latitude!, s.longitude!) <= query.radiusKm
-    );
+    // If GeohashIndex isn't available, fall back to date-based query with in-memory filtering
+    if (nearbyShops === null) {
+      allEvents = await queryEventsByDateRange(startDate, endDate);
+      // Filter by distance in memory
+      allEvents = allEvents.filter(e =>
+        e.shopLatitude !== null &&
+        e.shopLongitude !== null &&
+        haversineDistance(query.lat!, query.lng!, e.shopLatitude!, e.shopLongitude!) <= query.radiusKm
+      );
+    } else {
+      // Filter by exact Haversine distance
+      const shopsInRange = nearbyShops.filter(s =>
+        s.latitude !== null &&
+        s.longitude !== null &&
+        haversineDistance(query.lat!, query.lng!, s.latitude!, s.longitude!) <= query.radiusKm
+      );
 
-    // Query events for each shop in parallel
-    allEvents = [];
-    const promises = shopsInRange.map(shop =>
-      queryEventsByShopAndDateRange(shop.externalId, startDate, endDate)
-    );
-    const results = await Promise.all(promises);
-    for (const events of results) {
-      allEvents.push(...events);
+      // Query events for each shop in parallel
+      allEvents = [];
+      const promises = shopsInRange.map(shop =>
+        queryEventsByShopAndDateRange(shop.externalId, startDate, endDate)
+      );
+      const results = await Promise.all(promises);
+      for (const events of results) {
+        allEvents.push(...events);
+      }
     }
   } else {
     // No location filter - use date-based query (slower but comprehensive)
