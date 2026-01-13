@@ -6,11 +6,18 @@ Event calendar aggregator for Riftbound TCG events, scraped from https://locator
 
 ```
 riftfound/
-├── backend/     # Express.js API (port 3001)
-├── frontend/    # React + Vite calendar UI (port 5173)
-├── scraper/     # Event scraper + geocoding queue
-└── infrastructure/  # Docker, Photon geocoder, AWS deployment
+├── backend/     # Express.js API (Lambda + API Gateway)
+├── frontend/    # React + Vite calendar UI (S3 + CloudFront)
+├── scraper/     # Event scraper (Lambda + EventBridge)
+└── infrastructure/  # Terraform, Docker for local dev
 ```
+
+**Production Stack:**
+- Frontend: S3 + CloudFront
+- Backend API: Lambda + API Gateway
+- Scraper: Lambda + EventBridge (hourly)
+- Database: DynamoDB
+- Geocoding: Google Maps API
 
 ## Quick Start
 
@@ -22,8 +29,8 @@ riftfound/
 
 ## Key Design Decisions
 
-- **Database**: SQLite for dev, PostgreSQL or DynamoDB for production. Controlled by `DB_TYPE` env var.
-- **Geocoding**: Google Maps API (primary) with Photon fallback. Cache stores ~10k recent queries with LRU eviction.
+- **Database**: SQLite for dev, DynamoDB for production. Controlled by `DB_TYPE` env var.
+- **Geocoding**: Google Maps API (primary) with public Photon fallback.
 - **Shops table**: Stores geocoded locations to avoid re-geocoding. Events reference shops via `shop_id`.
 - **Calendar mode**: API returns all events in 3-month window without pagination when `calendarMode=true`.
 - **Distance filtering**: Haversine formula. Frontend uses miles, backend uses km internally.
@@ -32,47 +39,52 @@ riftfound/
 
 - Calendar defaults to San Francisco, CA with 25mi radius
 - Tries browser geolocation on load, falls back to SF if denied
-- Scraper runs every 60 minutes (configurable via `SCRAPE_INTERVAL_MINUTES`)
+- Scraper runs every 60 minutes via EventBridge
 
 ## Environment Variables
 
 Key vars (see `.env.example` for full list):
-- `DB_TYPE`: `sqlite` or `postgres`
-- `SCRAPE_INTERVAL_MINUTES`: How often scraper cycles (default: 60). Requests are distributed evenly across the cycle.
+- `DB_TYPE`: `sqlite`, `postgres`, or `dynamodb`
+- `GOOGLE_MAPS_API_KEY`: Required for production geocoding
 
 ## Deployment
 
-Production runs on AWS: S3/CloudFront for frontend, EC2 with EBS-backed SQLite for backend.
+Production runs on AWS serverless: S3/CloudFront for frontend, Lambda for backend and scraper, DynamoDB for data.
 
 ### Setup (first time)
 
 ```bash
 cp deploy.env.example deploy.env
 # Edit deploy.env with your AWS values
+
+cd infrastructure/terraform
+cp terraform.tfvars.example terraform.tfvars
+# Edit terraform.tfvars, set use_dynamodb = true
+export TF_VAR_google_maps_api_key="your-key"
+terraform init
+terraform apply
 ```
 
 ### Deploy Commands
 
 ```bash
-./deploy.sh frontend   # Build React app, upload to S3, invalidate CloudFront
-./deploy.sh backend    # Package and deploy backend/scraper to EC2
-./deploy.sh all        # Deploy everything
+./deploy.sh frontend       # Build React app, upload to S3, invalidate CloudFront
+./deploy.sh backend-lambda # Deploy backend API to Lambda
+./deploy.sh scraper-lambda # Deploy scraper to Lambda
+./deploy.sh lambdas        # Deploy both backend and scraper to Lambda
 ```
 
-### Manual Server Access
+### Lambda Logs
 
 ```bash
-# SSH to server (values from deploy.env)
-ssh -i $SSH_KEY_PATH $EC2_USER@$EC2_HOST
+# Scraper logs
+aws logs tail /aws/lambda/riftfound-scraper-prod --region us-west-2 --follow
 
-# Check service status
-pm2 status
+# API logs
+aws logs tail /aws/lambda/riftfound-api-prod --region us-west-2 --follow
 
-# View logs
-pm2 logs
-
-# Restart services
-pm2 restart all
+# Test scraper manually
+aws lambda invoke --function-name riftfound-scraper-prod --invocation-type Event /tmp/out.json
 ```
 
 ### Infrastructure
@@ -81,8 +93,6 @@ Terraform config in `infrastructure/terraform/`. To modify infrastructure:
 
 ```bash
 cd infrastructure/terraform
-cp terraform.tfvars.example terraform.tfvars
-# Edit terraform.tfvars
 terraform plan
 terraform apply
 ```

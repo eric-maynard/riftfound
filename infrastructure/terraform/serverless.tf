@@ -170,7 +170,7 @@ resource "aws_lambda_function" "api" {
 
   environment {
     variables = {
-      NODE_ENV             = var.environment
+      NODE_ENV             = "production"
       DB_TYPE              = "dynamodb"
       DYNAMODB_TABLE_NAME  = aws_dynamodb_table.riftfound[0].name
       PHOTON_ENABLED       = "false"  # No Photon in Lambda, use Google Maps
@@ -197,7 +197,7 @@ resource "aws_lambda_function_url" "api" {
 
   cors {
     allow_origins     = ["*"]
-    allow_methods     = ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
+    allow_methods     = ["*"]  # Use wildcard to avoid length constraints
     allow_headers     = ["*"]
     expose_headers    = ["*"]
     max_age           = 3600
@@ -223,7 +223,7 @@ resource "aws_lambda_function" "scraper" {
 
   environment {
     variables = {
-      NODE_ENV             = var.environment
+      NODE_ENV             = "production"
       DB_TYPE              = "dynamodb"
       DYNAMODB_TABLE_NAME  = aws_dynamodb_table.riftfound[0].name
       PHOTON_ENABLED       = "false"  # No Photon in Lambda, use Google Maps
