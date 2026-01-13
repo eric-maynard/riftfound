@@ -194,8 +194,13 @@ function mapDynamoItemToEvent(item: DynamoEventItem): Event {
   };
 }
 
+// Maximum number of geohash queries before falling back to date-based query
+// DynamoDB handles parallel queries well, so we can afford a higher threshold
+const MAX_GEOHASH_QUERIES = 100;
+
 // Get all geohash cells that cover a bounding box around a point
-function getGeohashesForRadius(lat: number, lng: number, radiusKm: number, precision: number = 4): string[] {
+// Returns null if too many cells (caller should use fallback)
+function getGeohashesForRadius(lat: number, lng: number, radiusKm: number, precision: number = 4): string[] | null {
   // Calculate bounding box
   const latDelta = radiusKm / 111; // 1 degree latitude ≈ 111km
   const lngDelta = radiusKm / (111 * Math.cos(lat * Math.PI / 180));
@@ -210,7 +215,15 @@ function getGeohashesForRadius(lat: number, lng: number, radiusKm: number, preci
   const hashes = geohash.bboxes(minLat, minLng, maxLat, maxLng, precision);
 
   // Filter out any undefined/empty values and dedupe
-  return [...new Set(hashes.filter((h: string) => !!h && h.length > 0))];
+  const uniqueHashes = [...new Set(hashes.filter((h: string) => !!h && h.length > 0))];
+
+  // If too many cells, return null to signal fallback to date-based query
+  if (uniqueHashes.length > MAX_GEOHASH_QUERIES) {
+    console.log(`Geohash query would require ${uniqueHashes.length} cells, using date-based fallback`);
+    return null;
+  }
+
+  return uniqueHashes;
 }
 
 // Query shops by geohash using GeohashIndex
@@ -224,31 +237,32 @@ async function getShopsByGeohash(geohashes: string[]): Promise<DynamoShopItem[] 
   const tableName = getTableName();
   const shops: DynamoShopItem[] = [];
 
+  // Query function for a single geohash
+  const queryGeohash = async (gh: string): Promise<DynamoShopItem[]> => {
+    let lastEvaluatedKey: Record<string, any> | undefined;
+    const results: DynamoShopItem[] = [];
+
+    do {
+      const response = await client.send(new QueryCommand({
+        TableName: tableName,
+        IndexName: 'GeohashIndex',
+        KeyConditionExpression: 'geohash4 = :gh',
+        ExpressionAttributeValues: {
+          ':gh': gh,
+        },
+        ExclusiveStartKey: lastEvaluatedKey,
+      }));
+
+      results.push(...(response.Items || []) as DynamoShopItem[]);
+      lastEvaluatedKey = response.LastEvaluatedKey;
+    } while (lastEvaluatedKey);
+
+    return results;
+  };
+
   try {
-    // Query each geohash in parallel
-    const promises = geohashes.map(async (gh) => {
-      let lastEvaluatedKey: Record<string, any> | undefined;
-      const results: DynamoShopItem[] = [];
-
-      do {
-        const response = await client.send(new QueryCommand({
-          TableName: tableName,
-          IndexName: 'GeohashIndex',
-          KeyConditionExpression: 'geohash4 = :gh',
-          ExpressionAttributeValues: {
-            ':gh': gh,
-          },
-          ExclusiveStartKey: lastEvaluatedKey,
-        }));
-
-        results.push(...(response.Items || []) as DynamoShopItem[]);
-        lastEvaluatedKey = response.LastEvaluatedKey;
-      } while (lastEvaluatedKey);
-
-      return results;
-    });
-
-    const results = await Promise.all(promises);
+    // Query all geohashes in parallel - DynamoDB handles concurrent requests well
+    const results = await Promise.all(geohashes.map(queryGeohash));
     for (const result of results) {
       shops.push(...result);
     }
@@ -368,9 +382,11 @@ export async function getEventsDynamoDB(
     // 4. Query events for matching shops
 
     const geohashes = getGeohashesForRadius(query.lat!, query.lng!, query.radiusKm, 4);
-    const nearbyShops = await getShopsByGeohash(geohashes);
 
-    // If GeohashIndex isn't available, fall back to date-based query with in-memory filtering
+    // If too many geohash cells or GeohashIndex unavailable, fall back to date-based query
+    const nearbyShops = geohashes ? await getShopsByGeohash(geohashes) : null;
+
+    // Fall back to date-based query with in-memory filtering
     if (nearbyShops === null) {
       allEvents = await queryEventsByDateRange(startDate, endDate);
       // Filter by distance in memory
