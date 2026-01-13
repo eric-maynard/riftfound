@@ -13,16 +13,20 @@ source "$SCRIPT_DIR/deploy.env"
 SSH_KEY_PATH="${SSH_KEY_PATH/#\~/$HOME}"
 
 usage() {
-    echo "Usage: ./deploy.sh [frontend|backend|all]"
+    echo "Usage: ./deploy.sh [frontend|backend|backend-lambda|scraper-lambda|lambdas|all]"
     echo ""
     echo "Commands:"
-    echo "  frontend  - Build and deploy React frontend to S3/CloudFront"
-    echo "  backend   - Deploy backend and scraper to EC2"
-    echo "  all       - Deploy both frontend and backend"
+    echo "  frontend       - Build and deploy React frontend to S3/CloudFront"
+    echo "  backend        - Deploy backend and scraper to EC2"
+    echo "  backend-lambda - Deploy backend API to AWS Lambda"
+    echo "  scraper-lambda - Deploy scraper to AWS Lambda"
+    echo "  lambdas        - Deploy both backend and scraper to Lambda"
+    echo "  all            - Deploy frontend and backend (EC2)"
     echo ""
     echo "Examples:"
     echo "  ./deploy.sh frontend"
     echo "  ./deploy.sh backend"
+    echo "  ./deploy.sh lambdas"
     echo "  ./deploy.sh all"
     exit 1
 }
@@ -82,6 +86,94 @@ REMOTE_SCRIPT
     echo "==> Backend deployed!"
 }
 
+deploy_backend_lambda() {
+    echo "==> Building backend for Lambda..."
+    cd "$SCRIPT_DIR/backend"
+
+    # Build TypeScript
+    npm run build
+
+    # Create temp directory for Lambda package
+    LAMBDA_DIR=$(mktemp -d)
+    echo "==> Packaging in $LAMBDA_DIR..."
+
+    # Copy built files
+    cp -r dist/* "$LAMBDA_DIR/"
+
+    # Copy package.json and install production deps
+    cp package.json "$LAMBDA_DIR/"
+    cd "$LAMBDA_DIR"
+    npm install --omit=dev --ignore-scripts
+
+    # Create zip
+    echo "==> Creating deployment zip..."
+    zip -r /tmp/backend-lambda.zip . > /dev/null
+
+    # Get zip size
+    ZIP_SIZE=$(du -h /tmp/backend-lambda.zip | cut -f1)
+    echo "==> Package size: $ZIP_SIZE"
+
+    # Deploy to Lambda
+    FUNCTION_NAME="${API_LAMBDA_NAME:-riftfound-api-prod}"
+    echo "==> Deploying to Lambda function: $FUNCTION_NAME..."
+    aws lambda update-function-code \
+        --function-name "$FUNCTION_NAME" \
+        --zip-file fileb:///tmp/backend-lambda.zip \
+        --region "$AWS_REGION" > /dev/null
+
+    # Cleanup
+    rm -rf "$LAMBDA_DIR"
+    rm /tmp/backend-lambda.zip
+
+    echo "==> Backend Lambda deployed!"
+    echo ""
+    echo "API Gateway URL: Check terraform output for api_gateway_url"
+}
+
+deploy_scraper_lambda() {
+    echo "==> Building scraper for Lambda..."
+    cd "$SCRIPT_DIR/scraper"
+
+    # Build TypeScript
+    npm run build
+
+    # Create temp directory for Lambda package
+    LAMBDA_DIR=$(mktemp -d)
+    echo "==> Packaging in $LAMBDA_DIR..."
+
+    # Copy built files
+    cp -r dist/* "$LAMBDA_DIR/"
+
+    # Copy package.json and install production deps
+    cp package.json "$LAMBDA_DIR/"
+    cd "$LAMBDA_DIR"
+    npm install --omit=dev --ignore-scripts
+
+    # Create zip
+    echo "==> Creating deployment zip..."
+    zip -r /tmp/scraper-lambda.zip . > /dev/null
+
+    # Get zip size
+    ZIP_SIZE=$(du -h /tmp/scraper-lambda.zip | cut -f1)
+    echo "==> Package size: $ZIP_SIZE"
+
+    # Deploy to Lambda
+    FUNCTION_NAME="${SCRAPER_LAMBDA_NAME:-riftfound-scraper-prod}"
+    echo "==> Deploying to Lambda function: $FUNCTION_NAME..."
+    aws lambda update-function-code \
+        --function-name "$FUNCTION_NAME" \
+        --zip-file fileb:///tmp/scraper-lambda.zip \
+        --region "$AWS_REGION" > /dev/null
+
+    # Cleanup
+    rm -rf "$LAMBDA_DIR"
+    rm /tmp/scraper-lambda.zip
+
+    echo "==> Scraper Lambda deployed!"
+    echo ""
+    echo "To test manually: aws lambda invoke --function-name $FUNCTION_NAME /tmp/out.json && cat /tmp/out.json"
+}
+
 # Parse command
 case "${1:-}" in
     frontend)
@@ -89,6 +181,16 @@ case "${1:-}" in
         ;;
     backend)
         deploy_backend
+        ;;
+    backend-lambda)
+        deploy_backend_lambda
+        ;;
+    scraper-lambda)
+        deploy_scraper_lambda
+        ;;
+    lambdas)
+        deploy_backend_lambda
+        deploy_scraper_lambda
         ;;
     all)
         deploy_frontend

@@ -51,3 +51,10 @@ variable "use_ec2" {
   type        = bool
   default     = true
 }
+
+variable "google_maps_api_key" {
+  description = "Google Maps API key for geocoding in Lambda functions"
+  type        = string
+  default     = ""
+  sensitive   = true
+}

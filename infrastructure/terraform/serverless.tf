@@ -173,6 +173,8 @@ resource "aws_lambda_function" "api" {
       NODE_ENV             = var.environment
       DB_TYPE              = "dynamodb"
       DYNAMODB_TABLE_NAME  = aws_dynamodb_table.riftfound[0].name
+      PHOTON_ENABLED       = "false"  # No Photon in Lambda, use Google Maps
+      GOOGLE_MAPS_API_KEY  = var.google_maps_api_key
       AWS_NODEJS_CONNECTION_REUSE_ENABLED = "1"
     }
   }
@@ -224,6 +226,8 @@ resource "aws_lambda_function" "scraper" {
       NODE_ENV             = var.environment
       DB_TYPE              = "dynamodb"
       DYNAMODB_TABLE_NAME  = aws_dynamodb_table.riftfound[0].name
+      PHOTON_ENABLED       = "false"  # No Photon in Lambda, use Google Maps
+      GOOGLE_MAPS_API_KEY  = var.google_maps_api_key
       AWS_NODEJS_CONNECTION_REUSE_ENABLED = "1"
     }
   }
