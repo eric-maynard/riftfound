@@ -64,6 +64,31 @@ python analyze-logs.py -o report.json --format json
 ./db-metrics.sh --remote --days 14
 ```
 
+### Geocoding Metrics (Google API Usage)
+
+Analyzes geocoding cache effectiveness and Google API usage from Lambda CloudWatch logs.
+
+```bash
+# Basic geocode metrics (last 7 days)
+./geocode-metrics.sh
+
+# Specify time range
+./geocode-metrics.sh --days 30
+
+# Include places API calls per visitor ratio
+# (requires CloudFront logs - run ./download-logs.sh first)
+./geocode-metrics.sh --with-traffic
+
+# Combined example
+./geocode-metrics.sh --days 14 --with-traffic
+```
+
+Output includes:
+- Cache hit/miss rate
+- Google API calls by type (forward, reverse, autocomplete)
+- Error rate
+- With `--with-traffic`: Places API calls per visitor ratio
+
 ## Metrics Available
 
 ### Traffic Metrics
@@ -93,6 +118,18 @@ python analyze-logs.py -o report.json --format json
 | Events by type | Breakdown by event category |
 | Shops by state | Geographic distribution |
 | Recent scrape runs | Last 10 scraper executions |
+
+### Geocoding Metrics
+
+| Metric | Description |
+|--------|-------------|
+| Cache hits/misses | Geocode cache effectiveness |
+| Cache hit rate | Percentage of lookups served from cache |
+| Google forward geocode | Address-to-coordinates API calls |
+| Google reverse geocode | Coordinates-to-address API calls |
+| Google autocomplete | Places API calls for location suggestions |
+| Places API per visitor | Google Places calls divided by unique visitors |
+| API calls per search | Percentage of location searches hitting Google API |
 
 ## Tracking Store Visit Clicks
 
