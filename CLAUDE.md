@@ -12,12 +12,13 @@ riftfound/
 └── infrastructure/  # Terraform, Docker for local dev
 ```
 
-**Production Stack:**
+**Production Stack (Serverless):**
 - Frontend: S3 + CloudFront
-- Backend API: Lambda + API Gateway
+- Backend API: Lambda + API Gateway (via CloudFront)
 - Scraper: Lambda + EventBridge (hourly)
 - Database: DynamoDB
 - Geocoding: Google Maps API
+- EC2: Standby only (for rollback)
 
 ## Quick Start
 

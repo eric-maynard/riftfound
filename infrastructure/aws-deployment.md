@@ -7,34 +7,37 @@ This guide explains the production deployment of Riftfound on AWS.
 ```
 User → CloudFront (HTTPS)
          ├── /* → S3 (frontend static files)
-         └── /api/* → EC2:3001 (backend API) [migration to Lambda in progress]
+         └── /api/* → API Gateway → Lambda (backend API)
 
 Lambda Functions:
-├── riftfound-api-prod     # Backend API (ready, not yet routed from CloudFront)
+├── riftfound-api-prod     # Backend API (active, routed via CloudFront)
 └── riftfound-scraper-prod # Event scraper (active, runs hourly via EventBridge)
 
 DynamoDB Table: riftfound-prod
 ├── Events (PK: EVENT#<id>)
 ├── Shops (PK: SHOP#<id>)
 └── Scrape runs, geocache
+
+EC2 Instance: Still running (standby for rollback if needed)
 ```
 
-**Current State (Hybrid):**
+**Current State (Serverless):**
 - Frontend: S3 + CloudFront ✅
-- Backend API: EC2 (CloudFront routes /api/* here) - Lambda ready but not routed
+- Backend API: Lambda + API Gateway ✅ (routed via CloudFront)
 - Scraper: Lambda + EventBridge ✅ (hourly)
 - Database: DynamoDB ✅
+- EC2: Running but idle (standby for rollback)
 
 ## Components
 
 | Component | Service | Status |
 |-----------|---------|--------|
 | Frontend | S3 + CloudFront | ✅ Active |
-| Backend API | Lambda + API Gateway | ✅ Deployed (not routed yet) |
-| Backend API | EC2 t3a.xlarge | ✅ Active (current route) |
+| Backend API | Lambda + API Gateway | ✅ Active (via CloudFront) |
 | Scraper | Lambda + EventBridge | ✅ Active (hourly) |
 | Database | DynamoDB | ✅ Active |
 | Geocoding | Google Maps API | ✅ Active |
+| EC2 | t3a.xlarge | ⏸️ Standby (for rollback) |
 
 ## Deployment
 
@@ -110,9 +113,9 @@ aws events disable-rule --name riftfound-scraper-schedule-prod --region us-west-
 aws events enable-rule --name riftfound-scraper-schedule-prod --region us-west-2
 ```
 
-## EC2 Management (Legacy)
+## EC2 Management (Standby)
 
-EC2 still runs the backend API (until CloudFront is updated to route to Lambda).
+EC2 is running but idle. It's kept as a fallback in case Lambda has issues.
 
 ### SSH Access
 
@@ -187,10 +190,26 @@ aws dynamodb describe-table --table-name riftfound-prod --region us-west-2
 aws dynamodb scan --table-name riftfound-prod --select COUNT --region us-west-2
 ```
 
-## Next Steps
+## Rollback to EC2 (if needed)
 
-To complete serverless migration:
-1. Update CloudFront to route `/api/*` to API Gateway instead of EC2
-2. Disable EC2 instance
-3. Set `use_ec2 = false` in terraform.tfvars
-4. Run `terraform apply` to remove EC2 resources
+If Lambda has issues, you can quickly rollback to EC2:
+
+```bash
+cd infrastructure/terraform
+
+# Edit terraform.tfvars
+# Set: use_dynamodb = false
+
+terraform apply
+```
+
+This will route CloudFront back to EC2. The EC2 instance is still running with the backend deployed.
+
+## Decommission EC2 (when ready)
+
+Once confident Lambda is stable:
+
+1. Stop the EC2 instance manually (or via AWS Console)
+2. Set `use_ec2 = false` in terraform.tfvars
+3. Run `terraform apply` to remove EC2 resources
+4. This saves ~$100/month

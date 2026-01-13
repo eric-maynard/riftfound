@@ -304,6 +304,21 @@ resource "aws_cloudfront_distribution" "main" {
     }
   }
 
+  # API Gateway origin (serverless backend)
+  dynamic "origin" {
+    for_each = var.use_dynamodb ? [1] : []
+    content {
+      domain_name = replace(aws_apigatewayv2_api.main[0].api_endpoint, "https://", "")
+      origin_id   = "APIGateway"
+      custom_origin_config {
+        http_port              = 80
+        https_port             = 443
+        origin_protocol_policy = "https-only"
+        origin_ssl_protocols   = ["TLSv1.2"]
+      }
+    }
+  }
+
   default_cache_behavior {
     allowed_methods        = ["GET", "HEAD", "OPTIONS"]
     cached_methods         = ["GET", "HEAD"]
@@ -320,7 +335,7 @@ resource "aws_cloudfront_distribution" "main" {
     path_pattern           = "/api/*"
     allowed_methods        = ["DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"]
     cached_methods         = ["GET", "HEAD"]
-    target_origin_id       = "EC2-API"
+    target_origin_id       = var.use_dynamodb ? "APIGateway" : "EC2-API"
     viewer_protocol_policy = "redirect-to-https"
     min_ttl                = 0
     default_ttl            = 0
