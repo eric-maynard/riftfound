@@ -408,6 +408,7 @@ function CalendarPage() {
 
       try {
         const response = await getEvents({
+          calendarMode: true,
           startDateFrom: dateRange.start.toISOString(),
           startDateTo: dateRange.end.toISOString(),
           ...(appliedFilters.location && {
