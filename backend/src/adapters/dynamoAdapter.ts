@@ -114,17 +114,6 @@ export interface DynamoScrapeRunItem {
 }
 
 // Helper functions
-function getCalendarDateRange(): { startDate: string; endDate: string } {
-  const now = new Date();
-  const startDate = new Date(now);
-  startDate.setMonth(startDate.getMonth() - 3);
-  const endDate = new Date(now);
-  endDate.setMonth(endDate.getMonth() + 3);
-  return {
-    startDate: startDate.toISOString(),
-    endDate: endDate.toISOString(),
-  };
-}
 
 // Haversine formula to calculate distance between two points in km
 function haversineDistance(lat1: number, lng1: number, lat2: number, lng2: number): number {
@@ -294,6 +283,54 @@ async function getShopsByGeohash(
   }
 }
 
+// Query events directly by geohash and date range using GeohashEventIndex
+async function queryEventsByGeohashAndDateRange(
+  geohashes: string[],
+  startDate: string,
+  endDate: string
+): Promise<DynamoEventItem[]> {
+  if (!geohashes.length) {
+    return [];
+  }
+
+  const client = getDynamoClient();
+  const tableName = getTableName();
+
+  // Query function for a single geohash
+  const queryGeohash = async (gh: string): Promise<DynamoEventItem[]> => {
+    let lastEvaluatedKey: Record<string, any> | undefined;
+    const results: DynamoEventItem[] = [];
+
+    do {
+      const response = await client.send(new QueryCommand({
+        TableName: tableName,
+        IndexName: 'GeohashEventIndex',
+        KeyConditionExpression: 'geohash3 = :gh AND startDate BETWEEN :start AND :end',
+        ExpressionAttributeValues: {
+          ':gh': gh,
+          ':start': startDate,
+          ':end': endDate,
+        },
+        ExclusiveStartKey: lastEvaluatedKey,
+      }));
+
+      results.push(...(response.Items || []) as DynamoEventItem[]);
+      lastEvaluatedKey = response.LastEvaluatedKey;
+    } while (lastEvaluatedKey);
+
+    return results;
+  };
+
+  // Query all geohashes in parallel
+  const results = await Promise.all(geohashes.map(queryGeohash));
+  const events: DynamoEventItem[] = [];
+  for (const result of results) {
+    events.push(...result);
+  }
+
+  return events;
+}
+
 // Query events by shop ID and date range using GSI2
 async function queryEventsByShopAndDateRange(
   shopExternalId: number,
@@ -373,69 +410,41 @@ export async function getEventsDynamoDB(
   offset: number,
   limit: number
 ): Promise<{ events: Event[]; total: number }> {
-  // Step 1: Determine date range
-  let startDate: string;
-  let endDate: string;
+  // Step 1: Determine date range (calendarMode only affects limit, not date range)
+  const startDate = query.startDateFrom || new Date().toISOString();
+  const endDate = query.startDateTo || new Date(Date.now() + 90 * 24 * 60 * 60 * 1000).toISOString();
 
-  if (query.calendarMode) {
-    const range = getCalendarDateRange();
-    startDate = range.startDate;
-    endDate = range.endDate;
-  } else {
-    startDate = query.startDateFrom || new Date().toISOString();
-    endDate = query.startDateTo || new Date(Date.now() + 90 * 24 * 60 * 60 * 1000).toISOString();
-  }
-
-  // Step 2: Query events - use shop-first approach when location filter is present
+  // Step 2: Query events - use GeohashEventIndex for direct location-based queries
   let allEvents: DynamoEventItem[];
   const hasLocationFilter = query.lat !== undefined && query.lng !== undefined;
 
   if (hasLocationFilter) {
-    // Geohash-based shop lookup: query only relevant geographic cells
-    // 1. Choose optimal precision based on search radius
-    // 2. Get geohash cells that cover the search radius bounding box
-    // 3. Query shops in those cells using appropriate GeohashIndex
-    // 4. Filter by exact distance
-    // 5. Query events for matching shops
+    // Direct event query using GeohashEventIndex (geohash3 + startDate)
+    // Always use precision 3 for events (~156km cells)
+    const geohashes = getGeohashesForRadius(query.lat!, query.lng!, query.radiusKm, 3);
 
-    const { precision, indexName, keyName } = chooseGeohashPrecision(query.radiusKm);
-    const geohashes = getGeohashesForRadius(query.lat!, query.lng!, query.radiusKm, precision);
+    console.log(`Querying GeohashEventIndex: ${geohashes?.length || 0} cells, date range: ${startDate} to ${endDate}`);
 
-    // If too many geohash cells or GeohashIndex unavailable, fall back to date-based query
-    let nearbyShops = geohashes ? await getShopsByGeohash(geohashes, indexName, keyName) : null;
+    if (geohashes && geohashes.length > 0) {
+      allEvents = await queryEventsByGeohashAndDateRange(geohashes, startDate, endDate);
+      console.log(`GeohashEventIndex returned ${allEvents.length} events before distance filter`);
 
-    // If GeohashIndex3 returned empty (possibly still backfilling), fall back to date-based query
-    if (nearbyShops !== null && nearbyShops.length === 0 && precision === 3) {
-      console.log('GeohashIndex3 returned empty, falling back to date-based query');
-      nearbyShops = null; // Trigger date-based fallback
-    }
-
-    // Fall back to date-based query with in-memory filtering
-    if (nearbyShops === null) {
-      allEvents = await queryEventsByDateRange(startDate, endDate);
-      // Filter by distance in memory
+      // Filter by exact Haversine distance
       allEvents = allEvents.filter(e =>
         e.shopLatitude !== null &&
         e.shopLongitude !== null &&
         haversineDistance(query.lat!, query.lng!, e.shopLatitude!, e.shopLongitude!) <= query.radiusKm
       );
+      console.log(`After distance filter: ${allEvents.length} events`);
     } else {
-      // Filter by exact Haversine distance
-      const shopsInRange = nearbyShops.filter(s =>
-        s.latitude !== null &&
-        s.longitude !== null &&
-        haversineDistance(query.lat!, query.lng!, s.latitude!, s.longitude!) <= query.radiusKm
+      // Fall back to date-based query with in-memory filtering
+      console.log('Falling back to date-based query');
+      allEvents = await queryEventsByDateRange(startDate, endDate);
+      allEvents = allEvents.filter(e =>
+        e.shopLatitude !== null &&
+        e.shopLongitude !== null &&
+        haversineDistance(query.lat!, query.lng!, e.shopLatitude!, e.shopLongitude!) <= query.radiusKm
       );
-
-      // Query events for each shop in parallel
-      allEvents = [];
-      const promises = shopsInRange.map(shop =>
-        queryEventsByShopAndDateRange(shop.externalId, startDate, endDate)
-      );
-      const results = await Promise.all(promises);
-      for (const events of results) {
-        allEvents.push(...events);
-      }
     }
   } else {
     // No location filter - use date-based query (slower but comprehensive)

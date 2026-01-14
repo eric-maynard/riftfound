@@ -6,19 +6,6 @@ import {
   getScrapeInfoDynamoDB,
 } from '../adapters/dynamoAdapter.js';
 
-// Calculate date range for calendar mode (3 months forward/backward)
-function getCalendarDateRange(): { startDate: string; endDate: string } {
-  const now = new Date();
-  const startDate = new Date(now);
-  startDate.setMonth(startDate.getMonth() - 3);
-  const endDate = new Date(now);
-  endDate.setMonth(endDate.getMonth() + 3);
-  return {
-    startDate: startDate.toISOString(),
-    endDate: endDate.toISOString(),
-  };
-}
-
 // Max events for calendar view - frontend shows warning if this limit is hit
 const CALENDAR_MAX_EVENTS = 1000;
 
@@ -42,13 +29,6 @@ function getEventsSqlite(query: EventQuery, offset: number, limit: number): { ev
   const params: unknown[] = [];
   const hasLocationFilter = query.lat !== undefined && query.lng !== undefined;
 
-  // In calendar mode, use 3-month date range
-  if (query.calendarMode) {
-    const { startDate, endDate } = getCalendarDateRange();
-    where += ` AND e.start_date >= ? AND e.start_date <= ?`;
-    params.push(startDate, endDate);
-  }
-
   if (query.city) {
     where += ` AND e.city LIKE ?`;
     params.push(`%${query.city}%`);
@@ -61,11 +41,11 @@ function getEventsSqlite(query: EventQuery, offset: number, limit: number): { ev
     where += ` AND e.country LIKE ?`;
     params.push(`%${query.country}%`);
   }
-  if (query.startDateFrom && !query.calendarMode) {
+  if (query.startDateFrom) {
     where += ` AND e.start_date >= ?`;
     params.push(query.startDateFrom);
   }
-  if (query.startDateTo && !query.calendarMode) {
+  if (query.startDateTo) {
     where += ` AND e.start_date <= ?`;
     params.push(query.startDateTo);
   }
@@ -181,14 +161,6 @@ async function getEventsPostgres(query: EventQuery, offset: number, limit: numbe
   let paramIndex = 1;
   const hasLocationFilter = query.lat !== undefined && query.lng !== undefined;
 
-  // In calendar mode, use 3-month date range
-  if (query.calendarMode) {
-    const { startDate, endDate } = getCalendarDateRange();
-    whereClause += ` AND e.start_date >= $${paramIndex} AND e.start_date <= $${paramIndex + 1}`;
-    params.push(startDate, endDate);
-    paramIndex += 2;
-  }
-
   if (query.city) {
     whereClause += ` AND e.city ILIKE $${paramIndex}`;
     params.push(`%${query.city}%`);
@@ -204,12 +176,12 @@ async function getEventsPostgres(query: EventQuery, offset: number, limit: numbe
     params.push(`%${query.country}%`);
     paramIndex++;
   }
-  if (query.startDateFrom && !query.calendarMode) {
+  if (query.startDateFrom) {
     whereClause += ` AND e.start_date >= $${paramIndex}`;
     params.push(query.startDateFrom);
     paramIndex++;
   }
-  if (query.startDateTo && !query.calendarMode) {
+  if (query.startDateTo) {
     whereClause += ` AND e.start_date <= $${paramIndex}`;
     params.push(query.startDateTo);
     paramIndex++;
