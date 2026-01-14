@@ -253,9 +253,11 @@ function CalendarPage() {
   const [searchParams] = useSearchParams();
   // Load cached events on initial render for instant display
   const [initialCache] = useState(() => loadCachedEvents());
+  const hasCachedEvents = initialCache !== null && initialCache.events.length > 0;
   const [events, setEvents] = useState<Event[]>(() => initialCache?.events ?? []);
-  const [loading, setLoading] = useState(true);
-  const [isRefreshing, setIsRefreshing] = useState(false); // True when updating cached data
+  // If we have cached events, don't show loading overlay - show cached data immediately
+  const [loading, setLoading] = useState(!hasCachedEvents);
+  const [isRefreshing, setIsRefreshing] = useState(hasCachedEvents); // Start refreshing if we have cached data
   const [error, setError] = useState<string | null>(null);
   const [tooManyEvents, setTooManyEvents] = useState(() => initialCache?.tooMany ?? false);
   const [settings, setSettings] = useState<Settings>(loadSettings);
