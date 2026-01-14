@@ -1,4 +1,5 @@
 import { getPool, getSqlite, useSqlite, useDynamoDB, addToPhotonQueue } from '../config/database.js';
+import { getGeocacheDynamoDB, setGeocacheDynamoDB } from '../adapters/dynamoAdapter.js';
 import { env } from '../config/env.js';
 import { appendFileSync } from 'fs';
 
@@ -543,16 +544,24 @@ async function fetchPlaceDetails(placeId: string): Promise<{ lat: number; lng: n
       },
     });
 
-    if (!response.ok) return null;
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error(`Place Details failed for ${placeId}: HTTP ${response.status} - ${errorText}`);
+      return null;
+    }
 
     const data = await response.json() as PlaceDetailsResponse;
-    if (!data.location) return null;
+    if (!data.location) {
+      console.error(`Place Details missing location for ${placeId}:`, JSON.stringify(data));
+      return null;
+    }
 
     return {
       lat: data.location.latitude,
       lng: data.location.longitude,
     };
-  } catch {
+  } catch (error) {
+    console.error(`Place Details exception for ${placeId}:`, error);
     return null;
   }
 }
@@ -565,8 +574,15 @@ async function fetchPlaceDetails(placeId: string): Promise<{ lat: number; lng: n
 async function getCachedGeocode(query: string): Promise<GeocodeResult | null> {
   const normalizedQuery = query.toLowerCase().trim();
 
-  // DynamoDB: skip cache for now (TODO: implement DynamoDB geocache)
   if (useDynamoDB()) {
+    const cached = await getGeocacheDynamoDB(normalizedQuery);
+    if (cached) {
+      return {
+        latitude: cached.latitude,
+        longitude: cached.longitude,
+        displayName: cached.displayName || normalizedQuery,
+      };
+    }
     return null;
   }
 
@@ -606,8 +622,8 @@ async function getCachedGeocode(query: string): Promise<GeocodeResult | null> {
 async function cacheGeocode(query: string, result: GeocodeResult): Promise<void> {
   const normalizedQuery = query.toLowerCase().trim();
 
-  // DynamoDB: skip cache for now (TODO: implement DynamoDB geocache)
   if (useDynamoDB()) {
+    await setGeocacheDynamoDB(normalizedQuery, result.latitude, result.longitude, result.displayName);
     return;
   }
 

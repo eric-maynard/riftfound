@@ -104,6 +104,7 @@ interface DynamoEventItem {
   country: string | null;
   latitude: number | null;
   longitude: number | null;
+  geohash3?: string;  // For GeohashEventIndex - query events directly by location
   startDate: string;
   startTime: string | null;
   endDate: string | null;
@@ -142,6 +143,49 @@ interface DynamoShopItem {
   geocodeError: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+// Change detection helpers to avoid unnecessary writes
+// Comparing only data fields, not metadata like updatedAt/scrapedAt/createdAt
+
+function hasShopChanged(existing: DynamoShopItem, newItem: DynamoShopItem): boolean {
+  return (
+    existing.name !== newItem.name ||
+    existing.locationText !== newItem.locationText ||
+    existing.latitude !== newItem.latitude ||
+    existing.longitude !== newItem.longitude ||
+    existing.geohash3 !== newItem.geohash3 ||
+    existing.geohash4 !== newItem.geohash4
+  );
+}
+
+function hasEventChanged(existing: DynamoEventItem, newItem: DynamoEventItem): boolean {
+  return (
+    existing.name !== newItem.name ||
+    existing.description !== newItem.description ||
+    existing.location !== newItem.location ||
+    existing.address !== newItem.address ||
+    existing.city !== newItem.city ||
+    existing.state !== newItem.state ||
+    existing.country !== newItem.country ||
+    existing.latitude !== newItem.latitude ||
+    existing.longitude !== newItem.longitude ||
+    existing.geohash3 !== newItem.geohash3 ||
+    existing.startDate !== newItem.startDate ||
+    existing.startTime !== newItem.startTime ||
+    existing.endDate !== newItem.endDate ||
+    existing.eventType !== newItem.eventType ||
+    existing.organizer !== newItem.organizer ||
+    existing.playerCount !== newItem.playerCount ||
+    existing.capacity !== newItem.capacity ||
+    existing.price !== newItem.price ||
+    existing.url !== newItem.url ||
+    existing.imageUrl !== newItem.imageUrl ||
+    existing.shopId !== newItem.shopId ||
+    existing.shopName !== newItem.shopName ||
+    existing.shopLatitude !== newItem.shopLatitude ||
+    existing.shopLongitude !== newItem.shopLongitude
+  );
 }
 
 // DynamoDB ScrapeRun item structure
@@ -253,6 +297,7 @@ export async function upsertShopFromApiDynamoDB(store: StoreInfo): Promise<Upser
 
   const now = new Date().toISOString();
   const isNew = !existing.Item;
+  const existingShop = existing.Item as DynamoShopItem | undefined;
 
   // Calculate geohashes for spatial indexing at multiple precisions
   const geohash3 = store.latitude && store.longitude
@@ -268,16 +313,27 @@ export async function upsertShopFromApiDynamoDB(store: StoreInfo): Promise<Upser
     externalId: store.id,
     name: store.name,
     locationText: store.full_address,
-    displayCity: existing.Item ? (existing.Item as DynamoShopItem).displayCity : null,
+    displayCity: existingShop?.displayCity ?? null,
     latitude: store.latitude,
     longitude: store.longitude,
     geohash3,
     geohash4,
     geocodeStatus: 'completed',
     geocodeError: null,
-    createdAt: existing.Item ? (existing.Item as DynamoShopItem).createdAt : now,
+    createdAt: existingShop?.createdAt ?? now,
     updatedAt: now,
   };
+
+  // Skip write if nothing changed (saves WCUs)
+  if (!isNew && existingShop && !hasShopChanged(existingShop, item)) {
+    return {
+      shopId: store.id,
+      isNew: false,
+      needsCityGeocode: !item.displayCity,
+      latitude: store.latitude,
+      longitude: store.longitude,
+    };
+  }
 
   await client.send(new PutCommand({
     TableName: tableName,
@@ -285,7 +341,7 @@ export async function upsertShopFromApiDynamoDB(store: StoreInfo): Promise<Upser
   }));
 
   return {
-    shopId: store.id, // Using external_id as the ID in DynamoDB
+    shopId: store.id,
     isNew,
     needsCityGeocode: !item.displayCity,
     latitude: store.latitude,
@@ -338,6 +394,7 @@ export async function upsertEventWithStoreDynamoDB(
   }));
 
   const isNew = !existing.Item;
+  const existingEvent = existing.Item as DynamoEventItem | undefined;
   const now = new Date().toISOString();
   const gsi1Keys = eventGSI1Keys(event.startDate, event.externalId);
 
@@ -352,6 +409,11 @@ export async function upsertEventWithStoreDynamoDB(
   const ttlDate = new Date(eventDate);
   ttlDate.setDate(ttlDate.getDate() + 90);
   const ttl = Math.floor(ttlDate.getTime() / 1000);
+
+  // Compute geohash3 from shop coordinates for GeohashEventIndex
+  const eventGeohash3 = storeInfo?.latitude && storeInfo?.longitude
+    ? geohash.encode(storeInfo.latitude, storeInfo.longitude, 3)
+    : undefined;
 
   const item: DynamoEventItem = {
     ...eventKeysVal,
@@ -368,6 +430,7 @@ export async function upsertEventWithStoreDynamoDB(
     country: event.country ?? null,
     latitude: event.latitude ?? null,
     longitude: event.longitude ?? null,
+    geohash3: eventGeohash3,
     startDate: event.startDate.toISOString(),
     startTime: event.startTime ?? null,
     endDate: event.endDate?.toISOString() ?? null,
@@ -383,11 +446,19 @@ export async function upsertEventWithStoreDynamoDB(
     shopName: storeInfo?.name ?? null,
     shopLatitude: storeInfo?.latitude ?? null,
     shopLongitude: storeInfo?.longitude ?? null,
-    createdAt: existing.Item ? (existing.Item as DynamoEventItem).createdAt : now,
+    createdAt: existingEvent?.createdAt ?? now,
     updatedAt: now,
     scrapedAt: now,
     ttl,
   };
+
+  // Skip write if nothing changed (saves WCUs)
+  if (!isNew && existingEvent && !hasEventChanged(existingEvent, item)) {
+    return {
+      created: false,
+      shopResult,
+    };
+  }
 
   await client.send(new PutCommand({
     TableName: tableName,

@@ -63,6 +63,11 @@ resource "aws_dynamodb_table" "riftfound" {
     type = "S"
   }
 
+  attribute {
+    name = "startDate"
+    type = "S"
+  }
+
   global_secondary_index {
     name            = "GSI1"
     hash_key        = "GSI1PK"
@@ -98,6 +103,15 @@ resource "aws_dynamodb_table" "riftfound" {
   global_secondary_index {
     name            = "GeohashIndex3"
     hash_key        = "geohash3"
+    projection_type = "ALL"
+  }
+
+  # GeohashEventIndex: Direct event queries by location + date
+  # Eliminates need to query shops first, then events per shop
+  global_secondary_index {
+    name            = "GeohashEventIndex"
+    hash_key        = "geohash3"
+    range_key       = "startDate"
     projection_type = "ALL"
   }
 
