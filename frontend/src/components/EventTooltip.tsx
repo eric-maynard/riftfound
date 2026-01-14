@@ -60,7 +60,7 @@ function formatLocation(event: Event): string | null {
 function EventTooltip({ event, position, isMobile, onClose }: EventTooltipProps) {
   const location = formatLocation(event);
   const time = formatTime(new Date(event.startDate));
-  const locatorUrl = `https://locator.riftbound.uvsgames.com/events/${event.externalId}`;
+  const visitUrl = `/api/events/${event.id}/visit`;
 
   const handleBackdropClick = (e: React.MouseEvent) => {
     if (e.target === e.currentTarget && onClose) {
@@ -80,7 +80,7 @@ function EventTooltip({ event, position, isMobile, onClose }: EventTooltipProps)
     >
       {isMobile && (
         <a
-          href={locatorUrl}
+          href={visitUrl}
           target="_blank"
           rel="noopener noreferrer"
           className="event-tooltip-visit"

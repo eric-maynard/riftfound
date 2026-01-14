@@ -599,9 +599,9 @@ function CalendarPage() {
       setTooltipEvent(eventData);
       setTooltipPosition({ x: 0, y: 0 }); // Position not used in mobile mode
     } else {
-      // On desktop, open the locator link directly
-      const locatorUrl = `https://locator.riftbound.uvsgames.com/events/${eventData.externalId}`;
-      window.open(locatorUrl, '_blank');
+      // On desktop, open via visit tracking endpoint
+      const visitUrl = `/api/events/${eventData.id}/visit`;
+      window.open(visitUrl, '_blank');
     }
   };
 

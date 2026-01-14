@@ -142,4 +142,22 @@ router.get('/:id', async (req: Request, res: Response, next: NextFunction) => {
   }
 });
 
+// GET /api/events/:id/visit - Track click and redirect to external event page
+router.get('/:id/visit', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const event = await eventService.getEventById(req.params.id);
+
+    if (!event) {
+      res.status(404).json({ error: 'Event not found' });
+      return;
+    }
+
+    // Build the external locator URL and redirect
+    const locatorUrl = `https://locator.riftbound.uvsgames.com/events/${event.externalId}`;
+    res.redirect(302, locatorUrl);
+  } catch (error) {
+    next(error);
+  }
+});
+
 export default router;

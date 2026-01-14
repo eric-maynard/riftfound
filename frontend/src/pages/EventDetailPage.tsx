@@ -112,16 +112,14 @@ function EventDetailPage() {
           </div>
         )}
 
-        {event.url && (
-          <a
-            href={event.url}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="btn btn-primary"
-          >
-            View Original Event
-          </a>
-        )}
+        <a
+          href={`/api/events/${event.id}/visit`}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="btn btn-primary"
+        >
+          View Original Event
+        </a>
       </div>
     </div>
   );
