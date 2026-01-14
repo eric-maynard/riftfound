@@ -81,7 +81,7 @@ function TypeSelect({ value, options, onChange }: TypeSelectProps) {
             </>
           )}
         </span>
-        <span className="type-select-arrow">▾</span>
+        <span className="type-select-arrow"></span>
       </button>
 
       {isOpen && (

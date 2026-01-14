@@ -259,6 +259,12 @@ function CalendarPage() {
   const [searchTrigger, setSearchTrigger] = useState(0);
   const isMobile = useIsMobile();
 
+  // Track current visible date range for incremental fetching
+  const [visibleDateRange, setVisibleDateRange] = useState<{ start: Date; end: Date } | null>(null);
+
+  // Cache for fetched events by date range + filters
+  const eventsCacheRef = useRef<Map<string, { events: Event[]; tooMany: boolean }>>(new Map());
+
   const { minDate, maxDate } = useMemo(() => getValidDateRange(), []);
 
   // Try to get user's location on mount, unless we have URL params or a saved location
@@ -324,21 +330,76 @@ function CalendarPage() {
           setSearchTrigger(t => t + 1); // Trigger search after geolocation
         },
         () => {
-          // Geolocation denied or failed, keep default (San Francisco)
+          // Geolocation denied or failed - save default location so we don't prompt again
+          // But don't overwrite if user already searched for something
+          setSettings(prev => {
+            if (prev.location) {
+              return prev; // Keep existing location
+            }
+            const updated = {
+              ...prev,
+              location: DEFAULT_LOCATION,
+              distanceMiles: initialDistance,
+            };
+            saveSettings(updated);
+            return updated;
+          });
           setLocationInitialized(true);
           setSearchTrigger(t => t + 1); // Trigger initial search
         },
         { timeout: 5000 }
       );
     } else {
+      // No geolocation support - save default location so we don't keep checking
+      // But don't overwrite if user already has a saved location
+      setSettings(prev => {
+        if (prev.location) {
+          return prev; // Keep existing location
+        }
+        const updated = {
+          ...prev,
+          location: DEFAULT_LOCATION,
+          distanceMiles: initialDistance,
+        };
+        saveSettings(updated);
+        return updated;
+      });
       setLocationInitialized(true);
       setSearchTrigger(t => t + 1); // Trigger initial search
     }
   }, [locationInitialized, urlFilters?.location, settings.location]);
 
-  // Fetch events when search is triggered
+  // Fetch events when search is triggered or visible date range changes
   useEffect(() => {
     if (searchTrigger === 0) return; // Don't fetch on initial render
+    if (!visibleDateRange) return; // Wait for calendar to initialize
+
+    // Capture for use in async function
+    const dateRange = visibleDateRange;
+
+    // Build cache key from date range + filters
+    const radiusKm = settings.useKilometers
+      ? appliedFilters.distanceMiles
+      : appliedFilters.distanceMiles * MILES_TO_KM;
+    const cacheKey = JSON.stringify({
+      start: dateRange.start.toISOString(),
+      end: dateRange.end.toISOString(),
+      lat: appliedFilters.location?.lat,
+      lng: appliedFilters.location?.lng,
+      radiusKm,
+      format: appliedFilters.format,
+    });
+
+    // Check cache first
+    const cached = eventsCacheRef.current.get(cacheKey);
+    if (cached) {
+      console.log('Cache hit for:', cacheKey);
+      setEvents(cached.events);
+      setTooManyEvents(cached.tooMany);
+      return;
+    }
+
+    console.log('Cache miss, fetching:', cacheKey);
 
     async function fetchEvents() {
       setLoading(true);
@@ -346,12 +407,9 @@ function CalendarPage() {
       setTooManyEvents(false);
 
       try {
-        const radiusKm = settings.useKilometers
-          ? appliedFilters.distanceMiles  // Already in km
-          : appliedFilters.distanceMiles * MILES_TO_KM;
-
         const response = await getEvents({
-          calendarMode: true,
+          startDateFrom: dateRange.start.toISOString(),
+          startDateTo: dateRange.end.toISOString(),
           ...(appliedFilters.location && {
             lat: appliedFilters.location.lat,
             lng: appliedFilters.location.lng,
@@ -363,7 +421,11 @@ function CalendarPage() {
         });
         setEvents(response.data);
         // Show warning if we hit the 1000 event limit
-        setTooManyEvents(response.pagination.total >= 1000);
+        const tooMany = response.pagination.total >= 1000;
+        setTooManyEvents(tooMany);
+
+        // Cache the result
+        eventsCacheRef.current.set(cacheKey, { events: response.data, tooMany });
       } catch {
         setError('Failed to load events. Please try again.');
       } finally {
@@ -372,7 +434,7 @@ function CalendarPage() {
     }
 
     fetchEvents();
-  }, [searchTrigger, appliedFilters, settings.useKilometers]);
+  }, [searchTrigger, appliedFilters, settings.useKilometers, visibleDateRange]);
 
   // Close settings popover when clicking outside
   useEffect(() => {
@@ -553,11 +615,20 @@ function CalendarPage() {
     setTooltipEvent(null);
   };
 
-  // Note: validRange already restricts navigation, so we don't need manual date checking
-  // The handleDatesSet callback was causing navigation issues at boundaries
-  const handleDatesSet = useCallback((_dateInfo: DatesSetArg) => {
-    // FullCalendar's validRange handles boundary enforcement automatically
-    // We keep this callback for future use (e.g., analytics) but don't manipulate dates
+  // Track visible date range for incremental fetching
+  // Called on initial load and when navigating months
+  const handleDatesSet = useCallback((dateInfo: DatesSetArg) => {
+    // FullCalendar provides the actual visible date range
+    const newStart = dateInfo.start;
+    const newEnd = dateInfo.end;
+
+    setVisibleDateRange(prev => {
+      // Only update if the range actually changed (avoid unnecessary re-fetches)
+      if (prev && prev.start.getTime() === newStart.getTime() && prev.end.getTime() === newEnd.getTime()) {
+        return prev;
+      }
+      return { start: newStart, end: newEnd };
+    });
   }, []);
 
   return (
