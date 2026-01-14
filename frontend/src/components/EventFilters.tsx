@@ -55,6 +55,8 @@ function EventFiltersComponent({ filters, appliedFilters, onFiltersChange, onSea
   const [selectedIndex, setSelectedIndex] = useState(-1);
   const inputRef = useRef<HTMLInputElement>(null);
   const suggestionsRef = useRef<HTMLDivElement>(null);
+  // Ref to suppress suggestions when search is in progress (prevents race with debounced fetch)
+  const suppressSuggestionsRef = useRef(false);
 
   // Check if search would do anything
   const hasChanges = !filtersEqual(filters, appliedFilters);
@@ -86,8 +88,16 @@ function EventFiltersComponent({ filters, appliedFilters, onFiltersChange, onSea
     }
 
     const timer = setTimeout(async () => {
+      // Don't show suggestions if search is in progress
+      if (suppressSuggestionsRef.current) {
+        return;
+      }
       try {
         const response = await getLocationSuggestions(trimmedInput);
+        // Check again after async fetch in case search started during fetch
+        if (suppressSuggestionsRef.current) {
+          return;
+        }
         setSuggestions(response.data);
         setShowSuggestions(response.data.length > 0);
         setSelectedIndex(-1);
@@ -254,6 +264,7 @@ function EventFiltersComponent({ filters, appliedFilters, onFiltersChange, onSea
     if (trimmedInput.length < 2) return;
 
     // Close suggestions immediately when search starts
+    suppressSuggestionsRef.current = true;
     setShowSuggestions(false);
     setSuggestions([]);
     setSelectedIndex(-1);
@@ -287,6 +298,7 @@ function EventFiltersComponent({ filters, appliedFilters, onFiltersChange, onSea
     if (!canSearch) return;
 
     // Close suggestions immediately when search starts
+    suppressSuggestionsRef.current = true;
     setShowSuggestions(false);
     setSuggestions([]);
     setSelectedIndex(-1);
@@ -359,6 +371,8 @@ function EventFiltersComponent({ filters, appliedFilters, onFiltersChange, onSea
               value={cityInput}
               onChange={(e) => setCityInput(e.target.value)}
               onFocus={() => {
+                // Re-enable suggestions when user focuses input again
+                suppressSuggestionsRef.current = false;
                 // Clear "My Location" placeholder when user clicks in to type a new location
                 if (cityInput === 'My Location') {
                   setCityInput('');
