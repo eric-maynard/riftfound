@@ -253,6 +253,10 @@ function EventFiltersComponent({ filters, appliedFilters, onFiltersChange, onSea
     const trimmedInput = cityInput.trim();
     if (trimmedInput.length < 2) return;
 
+    // Close suggestions immediately when search starts
+    setShowSuggestions(false);
+    setSuggestions([]);
+    setSelectedIndex(-1);
     setLoading(true);
     setError(null);
     try {
@@ -281,6 +285,11 @@ function EventFiltersComponent({ filters, appliedFilters, onFiltersChange, onSea
 
   const handleSearchClick = async () => {
     if (!canSearch) return;
+
+    // Close suggestions immediately when search starts
+    setShowSuggestions(false);
+    setSuggestions([]);
+    setSelectedIndex(-1);
 
     // If user typed something but didn't select from autocomplete, geocode it first
     if (hasTypedLocation) {
