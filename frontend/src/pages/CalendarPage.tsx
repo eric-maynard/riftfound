@@ -99,13 +99,24 @@ interface EventsCache {
   events: Event[];
   tooMany: boolean;
   timestamp: number;
+  month: string; // YYYY-MM format for the cached month
+}
+
+// Get current month in YYYY-MM format
+function getCurrentMonth(): string {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
 }
 
 function loadCachedEvents(): EventsCache | null {
   try {
     const stored = localStorage.getItem(EVENTS_CACHE_KEY);
     if (stored) {
-      return JSON.parse(stored);
+      const cache = JSON.parse(stored) as EventsCache;
+      // Only use cache if it's for the current month
+      if (cache.month === getCurrentMonth()) {
+        return cache;
+      }
     }
   } catch {
     // Ignore parse errors
@@ -119,6 +130,7 @@ function saveCachedEvents(events: Event[], tooMany: boolean): void {
       events,
       tooMany,
       timestamp: Date.now(),
+      month: getCurrentMonth(),
     };
     localStorage.setItem(EVENTS_CACHE_KEY, JSON.stringify(cache));
   } catch {
@@ -473,8 +485,12 @@ function CalendarPage() {
         // Cache the result in memory
         eventsCacheRef.current.set(cacheKey, { events: response.data, tooMany });
 
-        // Persist to localStorage for next visit
-        saveCachedEvents(response.data, tooMany);
+        // Persist to localStorage only if viewing today's month
+        const now = new Date();
+        const viewingCurrentMonth = dateRange.start <= now && now <= dateRange.end;
+        if (viewingCurrentMonth) {
+          saveCachedEvents(response.data, tooMany);
+        }
       } catch {
         // Only show error if we don't have cached data to display
         if (!hasStaleData) {
