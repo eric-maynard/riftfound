@@ -91,8 +91,40 @@ function useIsMobile() {
   return useState(() => isMobileOrTablet())[0];
 }
 
-// localStorage key for settings
+// localStorage keys
 const SETTINGS_KEY = 'riftfound_settings';
+const EVENTS_CACHE_KEY = 'riftfound_events_cache';
+
+interface EventsCache {
+  events: Event[];
+  tooMany: boolean;
+  timestamp: number;
+}
+
+function loadCachedEvents(): EventsCache | null {
+  try {
+    const stored = localStorage.getItem(EVENTS_CACHE_KEY);
+    if (stored) {
+      return JSON.parse(stored);
+    }
+  } catch {
+    // Ignore parse errors
+  }
+  return null;
+}
+
+function saveCachedEvents(events: Event[], tooMany: boolean): void {
+  try {
+    const cache: EventsCache = {
+      events,
+      tooMany,
+      timestamp: Date.now(),
+    };
+    localStorage.setItem(EVENTS_CACHE_KEY, JSON.stringify(cache));
+  } catch {
+    // Ignore storage errors (quota exceeded, etc.)
+  }
+}
 
 interface Settings {
   weekStartsOnMonday: boolean;
@@ -219,10 +251,13 @@ function buildShareableURL(filters: Filters): string {
 
 function CalendarPage() {
   const [searchParams] = useSearchParams();
-  const [events, setEvents] = useState<Event[]>([]);
+  // Load cached events on initial render for instant display
+  const [initialCache] = useState(() => loadCachedEvents());
+  const [events, setEvents] = useState<Event[]>(() => initialCache?.events ?? []);
   const [loading, setLoading] = useState(true);
+  const [isRefreshing, setIsRefreshing] = useState(false); // True when updating cached data
   const [error, setError] = useState<string | null>(null);
-  const [tooManyEvents, setTooManyEvents] = useState(false);
+  const [tooManyEvents, setTooManyEvents] = useState(() => initialCache?.tooMany ?? false);
   const [settings, setSettings] = useState<Settings>(loadSettings);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
@@ -390,21 +425,29 @@ function CalendarPage() {
       format: appliedFilters.format,
     });
 
-    // Check cache first
+    // Check in-memory cache - show cached data immediately but still fetch fresh
     const cached = eventsCacheRef.current.get(cacheKey);
     if (cached) {
       console.log('Cache hit for:', cacheKey);
       setEvents(cached.events);
       setTooManyEvents(cached.tooMany);
-      return;
+      setLoading(false);
+      return; // In-memory cache is fresh enough, no need to refetch
     }
 
     console.log('Cache miss, fetching:', cacheKey);
 
+    // Determine if we have stale data to show while fetching
+    const hasStaleData = events.length > 0;
+
     async function fetchEvents() {
-      setLoading(true);
+      // Show "Updating..." if we have cached data, "Loading..." if not
+      if (hasStaleData) {
+        setIsRefreshing(true);
+      } else {
+        setLoading(true);
+      }
       setError(null);
-      setTooManyEvents(false);
 
       try {
         const response = await getEvents({
@@ -425,12 +468,19 @@ function CalendarPage() {
         const tooMany = response.pagination.total >= 1000;
         setTooManyEvents(tooMany);
 
-        // Cache the result
+        // Cache the result in memory
         eventsCacheRef.current.set(cacheKey, { events: response.data, tooMany });
+
+        // Persist to localStorage for next visit
+        saveCachedEvents(response.data, tooMany);
       } catch {
-        setError('Failed to load events. Please try again.');
+        // Only show error if we don't have cached data to display
+        if (!hasStaleData) {
+          setError('Failed to load events. Please try again.');
+        }
       } finally {
         setLoading(false);
+        setIsRefreshing(false);
       }
     }
 
@@ -663,6 +713,9 @@ function CalendarPage() {
           <div className="loading-overlay">
             <div>Loading events...</div>
           </div>
+        )}
+        {isRefreshing && !loading && (
+          <div className="updating-indicator">Updating...</div>
         )}
 
         <div className="settings-container" ref={settingsRef}>

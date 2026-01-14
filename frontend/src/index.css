@@ -235,6 +235,18 @@ a:hover {
   color: var(--color-text);
 }
 
+.updating-indicator {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  padding: 4px 10px;
+  background-color: rgba(98, 114, 164, 0.9);
+  color: var(--color-text);
+  font-size: 0.75rem;
+  border-radius: 4px;
+  z-index: 10;
+}
+
 /* Inputs */
 .input,
 input[type="text"] {
