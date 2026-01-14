@@ -402,7 +402,13 @@ export async function getEventsDynamoDB(
     const geohashes = getGeohashesForRadius(query.lat!, query.lng!, query.radiusKm, precision);
 
     // If too many geohash cells or GeohashIndex unavailable, fall back to date-based query
-    const nearbyShops = geohashes ? await getShopsByGeohash(geohashes, indexName, keyName) : null;
+    let nearbyShops = geohashes ? await getShopsByGeohash(geohashes, indexName, keyName) : null;
+
+    // If GeohashIndex3 returned empty (possibly still backfilling), fall back to date-based query
+    if (nearbyShops !== null && nearbyShops.length === 0 && precision === 3) {
+      console.log('GeohashIndex3 returned empty, falling back to date-based query');
+      nearbyShops = null; // Trigger date-based fallback
+    }
 
     // Fall back to date-based query with in-memory filtering
     if (nearbyShops === null) {
