@@ -704,6 +704,10 @@ function CalendarPage() {
       if (prev && prev.start.getTime() === newStart.getTime() && prev.end.getTime() === newEnd.getTime()) {
         return prev;
       }
+      // Mark as user action if this is a navigation (not initial load)
+      if (prev) {
+        isUserSearchRef.current = true;
+      }
       return { start: newStart, end: newEnd };
     });
   }, []);
