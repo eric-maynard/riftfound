@@ -306,6 +306,7 @@ function CalendarPage() {
   const modalDisabledUntilRef = useRef(0);
   const calendarRef = useRef<FullCalendar>(null);
   const [searchTrigger, setSearchTrigger] = useState(0);
+  const isUserSearchRef = useRef(false); // Track if search was user-initiated
   const isMobile = useIsMobile();
 
   // Track current visible date range for incremental fetching
@@ -451,12 +452,18 @@ function CalendarPage() {
 
     console.log('Cache miss, fetching:', cacheKey);
 
-    // Determine if we have stale data to show while fetching
-    const hasStaleData = events.length > 0;
-
     async function fetchEvents() {
-      // Show "Updating..." if we have cached data, "Loading..." if not
-      if (hasStaleData) {
+      const isUserSearch = isUserSearchRef.current;
+      isUserSearchRef.current = false; // Reset for next search
+
+      // User-initiated search: clear events and show loading
+      // Initial load: keep stale data visible and show "Updating..." if we have data
+      const hasStaleData = events.length > 0;
+      if (isUserSearch) {
+        setEvents([]);
+        setLoading(true);
+        setIsRefreshing(false);
+      } else if (hasStaleData) {
         setIsRefreshing(true);
       } else {
         setLoading(true);
@@ -492,8 +499,8 @@ function CalendarPage() {
           saveCachedEvents(response.data, tooMany);
         }
       } catch {
-        // Only show error if we don't have cached data to display
-        if (!hasStaleData) {
+        // Show error for user searches or when we have no data to fall back on
+        if (isUserSearch || !hasStaleData) {
           setError('Failed to load events. Please try again.');
         }
       } finally {
@@ -573,6 +580,7 @@ function CalendarPage() {
         return updated;
       });
     }
+    isUserSearchRef.current = true; // Mark as user-initiated search
     setSearchTrigger(t => t + 1);
   }, [stagedFilters]);
 
