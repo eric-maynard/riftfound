@@ -617,13 +617,20 @@ function CalendarPage() {
     setTooltipEvent(null);
   }, []);
 
-  // Get events for a specific date
+  // Get events for a specific date, sorted by start time then ID
   const getEventsForDate = useCallback((date: Date): Event[] => {
     const dateStr = date.toISOString().split('T')[0];
-    return events.filter((event) => {
-      const eventDate = new Date(event.startDate).toISOString().split('T')[0];
-      return eventDate === dateStr;
-    });
+    return events
+      .filter((event) => {
+        const eventDate = new Date(event.startDate).toISOString().split('T')[0];
+        return eventDate === dateStr;
+      })
+      .sort((a, b) => {
+        const aTime = new Date(a.startDate).getTime();
+        const bTime = new Date(b.startDate).getTime();
+        if (aTime !== bTime) return aTime - bTime;
+        return a.id.localeCompare(b.id);
+      });
   }, [events]);
 
   // Handle date click (on mobile, show day events modal)
@@ -826,10 +833,13 @@ function CalendarPage() {
           eventOrder={(a: unknown, b: unknown) => {
             const aEvent = (a as { extendedProps?: { event?: Event } })?.extendedProps?.event;
             const bEvent = (b as { extendedProps?: { event?: Event } })?.extendedProps?.event;
-            // Sort by start time
+            // Sort by start time, then by ID for stable ordering
             const aTime = aEvent?.startDate ? new Date(aEvent.startDate).getTime() : 0;
             const bTime = bEvent?.startDate ? new Date(bEvent.startDate).getTime() : 0;
-            return aTime - bTime;
+            if (aTime !== bTime) return aTime - bTime;
+            const aId = aEvent?.id || '';
+            const bId = bEvent?.id || '';
+            return aId.localeCompare(bId);
           }}
         />
       </div>
