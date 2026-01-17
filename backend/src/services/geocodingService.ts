@@ -1,5 +1,5 @@
 import { getPool, getSqlite, useSqlite, useDynamoDB, addToPhotonQueue } from '../config/database.js';
-import { getGeocacheDynamoDB, setGeocacheDynamoDB } from '../adapters/dynamoAdapter.js';
+import { getGeocacheDynamoDB, setGeocacheDynamoDB, getPlaceDetailsDynamoDB, setPlaceDetailsDynamoDB } from '../adapters/dynamoAdapter.js';
 import { env } from '../config/env.js';
 import { appendFileSync } from 'fs';
 
@@ -532,8 +532,25 @@ async function callGoogleMapsAutocomplete(query: string, limit: number): Promise
 }
 
 // Fetch place details to get coordinates using Places API (New)
+// Uses DynamoDB cache to avoid repeated API calls for the same place_id
 async function fetchPlaceDetails(placeId: string): Promise<{ lat: number; lng: number } | null> {
   if (!env.GOOGLE_MAPS_API_KEY) return null;
+
+  // Check cache first (DynamoDB only - SQLite dev doesn't need this optimization)
+  if (useDynamoDB()) {
+    try {
+      const cached = await getPlaceDetailsDynamoDB(placeId);
+      if (cached) {
+        return {
+          lat: cached.latitude,
+          lng: cached.longitude,
+        };
+      }
+    } catch (error) {
+      // Cache miss or error - continue to API call
+      console.error('Place details cache lookup failed:', error);
+    }
+  }
 
   try {
     const url = `https://places.googleapis.com/v1/places/${placeId}`;
@@ -556,10 +573,19 @@ async function fetchPlaceDetails(placeId: string): Promise<{ lat: number; lng: n
       return null;
     }
 
-    return {
+    const result = {
       lat: data.location.latitude,
       lng: data.location.longitude,
     };
+
+    // Cache the result (fire and forget)
+    if (useDynamoDB()) {
+      setPlaceDetailsDynamoDB(placeId, result.lat, result.lng).catch((error) => {
+        console.error('Failed to cache place details:', error);
+      });
+    }
+
+    return result;
   } catch (error) {
     console.error(`Place Details exception for ${placeId}:`, error);
     return null;
@@ -737,7 +763,7 @@ export async function geocodeCity(query: string): Promise<GeocodeResult | null> 
 
 // Get autocomplete suggestions
 // Precedence: ZIP lookup → Google Places (if available) → local Photon (if enabled)
-export async function geocodeSuggestions(query: string, limit = 5): Promise<GeocodeSuggestion[]> {
+export async function geocodeSuggestions(query: string, limit = 4): Promise<GeocodeSuggestion[]> {
   if (!query || query.length < 2) {
     return [];
   }

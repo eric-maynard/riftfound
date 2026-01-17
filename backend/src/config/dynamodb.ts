@@ -48,6 +48,7 @@ export const EntityPrefix = {
   EVENT: 'EVENT#',
   SHOP: 'SHOP#',
   GEOCACHE: 'GEOCACHE#',
+  PLACE_DETAILS: 'PLACE#',
   SCRAPE_RUN: 'SCRAPE_RUN',
   ZIPCODE: 'ZIPCODE#',
 } as const;
@@ -115,6 +116,14 @@ export function zipcodeKeys(zipcode: string) {
   return {
     PK: `${EntityPrefix.ZIPCODE}${zipcode}`,
     SK: 'ZIPCODE',
+  };
+}
+
+// Helper to create place details cache keys (for Google Place ID -> coordinates)
+export function placeDetailsKeys(placeId: string) {
+  return {
+    PK: `${EntityPrefix.PLACE_DETAILS}${placeId}`,
+    SK: 'PLACE_DETAILS',
   };
 }
 

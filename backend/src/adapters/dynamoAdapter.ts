@@ -7,6 +7,7 @@ import {
   shopKeys,
   geocacheKeys,
   geocacheGSI3Keys,
+  placeDetailsKeys,
   scrapeRunKeys,
   EntityPrefix,
   GetCommand,
@@ -715,4 +716,70 @@ async function evictOldGeocacheEntries(): Promise<void> {
   }
 
   console.log(`Evicted ${entriesToDelete.length} old geocache entries`);
+}
+
+// ============================================================================
+// Place Details Cache (Google Place ID -> coordinates)
+// ============================================================================
+
+// DynamoDB Place Details cache item structure
+export interface DynamoPlaceDetailsItem {
+  PK: string;
+  SK: string;
+  entityType: 'PLACE_DETAILS';
+  placeId: string;
+  latitude: number;
+  longitude: number;
+  createdAt: string;
+}
+
+// Get place details from cache
+export async function getPlaceDetailsDynamoDB(placeId: string): Promise<{
+  latitude: number;
+  longitude: number;
+} | null> {
+  const client = getDynamoClient();
+  const tableName = getTableName();
+  const keys = placeDetailsKeys(placeId);
+
+  const response = await client.send(new GetCommand({
+    TableName: tableName,
+    Key: keys,
+  }));
+
+  if (!response.Item) {
+    return null;
+  }
+
+  const item = response.Item as DynamoPlaceDetailsItem;
+  return {
+    latitude: item.latitude,
+    longitude: item.longitude,
+  };
+}
+
+// Set place details in cache
+export async function setPlaceDetailsDynamoDB(
+  placeId: string,
+  latitude: number,
+  longitude: number
+): Promise<void> {
+  const client = getDynamoClient();
+  const tableName = getTableName();
+  const keys = placeDetailsKeys(placeId);
+  const now = new Date().toISOString();
+
+  const item: DynamoPlaceDetailsItem = {
+    ...keys,
+    entityType: 'PLACE_DETAILS',
+    placeId,
+    latitude,
+    longitude,
+    createdAt: now,
+  };
+
+  await client.send(new PutCommand({
+    TableName: tableName,
+    Item: item,
+  }));
 }
