@@ -104,7 +104,7 @@ function EventFiltersComponent({ filters, appliedFilters, onFiltersChange, onSea
       } catch {
         setSuggestions([]);
       }
-    }, 200); // 200ms debounce
+    }, 1000); // 1s debounce to reduce Google API calls
 
     return () => clearTimeout(timer);
   }, [cityInput, filters.location?.displayName]);
