@@ -39,7 +39,9 @@ riftfound/
 | `--docker` | Start PostgreSQL via docker-compose |
 | `--postgres` | Use PostgreSQL for app (implies --docker) |
 | `--photon` | Start Photon geocoder (first run downloads ~8GB) |
-| `--stop-docker` | Stop Docker services on exit |
+| `--keep-docker` | Keep Docker services running on exit |
+| `--reset` | Delete all data (DB + Docker volumes) |
+| `--reset-db` | Delete DB only (preserve Photon data) |
 
 ### Manual Commands
 
@@ -47,7 +49,7 @@ riftfound/
 npm run dev:backend   # Start backend only
 npm run dev:frontend  # Start frontend only
 npm run dev:scraper   # Run scraper once
-npm test              # Run scraper unit tests
+npm test              # Run all tests (Vitest)
 ```
 
 ## API
@@ -70,19 +72,19 @@ npm test              # Run scraper unit tests
 
 ## Architecture
 
-- **Database**: SQLite for dev, PostgreSQL optional. Production uses SQLite on EBS.
-- **Geocoding**: Self-hosted Photon (OSM-based), no external APIs
+- **Database**: SQLite for dev, DynamoDB for production. Controlled by `DB_TYPE` env var.
+- **Geocoding**: Mapbox API (primary) with self-hosted Photon (OSM-based) as fallback for dev.
 - **Shops table**: Geocoded store locations, events reference via `shop_id`
 - **Scraper**: Runs every 60min cycle, fetches all ~30k events with requests distributed evenly across the cycle to avoid rate limiting
 
 ## Deployment
 
-Production runs on AWS with Terraform:
+Production runs on AWS serverless with Terraform:
 
 - **Frontend**: S3 + CloudFront (HTTPS)
-- **Backend/Scraper**: EC2 (t3.small) with PM2
-- **Database**: SQLite on persistent EBS volume
-- **Domain**: CloudFront + ACM certificate
+- **Backend API**: Lambda + API Gateway (via CloudFront)
+- **Scraper**: Lambda + EventBridge (hourly)
+- **Database**: DynamoDB
 
 ### Deploy Commands
 
@@ -92,12 +94,13 @@ cp deploy.env.example deploy.env
 # Edit deploy.env with your AWS values
 
 # Deploy
-./deploy.sh frontend   # React app to S3/CloudFront
-./deploy.sh backend    # Backend/scraper to EC2
-./deploy.sh all        # Everything
+./deploy.sh frontend        # React app to S3/CloudFront
+./deploy.sh backend-lambda  # Backend API to Lambda
+./deploy.sh scraper-lambda  # Scraper to Lambda
+./deploy.sh lambdas         # Both backend and scraper to Lambda
 ```
 
-See [CLAUDE.md](CLAUDE.md) for detailed deployment docs.
+See [CLAUDE.md](CLAUDE.md) for detailed deployment and infrastructure docs.
 
 ## License
 
