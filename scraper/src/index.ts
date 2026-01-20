@@ -107,6 +107,7 @@ async function runDistributedScrape(): Promise<{ found: number; created: number 
   let totalFound = 0;
   let totalCreated = 0;
   let totalUpdated = 0;
+  let totalSkipped = 0;  // Events unchanged, write skipped (DynamoDB cost savings)
   let totalStores = 0;
   let totalCitiesGeocoded = 0;
   const storesSeen = new Set<string>();
@@ -127,11 +128,14 @@ async function runDistributedScrape(): Promise<{ found: number; created: number 
       // Process events from this page
       let pageCreated = 0;
       let pageUpdated = 0;
+      let pageSkipped = 0;
 
       for (const event of events) {
         const result = await upsertEventWithStore(event, event.storeInfo);
         if (result.created) {
           pageCreated++;
+        } else if (result.skipped) {
+          pageSkipped++;
         } else {
           pageUpdated++;
         }
@@ -150,9 +154,11 @@ async function runDistributedScrape(): Promise<{ found: number; created: number 
 
       totalCreated += pageCreated;
       totalUpdated += pageUpdated;
+      totalSkipped += pageSkipped;
 
       const elapsed = Date.now() - startTime;
-      console.log(`[Page ${currentPage}/${pageCount}] ${events.length} events (${pageCreated} new, ${pageUpdated} updated) in ${elapsed}ms`);
+      const skipInfo = pageSkipped > 0 ? `, ${pageSkipped} unchanged` : '';
+      console.log(`[Page ${currentPage}/${pageCount}] ${events.length} events (${pageCreated} new, ${pageUpdated} updated${skipInfo}) in ${elapsed}ms`);
 
       if (!hasMore) {
         break;
@@ -197,6 +203,10 @@ async function runDistributedScrape(): Promise<{ found: number; created: number 
     console.log(`  Total events found: ${totalFound}`);
     console.log(`  Events created: ${totalCreated}`);
     console.log(`  Events updated: ${totalUpdated}`);
+    if (totalSkipped > 0) {
+      const skipRate = Math.round((totalSkipped / totalFound) * 100);
+      console.log(`  Events unchanged (writes skipped): ${totalSkipped} (${skipRate}%)`);
+    }
     console.log(`  Unique stores: ${totalStores}`);
     if (totalCitiesGeocoded > 0) {
       console.log(`  Cities geocoded: ${totalCitiesGeocoded}`);

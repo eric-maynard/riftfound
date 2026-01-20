@@ -422,6 +422,7 @@ export function updateShopDisplayCity(shopId: number, displayCity: string): void
 // Result from upserting an event
 export interface UpsertEventResult {
   created: boolean;
+  skipped?: boolean;  // True if write was skipped due to no changes (DynamoDB only)
   shopResult?: UpsertShopResult;
 }
 

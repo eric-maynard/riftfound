@@ -456,6 +456,7 @@ export async function upsertEventWithStoreDynamoDB(
   if (!isNew && existingEvent && !hasEventChanged(existingEvent, item)) {
     return {
       created: false,
+      skipped: true,
       shopResult,
     };
   }
@@ -467,6 +468,7 @@ export async function upsertEventWithStoreDynamoDB(
 
   return {
     created: isNew,
+    skipped: false,
     shopResult,
   };
 }

@@ -7,7 +7,6 @@ import {
   shopKeys,
   geocacheKeys,
   geocacheGSI3Keys,
-  placeDetailsKeys,
   scrapeRunKeys,
   EntityPrefix,
   GetCommand,
@@ -589,17 +588,9 @@ export async function getGeocacheDynamoDB(normalizedQuery: string): Promise<{
 
   const item = response.Item as DynamoGeocacheItem;
 
-  // Update lastAccessedAt (fire and forget - don't block on this)
-  const now = new Date().toISOString();
-  const gsi3Keys = geocacheGSI3Keys(now);
-  client.send(new PutCommand({
-    TableName: tableName,
-    Item: {
-      ...item,
-      ...gsi3Keys,
-      lastAccessedAt: now,
-    },
-  })).catch(() => {}); // Ignore errors - cache hit is more important
+  // Note: We no longer update lastAccessedAt on every read to save DynamoDB WCUs.
+  // The LRU eviction still works based on the lastAccessedAt from when the entry
+  // was created or last written. This trades off perfect LRU ordering for cost savings.
 
   return {
     latitude: item.latitude,
@@ -716,70 +707,4 @@ async function evictOldGeocacheEntries(): Promise<void> {
   }
 
   console.log(`Evicted ${entriesToDelete.length} old geocache entries`);
-}
-
-// ============================================================================
-// Place Details Cache (Google Place ID -> coordinates)
-// ============================================================================
-
-// DynamoDB Place Details cache item structure
-export interface DynamoPlaceDetailsItem {
-  PK: string;
-  SK: string;
-  entityType: 'PLACE_DETAILS';
-  placeId: string;
-  latitude: number;
-  longitude: number;
-  createdAt: string;
-}
-
-// Get place details from cache
-export async function getPlaceDetailsDynamoDB(placeId: string): Promise<{
-  latitude: number;
-  longitude: number;
-} | null> {
-  const client = getDynamoClient();
-  const tableName = getTableName();
-  const keys = placeDetailsKeys(placeId);
-
-  const response = await client.send(new GetCommand({
-    TableName: tableName,
-    Key: keys,
-  }));
-
-  if (!response.Item) {
-    return null;
-  }
-
-  const item = response.Item as DynamoPlaceDetailsItem;
-  return {
-    latitude: item.latitude,
-    longitude: item.longitude,
-  };
-}
-
-// Set place details in cache
-export async function setPlaceDetailsDynamoDB(
-  placeId: string,
-  latitude: number,
-  longitude: number
-): Promise<void> {
-  const client = getDynamoClient();
-  const tableName = getTableName();
-  const keys = placeDetailsKeys(placeId);
-  const now = new Date().toISOString();
-
-  const item: DynamoPlaceDetailsItem = {
-    ...keys,
-    entityType: 'PLACE_DETAILS',
-    placeId,
-    latitude,
-    longitude,
-    createdAt: now,
-  };
-
-  await client.send(new PutCommand({
-    TableName: tableName,
-    Item: item,
-  }));
 }
