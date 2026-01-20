@@ -38,6 +38,7 @@ export async function handler(
   let totalFound = 0;
   let totalCreated = 0;
   let totalUpdated = 0;
+  let totalSkipped = 0;  // Events unchanged, write skipped (DynamoDB cost savings)
   let totalStores = 0;
   let totalCitiesGeocoded = 0;
   const storesSeen = new Set<string>();
@@ -80,6 +81,8 @@ export async function handler(
         const result = await upsertEventWithStore(event, event.storeInfo);
         if (result.created) {
           totalCreated++;
+        } else if (result.skipped) {
+          totalSkipped++;
         } else {
           totalUpdated++;
         }
@@ -95,7 +98,8 @@ export async function handler(
         }
       }
 
-      console.log(`Page ${currentPage}: ${events.length} events (${totalCreated} new total)`);
+      const skipInfo = totalSkipped > 0 ? `, ${totalSkipped} unchanged` : '';
+      console.log(`Page ${currentPage}: ${events.length} events (${totalCreated} new, ${totalUpdated} updated${skipInfo})`);
 
       if (!hasMore) {
         break;
@@ -140,11 +144,14 @@ export async function handler(
       deletedCount = await deleteOldEvents(60);
     }
 
+    const skipRate = totalFound > 0 ? Math.round((totalSkipped / totalFound) * 100) : 0;
     const summary = {
       message: 'Scrape completed',
       found: totalFound,
       created: totalCreated,
       updated: totalUpdated,
+      skipped: totalSkipped,
+      skipRate: `${skipRate}%`,
       stores: totalStores,
       citiesGeocoded: totalCitiesGeocoded,
       pagesProcessed: currentPage,
