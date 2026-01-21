@@ -1,6 +1,6 @@
 /**
  * Geocoding utilities for the scraper.
- * Precedence: Google Maps → local Photon (if enabled) → public Photon (with rate limiting)
+ * Precedence: Mapbox → local Photon (if enabled) → public Photon (with rate limiting)
  */
 
 import { env } from './config.js';
@@ -8,12 +8,12 @@ import { addToPhotonQueue } from './database.js';
 
 const PUBLIC_PHOTON_URL = 'https://photon.komoot.io';
 const LOCAL_PHOTON_URL = env.PHOTON_URL || 'http://localhost:2322';
-const GOOGLE_MAPS_GEOCODE_URL = 'https://maps.googleapis.com/maps/api/geocode/json';
+const MAPBOX_GEOCODE_URL = 'https://api.mapbox.com/search/geocode/v6';
 const RATE_LIMIT_MS = 1100; // ~1 request per second for public Photon
 
-// Check if Google Maps API is available
-function hasGoogleMapsApiKey(): boolean {
-  return Boolean(env.GOOGLE_MAPS_API_KEY);
+// Check if Mapbox API is available
+function hasMapboxAccessToken(): boolean {
+  return Boolean(env.MAPBOX_ACCESS_TOKEN);
 }
 
 // Check if local Photon is enabled
@@ -49,77 +49,87 @@ async function waitForRateLimit(): Promise<void> {
   lastPublicRequest = Date.now();
 }
 
-interface GoogleGeocodeResult {
-  formatted_address: string;
-  address_components: Array<{
-    long_name: string;
-    short_name: string;
-    types: string[];
-  }>;
+interface MapboxFeature {
+  geometry: {
+    coordinates: [number, number]; // [lon, lat]
+  };
+  properties: {
+    mapbox_id: string;
+    feature_type: string;
+    place_formatted: string;
+    name: string;
+    context?: {
+      region?: { name: string; region_code?: string };
+      country?: { name: string; country_code?: string };
+      place?: { name: string };
+    };
+  };
 }
 
-interface GoogleGeocodeResponse {
-  status: string;
-  results: GoogleGeocodeResult[];
+interface MapboxGeocodingResponse {
+  type: string;
+  features: MapboxFeature[];
 }
 
 /**
- * Reverse geocode using Google Maps API
+ * Reverse geocode using Mapbox API
  */
-async function callGoogleMapsReverse(lat: number, lon: number): Promise<string | null> {
-  if (!env.GOOGLE_MAPS_API_KEY) return null;
+async function callMapboxReverse(lat: number, lon: number): Promise<string | null> {
+  if (!env.MAPBOX_ACCESS_TOKEN) return null;
 
   try {
-    const url = new URL(GOOGLE_MAPS_GEOCODE_URL);
-    url.searchParams.set('latlng', `${lat},${lon}`);
-    url.searchParams.set('key', env.GOOGLE_MAPS_API_KEY);
+    const url = new URL(`${MAPBOX_GEOCODE_URL}/reverse`);
+    url.searchParams.set('longitude', String(lon));
+    url.searchParams.set('latitude', String(lat));
+    url.searchParams.set('access_token', env.MAPBOX_ACCESS_TOKEN);
+    url.searchParams.set('types', 'place,region');
 
     const response = await fetch(url.toString(), {
       headers: { 'User-Agent': 'Riftfound/1.0 (Scraper)' },
     });
 
     if (!response.ok) {
-      console.error(`Google Maps reverse geocode error: ${response.status}`);
+      console.error(`Mapbox reverse geocode error: ${response.status}`);
       return null;
     }
 
-    const data = await response.json() as GoogleGeocodeResponse;
-    if (data.status !== 'OK' || data.results.length === 0) {
+    const data = await response.json() as MapboxGeocodingResponse;
+    if (!data.features || data.features.length === 0) {
       return null;
     }
 
-    const result = data.results[0];
-    const components = result.address_components;
-    const city = components.find(c => c.types.includes('locality'))?.long_name;
-    const state = components.find(c => c.types.includes('administrative_area_level_1'))?.short_name;
-    const country = components.find(c => c.types.includes('country'))?.long_name;
+    const feature = data.features[0];
+    const context = feature.properties.context;
+    const placeName = feature.properties.name;
+    const region = context?.region?.region_code || context?.region?.name;
+    const country = context?.country?.name;
 
-    if (city && state) {
-      return `${city}, ${state}`;
-    } else if (city && country) {
-      return `${city}, ${country}`;
-    } else if (city) {
-      return city;
+    if (placeName && region) {
+      return `${placeName}, ${region}`;
+    } else if (placeName && country) {
+      return `${placeName}, ${country}`;
+    } else if (placeName) {
+      return placeName;
     }
 
     return null;
   } catch (error) {
-    console.error('Google Maps reverse geocode failed:', error);
+    console.error('Mapbox reverse geocode failed:', error);
     return null;
   }
 }
 
 /**
  * Reverse geocode coordinates to get city name.
- * Precedence: Google Maps → local Photon (if enabled) → public Photon (with rate limiting)
+ * Precedence: Mapbox → local Photon (if enabled) → public Photon (with rate limiting)
  * Returns the city name or null if not found.
  */
 export async function reverseGeocodeCity(lat: number, lon: number): Promise<string | null> {
-  // Try Google Maps API first (if available)
-  if (hasGoogleMapsApiKey()) {
-    const googleResult = await callGoogleMapsReverse(lat, lon);
-    if (googleResult) {
-      return googleResult;
+  // Try Mapbox API first (if available)
+  if (hasMapboxAccessToken()) {
+    const mapboxResult = await callMapboxReverse(lat, lon);
+    if (mapboxResult) {
+      return mapboxResult;
     }
   }
 

@@ -33,8 +33,8 @@ const envSchema = z.object({
   PHOTON_URL: z.string().default('http://localhost:2322'),
   PHOTON_ENABLED: z.string().transform(v => v !== 'false').default('true'),
 
-  // Geocoding - Google Maps API (optional, takes precedence over Photon)
-  GOOGLE_MAPS_API_KEY: z.string().optional(),
+  // Geocoding - Mapbox API (optional, takes precedence over Photon)
+  MAPBOX_ACCESS_TOKEN: z.string().optional(),
 });
 
 export type Env = z.infer<typeof envSchema>;

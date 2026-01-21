@@ -10,6 +10,7 @@
  */
 
 import type { ScheduledEvent, Context } from 'aws-lambda';
+import { CloudWatchClient, PutMetricDataCommand } from '@aws-sdk/client-cloudwatch';
 import {
   startScrapeRun,
   completeScrapeRun,
@@ -22,6 +23,33 @@ import {
 import { fetchEventsPage, getEventCount } from './api.js';
 import { reverseGeocodeCity } from './geocoding.js';
 
+const cloudwatch = new CloudWatchClient({});
+
+async function publishMetrics(metrics: {
+  found: number;
+  created: number;
+  updated: number;
+  skipped: number;
+  skipRate: number;
+  durationMs: number;
+}): Promise<void> {
+  try {
+    await cloudwatch.send(new PutMetricDataCommand({
+      Namespace: 'Riftfound/Scraper',
+      MetricData: [
+        { MetricName: 'EventsFound', Value: metrics.found, Unit: 'Count' },
+        { MetricName: 'EventsCreated', Value: metrics.created, Unit: 'Count' },
+        { MetricName: 'EventsUpdated', Value: metrics.updated, Unit: 'Count' },
+        { MetricName: 'EventsSkipped', Value: metrics.skipped, Unit: 'Count' },
+        { MetricName: 'SkipRate', Value: metrics.skipRate, Unit: 'Percent' },
+        { MetricName: 'DurationMs', Value: metrics.durationMs, Unit: 'Milliseconds' },
+      ],
+    }));
+  } catch (error) {
+    console.error('Failed to publish CloudWatch metrics:', error);
+  }
+}
+
 /**
  * Lambda handler for scheduled scraping
  */
@@ -33,6 +61,7 @@ export async function handler(
   console.log('Event:', JSON.stringify(event, null, 2));
   console.log('Remaining time:', context.getRemainingTimeInMillis(), 'ms');
 
+  const startTime = Date.now();
   const runId = await startScrapeRun();
 
   let totalFound = 0;
@@ -145,6 +174,7 @@ export async function handler(
     }
 
     const skipRate = totalFound > 0 ? Math.round((totalSkipped / totalFound) * 100) : 0;
+    const durationMs = Date.now() - startTime;
     const summary = {
       message: 'Scrape completed',
       found: totalFound,
@@ -156,9 +186,20 @@ export async function handler(
       citiesGeocoded: totalCitiesGeocoded,
       pagesProcessed: currentPage,
       deleted: deletedCount,
+      durationMs,
     };
 
     console.log('Scrape summary:', summary);
+
+    // Publish metrics to CloudWatch
+    await publishMetrics({
+      found: totalFound,
+      created: totalCreated,
+      updated: totalUpdated,
+      skipped: totalSkipped,
+      skipRate,
+      durationMs,
+    });
 
     return {
       statusCode: 200,
