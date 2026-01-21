@@ -160,8 +160,9 @@ function hasShopChanged(existing: DynamoShopItem, newItem: DynamoShopItem): bool
 }
 
 function hasEventChanged(existing: DynamoEventItem, newItem: DynamoEventItem): boolean {
-  // Note: playerCount and capacity are excluded because they change frequently
-  // as players register. These fields aren't critical for calendar display.
+  // Excluded fields:
+  // - playerCount, capacity: change frequently as players register
+  // - imageUrl: CDN URLs include tokens/versions that change on every API call
   return (
     existing.name !== newItem.name ||
     existing.description !== newItem.description ||
@@ -180,7 +181,6 @@ function hasEventChanged(existing: DynamoEventItem, newItem: DynamoEventItem): b
     existing.organizer !== newItem.organizer ||
     existing.price !== newItem.price ||
     existing.url !== newItem.url ||
-    existing.imageUrl !== newItem.imageUrl ||
     existing.shopId !== newItem.shopId ||
     existing.shopName !== newItem.shopName ||
     existing.shopLatitude !== newItem.shopLatitude ||
