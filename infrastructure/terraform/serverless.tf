@@ -212,8 +212,8 @@ resource "aws_lambda_function" "api" {
       NODE_ENV             = "production"
       DB_TYPE              = "dynamodb"
       DYNAMODB_TABLE_NAME  = aws_dynamodb_table.riftfound[0].name
-      PHOTON_ENABLED       = "false"  # No Photon in Lambda, use Google Maps
-      GOOGLE_MAPS_API_KEY  = var.google_maps_api_key
+      PHOTON_ENABLED       = "false"  # No Photon in Lambda, use Mapbox
+      MAPBOX_ACCESS_TOKEN  = var.mapbox_access_token
       AWS_NODEJS_CONNECTION_REUSE_ENABLED = "1"
     }
   }
@@ -265,8 +265,8 @@ resource "aws_lambda_function" "scraper" {
       NODE_ENV             = "production"
       DB_TYPE              = "dynamodb"
       DYNAMODB_TABLE_NAME  = aws_dynamodb_table.riftfound[0].name
-      PHOTON_ENABLED       = "false"  # No Photon in Lambda, use Google Maps
-      GOOGLE_MAPS_API_KEY  = var.google_maps_api_key
+      PHOTON_ENABLED       = "false"  # No Photon in Lambda, use Mapbox
+      MAPBOX_ACCESS_TOKEN  = var.mapbox_access_token
       AWS_NODEJS_CONNECTION_REUSE_ENABLED = "1"
     }
   }
@@ -288,8 +288,8 @@ resource "aws_lambda_function" "scraper" {
 resource "aws_cloudwatch_event_rule" "scraper_schedule" {
   count               = var.use_dynamodb ? 1 : 0
   name                = "riftfound-scraper-schedule-${var.environment}"
-  description         = "Trigger Riftfound scraper every hour"
-  schedule_expression = "rate(60 minutes)"
+  description         = "Trigger Riftfound scraper every 2 hours"
+  schedule_expression = "rate(2 hours)"
 
   tags = {
     Name        = "riftfound-scraper-schedule"
