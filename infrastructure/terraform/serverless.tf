@@ -190,6 +190,25 @@ resource "aws_iam_role_policy_attachment" "lambda_basic" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
 }
 
+resource "aws_iam_role_policy" "lambda_cloudwatch_metrics" {
+  count = var.use_dynamodb ? 1 : 0
+  name  = "cloudwatch-metrics"
+  role  = aws_iam_role.lambda_role[0].id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "cloudwatch:PutMetricData"
+        ]
+        Resource = "*"
+      }
+    ]
+  })
+}
+
 # ============================================
 # Lambda Function - API
 # ============================================
