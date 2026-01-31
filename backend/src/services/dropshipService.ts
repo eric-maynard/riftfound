@@ -17,9 +17,20 @@ export interface BuylistItem {
   cardName: string;
 }
 
+export interface CardInfo {
+  cardName: string;
+  cardNumber: string | null;
+  set: string | null;
+  priceUsd: number | null;
+  priceCny: number | null;
+}
+
 export interface PricedItem extends BuylistItem {
-  unitPrice: number | null;
-  totalPrice: number | null;
+  cardNumber: string | null;
+  set: string | null;
+  unitPriceUsd: number | null;
+  unitPriceCny: number | null;  // Falls back to USD if not available
+  totalPriceCny: number | null;
   found: boolean;
 }
 
@@ -42,7 +53,7 @@ export interface Order {
   city: string;
   location?: GeocodedLocation;
   items: PricedItem[];
-  subtotal: number;
+  subtotalCny: number;
   createdAt: string;
   status: 'pending' | 'processing' | 'completed' | 'cancelled';
 }
@@ -58,9 +69,9 @@ function getSesClient(): SESClient {
 }
 
 /**
- * Look up the price for a single card from DynamoDB.
+ * Look up card info including prices from DynamoDB.
  */
-async function getCardPrice(cardName: string): Promise<number | null> {
+async function getCardInfo(cardName: string): Promise<CardInfo | null> {
   const client = getDynamoClient();
   const keys = priceKeys(cardName);
 
@@ -72,12 +83,26 @@ async function getCardPrice(cardName: string): Promise<number | null> {
       })
     );
 
-    if (result.Item && typeof result.Item.price === 'number') {
-      return result.Item.price;
+    if (result.Item) {
+      const priceUsd = typeof result.Item.priceUsd === 'number' ? result.Item.priceUsd : null;
+      const priceCny = typeof result.Item.priceCny === 'number' ? result.Item.priceCny : null;
+
+      // If no prices at all, card not found
+      if (priceUsd === null && priceCny === null) {
+        return null;
+      }
+
+      return {
+        cardName: result.Item.cardName || cardName,
+        cardNumber: result.Item.cardNumber || null,
+        set: result.Item.set || null,
+        priceUsd,
+        priceCny,
+      };
     }
     return null;
   } catch (error) {
-    console.error(`Failed to get price for card: ${cardName}`, error);
+    console.error(`Failed to get card info for: ${cardName}`, error);
     return null;
   }
 }
@@ -91,7 +116,7 @@ export async function checkBuylist(items: BuylistItem[]): Promise<{
   totalCards: number;
   lineItems: number;
   pricedItems: PricedItem[];
-  subtotal: number;
+  subtotalCny: number;
   allFound: boolean;
 }> {
   const totalCards = items.reduce((sum, item) => sum + item.quantity, 0);
@@ -99,18 +124,37 @@ export async function checkBuylist(items: BuylistItem[]): Promise<{
   // Look up prices for all items
   const pricedItems: PricedItem[] = await Promise.all(
     items.map(async (item) => {
-      const unitPrice = await getCardPrice(item.cardName);
+      const cardInfo = await getCardInfo(item.cardName);
+
+      if (!cardInfo) {
+        return {
+          ...item,
+          cardNumber: null,
+          set: null,
+          unitPriceUsd: null,
+          unitPriceCny: null,
+          totalPriceCny: null,
+          found: false,
+        };
+      }
+
+      // Use CNY price, fall back to USD as CNY if not available
+      const unitPriceCny = cardInfo.priceCny ?? cardInfo.priceUsd;
+
       return {
         ...item,
-        unitPrice,
-        totalPrice: unitPrice !== null ? unitPrice * item.quantity : null,
-        found: unitPrice !== null,
+        cardNumber: cardInfo.cardNumber,
+        set: cardInfo.set,
+        unitPriceUsd: cardInfo.priceUsd,
+        unitPriceCny,
+        totalPriceCny: unitPriceCny !== null ? unitPriceCny * item.quantity : null,
+        found: true,
       };
     })
   );
 
-  const subtotal = pricedItems.reduce(
-    (sum, item) => sum + (item.totalPrice || 0),
+  const subtotalCny = pricedItems.reduce(
+    (sum, item) => sum + (item.totalPriceCny || 0),
     0
   );
 
@@ -121,7 +165,7 @@ export async function checkBuylist(items: BuylistItem[]): Promise<{
     totalCards,
     lineItems: items.length,
     pricedItems,
-    subtotal,
+    subtotalCny,
     allFound,
   };
 }
@@ -204,13 +248,16 @@ export async function submitDropshipRequest(request: DropshipRequest): Promise<{
 
   // Create order
   const orderId = randomUUID();
+  const shippingUsd = 20;
+  const estimatedTotalCny = (checkResult.subtotalCny * 1.2) + shippingUsd;
+
   const order: Order = {
     orderId,
     email,
     city: location?.displayName || city || '',
     location,
     items: checkResult.pricedItems,
-    subtotal: checkResult.subtotal,
+    subtotalCny: checkResult.subtotalCny,
     createdAt: new Date().toISOString(),
     status: 'pending',
   };
@@ -226,10 +273,11 @@ export async function submitDropshipRequest(request: DropshipRequest): Promise<{
   // Format the buylist for the email
   const buylistText = checkResult.pricedItems
     .map((item) => {
-      const priceStr = item.unitPrice !== null
-        ? `$${item.unitPrice.toFixed(2)} ea = $${item.totalPrice!.toFixed(2)}`
+      const setInfo = item.set && item.cardNumber ? ` [${item.set} #${item.cardNumber}]` : '';
+      const priceStr = item.unitPriceCny !== null
+        ? `¥${item.unitPriceCny.toFixed(2)} ea = ¥${item.totalPriceCny!.toFixed(2)}`
         : '(price not found)';
-      return `${item.quantity}x ${item.cardName} - ${priceStr}`;
+      return `${item.quantity}x ${item.cardName}${setInfo} - ${priceStr}`;
     })
     .join('\n');
 
@@ -244,7 +292,9 @@ Buylist (${checkResult.totalCards} cards, ${checkResult.lineItems} line items):
 ----------------------------------------
 ${buylistText}
 ----------------------------------------
-Subtotal: $${checkResult.subtotal.toFixed(2)}
+Subtotal: ¥${checkResult.subtotalCny.toFixed(2)} CNY
+Shipping: $${shippingUsd.toFixed(2)} USD
+Estimated Total (with 20% buffer): ¥${estimatedTotalCny.toFixed(2)} CNY
 ${!checkResult.allFound ? '\n⚠️ Some cards were not found in price database.\n' : ''}
 
 Reply to this email to respond to the customer.
@@ -257,13 +307,14 @@ Reply to this email to respond to the customer.
 <p><strong>City:</strong> ${city || 'Not provided'}</p>
 
 <h3>Buylist (${checkResult.totalCards} cards, ${checkResult.lineItems} line items)</h3>
-<table style="border-collapse: collapse; width: 100%; max-width: 500px;">
+<table style="border-collapse: collapse; width: 100%; max-width: 600px;">
   <thead>
     <tr style="background-color: #f0f0f0;">
       <th style="border: 1px solid #ddd; padding: 8px; text-align: left;">Qty</th>
       <th style="border: 1px solid #ddd; padding: 8px; text-align: left;">Card</th>
-      <th style="border: 1px solid #ddd; padding: 8px; text-align: right;">Unit</th>
-      <th style="border: 1px solid #ddd; padding: 8px; text-align: right;">Total</th>
+      <th style="border: 1px solid #ddd; padding: 8px; text-align: left;">Set</th>
+      <th style="border: 1px solid #ddd; padding: 8px; text-align: right;">Unit (CNY)</th>
+      <th style="border: 1px solid #ddd; padding: 8px; text-align: right;">Total (CNY)</th>
     </tr>
   </thead>
   <tbody>
@@ -271,15 +322,24 @@ Reply to this email to respond to the customer.
     <tr${!item.found ? ' style="color: #cc0000;"' : ''}>
       <td style="border: 1px solid #ddd; padding: 8px;">${item.quantity}</td>
       <td style="border: 1px solid #ddd; padding: 8px;">${item.cardName}</td>
-      <td style="border: 1px solid #ddd; padding: 8px; text-align: right;">${item.unitPrice !== null ? `$${item.unitPrice.toFixed(2)}` : '—'}</td>
-      <td style="border: 1px solid #ddd; padding: 8px; text-align: right;">${item.totalPrice !== null ? `$${item.totalPrice.toFixed(2)}` : '—'}</td>
+      <td style="border: 1px solid #ddd; padding: 8px;">${item.set && item.cardNumber ? `${item.set} #${item.cardNumber}` : '—'}</td>
+      <td style="border: 1px solid #ddd; padding: 8px; text-align: right;">${item.unitPriceCny !== null ? `¥${item.unitPriceCny.toFixed(2)}` : '—'}</td>
+      <td style="border: 1px solid #ddd; padding: 8px; text-align: right;">${item.totalPriceCny !== null ? `¥${item.totalPriceCny.toFixed(2)}` : '—'}</td>
     </tr>
     `).join('')}
   </tbody>
   <tfoot>
+    <tr>
+      <td colspan="4" style="border: 1px solid #ddd; padding: 8px;">Subtotal</td>
+      <td style="border: 1px solid #ddd; padding: 8px; text-align: right;">¥${checkResult.subtotalCny.toFixed(2)}</td>
+    </tr>
+    <tr>
+      <td colspan="4" style="border: 1px solid #ddd; padding: 8px;">Shipping</td>
+      <td style="border: 1px solid #ddd; padding: 8px; text-align: right;">$${shippingUsd.toFixed(2)} USD</td>
+    </tr>
     <tr style="font-weight: bold;">
-      <td colspan="3" style="border: 1px solid #ddd; padding: 8px;">Subtotal</td>
-      <td style="border: 1px solid #ddd; padding: 8px; text-align: right;">$${checkResult.subtotal.toFixed(2)}</td>
+      <td colspan="4" style="border: 1px solid #ddd; padding: 8px;">Estimated Total (with 20% buffer)</td>
+      <td style="border: 1px solid #ddd; padding: 8px; text-align: right;">¥${estimatedTotalCny.toFixed(2)}</td>
     </tr>
   </tfoot>
 </table>
@@ -314,7 +374,7 @@ ${!checkResult.allFound ? '<p style="color: #cc0000;">⚠️ Some cards were not
       ReplyToAddresses: [email],
       Message: {
         Subject: {
-          Data: `Dropship Request: ${orderId.slice(0, 8)} - $${checkResult.subtotal.toFixed(2)}`,
+          Data: `Dropship Request: ${orderId.slice(0, 8)} - ¥${estimatedTotalCny.toFixed(2)} CNY`,
           Charset: 'UTF-8',
         },
         Body: {

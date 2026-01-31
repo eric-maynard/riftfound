@@ -131,7 +131,7 @@ function DropshipPage() {
         totalCards: response.data.totalCards,
         lineItems: response.data.lineItems,
         pricedItems: response.data.pricedItems,
-        subtotal: response.data.subtotal,
+        subtotal: response.data.subtotalCny,
         allFound: response.data.allFound,
       });
     } catch (err) {

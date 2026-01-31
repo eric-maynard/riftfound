@@ -7,14 +7,25 @@
  *
  * JSON format:
  *   [
- *     { "cardName": "Card Name", "price": 1.99 },
+ *     {
+ *       "cardName": "Card Name",
+ *       "cardNumber": "001",
+ *       "set": "Core Set",
+ *       "priceUsd": 1.99,
+ *       "priceCny": 14.00
+ *     },
  *     ...
  *   ]
  *
  * CSV format (with header):
- *   cardName,price
- *   Card Name,1.99
+ *   cardName,cardNumber,set,priceUsd,priceCny
+ *   Card Name,001,Core Set,1.99,14.00
  *   ...
+ *
+ * Notes:
+ *   - At least one of priceUsd or priceCny is required
+ *   - cardNumber and set are optional but recommended
+ *   - Legacy format with just "price" is still supported (treated as priceUsd)
  *
  * Environment:
  *   DB_TYPE=dynamodb
@@ -33,7 +44,10 @@ import { marshall } from '@aws-sdk/util-dynamodb';
 
 interface PriceEntry {
   cardName: string;
-  price: number;
+  cardNumber: string | null;
+  set: string | null;
+  priceUsd: number | null;
+  priceCny: number | null;
 }
 
 function loadJsonPrices(filePath: string): PriceEntry[] {
@@ -48,12 +62,29 @@ function loadJsonPrices(filePath: string): PriceEntry[] {
     if (typeof entry.cardName !== 'string' || entry.cardName.trim() === '') {
       throw new Error(`Entry ${i}: missing or invalid cardName`);
     }
-    if (typeof entry.price !== 'number' || entry.price < 0) {
-      throw new Error(`Entry ${i}: missing or invalid price`);
+
+    // Support legacy "price" field as priceUsd
+    const priceUsd = entry.priceUsd ?? entry.price ?? null;
+    const priceCny = entry.priceCny ?? null;
+
+    if (priceUsd === null && priceCny === null) {
+      throw new Error(`Entry ${i}: at least one of priceUsd or priceCny is required`);
     }
+
+    if (priceUsd !== null && (typeof priceUsd !== 'number' || priceUsd < 0)) {
+      throw new Error(`Entry ${i}: invalid priceUsd`);
+    }
+
+    if (priceCny !== null && (typeof priceCny !== 'number' || priceCny < 0)) {
+      throw new Error(`Entry ${i}: invalid priceCny`);
+    }
+
     return {
       cardName: entry.cardName.trim(),
-      price: entry.price,
+      cardNumber: entry.cardNumber?.toString().trim() || null,
+      set: entry.set?.trim() || null,
+      priceUsd,
+      priceCny,
     };
   });
 }
@@ -68,20 +99,39 @@ function loadCsvPrices(filePath: string): PriceEntry[] {
 
   return records.map((record: Record<string, string>, i: number) => {
     const cardName = record.cardName || record.card_name || record.name;
-    const priceStr = record.price || record.Price;
 
     if (!cardName || cardName.trim() === '') {
       throw new Error(`Row ${i + 2}: missing cardName`);
     }
 
-    const price = parseFloat(priceStr);
-    if (isNaN(price) || price < 0) {
-      throw new Error(`Row ${i + 2}: invalid price "${priceStr}"`);
+    // Support legacy "price" field as priceUsd
+    const priceUsdStr = record.priceUsd || record.price_usd || record.price || record.Price;
+    const priceCnyStr = record.priceCny || record.price_cny;
+
+    const priceUsd = priceUsdStr ? parseFloat(priceUsdStr) : null;
+    const priceCny = priceCnyStr ? parseFloat(priceCnyStr) : null;
+
+    if (priceUsd === null && priceCny === null) {
+      throw new Error(`Row ${i + 2}: at least one of priceUsd or priceCny is required`);
     }
+
+    if (priceUsd !== null && (isNaN(priceUsd) || priceUsd < 0)) {
+      throw new Error(`Row ${i + 2}: invalid priceUsd "${priceUsdStr}"`);
+    }
+
+    if (priceCny !== null && (isNaN(priceCny) || priceCny < 0)) {
+      throw new Error(`Row ${i + 2}: invalid priceCny "${priceCnyStr}"`);
+    }
+
+    const cardNumber = record.cardNumber || record.card_number || record.number || null;
+    const set = record.set || record.setName || record.set_name || null;
 
     return {
       cardName: cardName.trim(),
-      price,
+      cardNumber: cardNumber?.trim() || null,
+      set: set?.trim() || null,
+      priceUsd: priceUsd !== null && !isNaN(priceUsd) ? priceUsd : null,
+      priceCny: priceCny !== null && !isNaN(priceCny) ? priceCny : null,
     };
   });
 }
@@ -110,15 +160,20 @@ async function importPrices(prices: PriceEntry[]): Promise<void> {
   for (let i = 0; i < prices.length; i += batchSize) {
     const batch = prices.slice(i, i + batchSize);
 
-    const putRequests = batch.map(({ cardName, price }) => {
+    const putRequests = batch.map(({ cardName, cardNumber, set, priceUsd, priceCny }) => {
       const keys = priceKeys(cardName);
-      const item = {
+      const item: Record<string, unknown> = {
         ...keys,
         cardName: cardName,
         cardNameNormalized: cardName.toLowerCase().trim(),
-        price: price,
         updatedAt: new Date().toISOString(),
       };
+
+      // Only include non-null fields
+      if (cardNumber !== null) item.cardNumber = cardNumber;
+      if (set !== null) item.set = set;
+      if (priceUsd !== null) item.priceUsd = priceUsd;
+      if (priceCny !== null) item.priceCny = priceCny;
 
       return {
         PutRequest: {
@@ -190,7 +245,10 @@ async function main() {
   if (prices.length > 0) {
     console.log('\nSample entries:');
     prices.slice(0, 3).forEach((p) => {
-      console.log(`  ${p.cardName}: $${p.price.toFixed(2)}`);
+      const setInfo = p.set && p.cardNumber ? ` [${p.set} #${p.cardNumber}]` : '';
+      const usdStr = p.priceUsd !== null ? `$${p.priceUsd.toFixed(2)}` : '-';
+      const cnyStr = p.priceCny !== null ? `¥${p.priceCny.toFixed(2)}` : '-';
+      console.log(`  ${p.cardName}${setInfo}: ${usdStr} USD / ${cnyStr} CNY`);
     });
     if (prices.length > 3) {
       console.log(`  ... and ${prices.length - 3} more`);

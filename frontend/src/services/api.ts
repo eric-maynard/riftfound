@@ -63,8 +63,11 @@ export interface BuylistItem {
 export interface PricedItem {
   quantity: number;
   cardName: string;
-  unitPrice: number | null;
-  totalPrice: number | null;
+  cardNumber: string | null;
+  set: string | null;
+  unitPriceUsd: number | null;
+  unitPriceCny: number | null;
+  totalPriceCny: number | null;
   found: boolean;
 }
 
@@ -74,7 +77,7 @@ export interface DropshipCheckResponse {
     totalCards: number;
     lineItems: number;
     pricedItems: PricedItem[];
-    subtotal: number;
+    subtotalCny: number;
     allFound: boolean;
   };
 }
