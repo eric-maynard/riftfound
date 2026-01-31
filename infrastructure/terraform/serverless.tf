@@ -209,6 +209,26 @@ resource "aws_iam_role_policy" "lambda_cloudwatch_metrics" {
   })
 }
 
+resource "aws_iam_role_policy" "lambda_ses" {
+  count = var.use_dynamodb ? 1 : 0
+  name  = "ses-send-email"
+  role  = aws_iam_role.lambda_role[0].id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "ses:SendEmail",
+          "ses:SendRawEmail"
+        ]
+        Resource = "*"
+      }
+    ]
+  })
+}
+
 # ============================================
 # Lambda Function - API
 # ============================================
@@ -234,6 +254,7 @@ resource "aws_lambda_function" "api" {
       PHOTON_ENABLED       = "false"  # No Photon in Lambda, use Mapbox
       MAPBOX_ACCESS_TOKEN  = var.mapbox_access_token
       AWS_NODEJS_CONNECTION_REUSE_ENABLED = "1"
+      DROPSHIP_RECIPIENT_EMAIL = var.dropship_recipient_email
     }
   }
 

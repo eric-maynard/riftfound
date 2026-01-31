@@ -53,3 +53,45 @@ export async function getLocationSuggestions(query: string): Promise<GeocodeSugg
 export async function reverseGeocode(lat: number, lon: number): Promise<GeocodeResponse> {
   return fetchApi<GeocodeResponse>(`/events/geocode/reverse?lat=${lat}&lon=${lon}`);
 }
+
+// Dropship endpoints
+export interface BuylistItem {
+  quantity: number;
+  cardName: string;
+}
+
+export interface DropshipCheckResponse {
+  data: {
+    valid: boolean;
+    totalCards: number;
+    lineItems: number;
+  };
+}
+
+export interface DropshipSubmitResponse {
+  data: {
+    success: boolean;
+    message: string;
+  };
+}
+
+export async function checkDropshipBuylist(
+  items: BuylistItem[],
+  city?: string
+): Promise<DropshipCheckResponse> {
+  return fetchApi<DropshipCheckResponse>('/dropship/check', {
+    method: 'POST',
+    body: JSON.stringify({ items, city }),
+  });
+}
+
+export async function submitDropshipRequest(
+  email: string,
+  city: string,
+  items: BuylistItem[]
+): Promise<DropshipSubmitResponse> {
+  return fetchApi<DropshipSubmitResponse>('/dropship/submit', {
+    method: 'POST',
+    body: JSON.stringify({ email, city, items }),
+  });
+}

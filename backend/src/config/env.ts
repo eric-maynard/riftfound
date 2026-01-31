@@ -31,8 +31,12 @@ const envSchema = z.object({
   PHOTON_URL: z.string().default('http://localhost:2322'),
   PHOTON_ENABLED: z.string().transform(v => v !== 'false').default('true'),
 
-  // Geocoding - Google Maps API (optional, takes precedence over Photon)
-  GOOGLE_MAPS_API_KEY: z.string().optional(),
+  // Geocoding - Mapbox API (optional, takes precedence over Photon)
+  MAPBOX_ACCESS_TOKEN: z.string().optional(),
+
+  // Dropship email notifications (optional - logs to console if not set)
+  DROPSHIP_RECIPIENT_EMAIL: z.string().email().optional(),
+  DROPSHIP_SENDER_EMAIL: z.string().email().optional(), // Falls back to recipient if not set
 });
 
 export type Env = z.infer<typeof envSchema>;

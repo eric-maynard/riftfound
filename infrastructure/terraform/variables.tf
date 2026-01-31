@@ -52,9 +52,15 @@ variable "use_ec2" {
   default     = true
 }
 
-variable "google_maps_api_key" {
-  description = "Google Maps API key for geocoding in Lambda functions"
+variable "mapbox_access_token" {
+  description = "Mapbox access token for geocoding in Lambda functions"
   type        = string
   default     = ""
   sensitive   = true
+}
+
+variable "dropship_recipient_email" {
+  description = "Email address to receive dropship requests"
+  type        = string
+  default     = ""
 }

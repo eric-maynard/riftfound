@@ -48,9 +48,10 @@ export const EntityPrefix = {
   EVENT: 'EVENT#',
   SHOP: 'SHOP#',
   GEOCACHE: 'GEOCACHE#',
-  PLACE_DETAILS: 'PLACE#',
   SCRAPE_RUN: 'SCRAPE_RUN',
   ZIPCODE: 'ZIPCODE#',
+  PRICE: 'PRICE#',
+  ORDER: 'ORDER#',
 } as const;
 
 // Helper to create event keys
@@ -119,11 +120,28 @@ export function zipcodeKeys(zipcode: string) {
   };
 }
 
-// Helper to create place details cache keys (for Google Place ID -> coordinates)
-export function placeDetailsKeys(placeId: string) {
+// Helper to create price keys (normalized card name as key)
+export function priceKeys(cardName: string) {
+  const normalized = cardName.toLowerCase().trim();
   return {
-    PK: `${EntityPrefix.PLACE_DETAILS}${placeId}`,
-    SK: 'PLACE_DETAILS',
+    PK: `${EntityPrefix.PRICE}${normalized}`,
+    SK: 'PRICE',
+  };
+}
+
+// Helper to create order keys
+export function orderKeys(orderId: string) {
+  return {
+    PK: `${EntityPrefix.ORDER}${orderId}`,
+    SK: `${EntityPrefix.ORDER}${orderId}`,
+  };
+}
+
+// Helper to create order GSI1 keys (for listing orders by date)
+export function orderGSI1Keys(createdAt: string, orderId: string) {
+  return {
+    GSI1PK: 'ORDERS',
+    GSI1SK: `${createdAt}#${orderId}`,
   };
 }
 
