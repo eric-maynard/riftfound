@@ -17,8 +17,7 @@ riftfound/
 - Backend API: Lambda + API Gateway (via CloudFront)
 - Scraper: Lambda + EventBridge (hourly)
 - Database: DynamoDB
-- Geocoding: Google Maps API
-- EC2: Standby only (for rollback)
+- Geocoding: Mapbox Geocoding API v6
 
 ## Quick Start
 
@@ -31,7 +30,7 @@ riftfound/
 ## Key Design Decisions
 
 - **Database**: SQLite for dev, DynamoDB for production. Controlled by `DB_TYPE` env var.
-- **Geocoding**: Google Maps API (primary) with public Photon fallback.
+- **Geocoding**: Mapbox API (primary) with public Photon fallback.
 - **Shops table**: Stores geocoded locations to avoid re-geocoding. Events reference shops via `shop_id`.
 - **Calendar mode**: API returns all events in 3-month window without pagination when `calendarMode=true`.
 - **Distance filtering**: Haversine formula. Frontend uses miles, backend uses km internally.
@@ -46,7 +45,7 @@ riftfound/
 
 Key vars (see `.env.example` for full list):
 - `DB_TYPE`: `sqlite`, `postgres`, or `dynamodb`
-- `GOOGLE_MAPS_API_KEY`: Required for production geocoding
+- `MAPBOX_ACCESS_TOKEN`: Required for production geocoding (public token with default scopes)
 
 ## Deployment
 
@@ -61,7 +60,7 @@ cp deploy.env.example deploy.env
 cd infrastructure/terraform
 cp terraform.tfvars.example terraform.tfvars
 # Edit terraform.tfvars, set use_dynamodb = true
-export TF_VAR_google_maps_api_key="your-key"
+export TF_VAR_mapbox_access_token="pk.your-token"
 terraform init
 terraform apply
 ```
@@ -113,8 +112,8 @@ python analyze-logs.py        # Detailed analysis
 # Database metrics (shops/events)
 ./db-metrics.sh --remote      # Production stats
 
-# Geocoding metrics (cache vs Google API usage)
-./geocode-metrics.sh --remote # Analyze from PM2 logs
+# Geocoding metrics (cache vs Mapbox API usage)
+./geocode-metrics.sh --remote # Analyze from CloudWatch logs
 
 # Interactive analysis
 jupyter notebook metrics.ipynb
@@ -123,4 +122,4 @@ jupyter notebook metrics.ipynb
 Key metrics tracked:
 - **Traffic**: unique visitors, page views, event clicks, location searches
 - **Database**: events/shops added per day, distribution by type/state
-- **Geocoding**: cache hit rate, Google API calls (forward/reverse/autocomplete), error rates
+- **Geocoding**: cache hit rate, Mapbox API calls (forward/reverse/autocomplete), error rates

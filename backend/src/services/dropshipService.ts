@@ -23,16 +23,24 @@ export interface PricedItem extends BuylistItem {
   found: boolean;
 }
 
+export interface GeocodedLocation {
+  displayName: string;
+  latitude: number;
+  longitude: number;
+}
+
 export interface DropshipRequest {
   email: string;
   city: string;
   items: BuylistItem[];
+  location?: GeocodedLocation;
 }
 
 export interface Order {
   orderId: string;
   email: string;
   city: string;
+  location?: GeocodedLocation;
   items: PricedItem[];
   subtotal: number;
   createdAt: string;
@@ -189,7 +197,7 @@ export async function submitDropshipRequest(request: DropshipRequest): Promise<{
   message: string;
   orderId?: string;
 }> {
-  const { email, city, items } = request;
+  const { email, city, items, location } = request;
 
   // Get priced items
   const checkResult = await checkBuylist(items);
@@ -199,7 +207,8 @@ export async function submitDropshipRequest(request: DropshipRequest): Promise<{
   const order: Order = {
     orderId,
     email,
-    city: city || '',
+    city: location?.displayName || city || '',
+    location,
     items: checkResult.pricedItems,
     subtotal: checkResult.subtotal,
     createdAt: new Date().toISOString(),

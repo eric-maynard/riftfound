@@ -2,6 +2,7 @@ import { useState } from 'react';
 import {
   checkDropshipBuylist,
   submitDropshipRequest,
+  geocodeCity,
   type BuylistItem,
 } from '../services/api';
 
@@ -37,6 +38,11 @@ function DropshipPage() {
     totalCards: number;
     lineItems: number;
   } | null>(null);
+  const [geocodedCity, setGeocodedCity] = useState<{
+    displayName: string;
+    latitude: number;
+    longitude: number;
+  } | null>(null);
   const [isChecking, setIsChecking] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitSuccess, setSubmitSuccess] = useState(false);
@@ -45,6 +51,24 @@ function DropshipPage() {
   const handleCheck = async () => {
     setError(null);
     setCheckResult(null);
+    setGeocodedCity(null);
+
+    // Validate email format
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!email.trim()) {
+      setError('Please enter your email address.');
+      return;
+    }
+    if (!emailRegex.test(email.trim())) {
+      setError('Please enter a valid email address.');
+      return;
+    }
+
+    // Validate city is provided
+    if (!city.trim()) {
+      setError('Please enter your city for shipping estimate.');
+      return;
+    }
 
     const items = parseBuylist(buylist);
     if (items.length === 0) {
@@ -52,10 +76,27 @@ function DropshipPage() {
       return;
     }
 
+    // Validate quantity limit (max 3 of each card)
+    const overLimitCards = items.filter(item => item.quantity > 3);
+    if (overLimitCards.length > 0) {
+      const cardNames = overLimitCards.map(item => `"${item.cardName}" (${item.quantity}x)`).join(', ');
+      setError(`Orders are limited to 3x of each card. Please reduce: ${cardNames}`);
+      return;
+    }
+
     setIsChecking(true);
 
     try {
-      const response = await checkDropshipBuylist(items, city);
+      // Geocode the city
+      const geoResponse = await geocodeCity(city);
+      if (!geoResponse.data) {
+        setError('Could not find that city. Please check the spelling or try a nearby city.');
+        return;
+      }
+      setGeocodedCity(geoResponse.data);
+
+      // Check the buylist
+      const response = await checkDropshipBuylist(items, geoResponse.data.displayName);
 
       if (!response.data.valid) {
         setError('Invalid buylist. Please check your entries.');
@@ -67,7 +108,7 @@ function DropshipPage() {
         lineItems: response.data.lineItems,
       });
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to validate list. Please try again.');
+      setError(err instanceof Error ? err.message : 'Failed to validate. Please try again.');
     } finally {
       setIsChecking(false);
     }
@@ -91,7 +132,12 @@ function DropshipPage() {
     setIsSubmitting(true);
 
     try {
-      const response = await submitDropshipRequest(email, city, items);
+      const response = await submitDropshipRequest(
+        email,
+        geocodedCity?.displayName || city,
+        items,
+        geocodedCity || undefined
+      );
 
       if (!response.data.success) {
         setError(response.data.message || 'Failed to submit request.');
@@ -147,7 +193,11 @@ function DropshipPage() {
             type="email"
             id="email"
             value={email}
-            onChange={e => setEmail(e.target.value)}
+            onChange={e => {
+              setEmail(e.target.value);
+              setCheckResult(null);
+              setGeocodedCity(null);
+            }}
             placeholder="you@example.com"
           />
         </div>
@@ -158,7 +208,11 @@ function DropshipPage() {
             type="text"
             id="city"
             value={city}
-            onChange={e => setCity(e.target.value)}
+            onChange={e => {
+              setCity(e.target.value);
+              setCheckResult(null);
+              setGeocodedCity(null);
+            }}
             placeholder="e.g., Los Angeles, CA"
           />
         </div>
@@ -204,6 +258,9 @@ function DropshipPage() {
           <div className="check-result">
             {checkResult.totalCards} card{checkResult.totalCards !== 1 ? 's' : ''} across{' '}
             {checkResult.lineItems} line item{checkResult.lineItems !== 1 ? 's' : ''} ready to submit.
+            {geocodedCity && (
+              <div className="geocoded-city">Shipping to: {geocodedCity.displayName}</div>
+            )}
           </div>
         )}
       </div>

@@ -85,13 +85,20 @@ export async function checkDropshipBuylist(
   });
 }
 
+export interface GeocodedLocation {
+  displayName: string;
+  latitude: number;
+  longitude: number;
+}
+
 export async function submitDropshipRequest(
   email: string,
   city: string,
-  items: BuylistItem[]
+  items: BuylistItem[],
+  location?: GeocodedLocation
 ): Promise<DropshipSubmitResponse> {
   return fetchApi<DropshipSubmitResponse>('/dropship/submit', {
     method: 'POST',
-    body: JSON.stringify({ email, city, items }),
+    body: JSON.stringify({ email, city, items, location }),
   });
 }

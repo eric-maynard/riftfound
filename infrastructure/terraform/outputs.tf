@@ -1,9 +1,9 @@
 output "ec2_public_ip" {
-  value = aws_eip.riftfound.public_ip
+  value = var.use_ec2 ? aws_eip.riftfound[0].public_ip : null
 }
 
 output "ec2_public_dns" {
-  value = aws_eip.riftfound.public_dns
+  value = var.use_ec2 ? aws_eip.riftfound[0].public_dns : null
 }
 
 output "cloudfront_domain" {
@@ -59,9 +59,6 @@ output "godaddy_dns_instructions" {
      - GoDaddy doesn't support ALIAS records
      - Use forwarding: Forward riftfound.com -> www.riftfound.com
      - Or use a CNAME flattening service
-
-  4. SSH to server:
-     ssh -i ~/.ssh/YOUR_KEY.pem ec2-user@${aws_eip.riftfound.public_ip}
-
+${var.use_ec2 ? "\n  4. SSH to server:\n     ssh -i ~/.ssh/YOUR_KEY.pem ec2-user@${aws_eip.riftfound[0].public_ip}\n" : ""}
   EOT
 }

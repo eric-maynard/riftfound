@@ -48,6 +48,7 @@ resource "random_id" "bucket_suffix" {
 
 # Security Group
 resource "aws_security_group" "riftfound_ec2" {
+  count       = var.use_ec2 ? 1 : 0
   name        = "riftfound-ec2-sg"
   description = "Security group for Riftfound EC2"
   vpc_id      = data.aws_vpc.default.id
@@ -80,7 +81,8 @@ resource "aws_security_group" "riftfound_ec2" {
 
 # IAM Role
 resource "aws_iam_role" "riftfound_ec2" {
-  name = "riftfound-ec2-role"
+  count = var.use_ec2 ? 1 : 0
+  name  = "riftfound-ec2-role"
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
@@ -92,13 +94,15 @@ resource "aws_iam_role" "riftfound_ec2" {
 }
 
 resource "aws_iam_role_policy_attachment" "ssm" {
-  role       = aws_iam_role.riftfound_ec2.name
+  count      = var.use_ec2 ? 1 : 0
+  role       = aws_iam_role.riftfound_ec2[0].name
   policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
 }
 
 resource "aws_iam_role_policy" "dynamodb" {
-  name = "riftfound-dynamodb-access"
-  role = aws_iam_role.riftfound_ec2.id
+  count = var.use_ec2 ? 1 : 0
+  name  = "riftfound-dynamodb-access"
+  role  = aws_iam_role.riftfound_ec2[0].id
 
   policy = jsonencode({
     Version = "2012-10-17"
@@ -124,26 +128,29 @@ resource "aws_iam_role_policy" "dynamodb" {
 }
 
 resource "aws_iam_instance_profile" "riftfound_ec2" {
-  name = "riftfound-ec2-profile"
-  role = aws_iam_role.riftfound_ec2.name
+  count = var.use_ec2 ? 1 : 0
+  name  = "riftfound-ec2-profile"
+  role  = aws_iam_role.riftfound_ec2[0].name
 }
 
 # EBS Volume (persistent SQLite storage)
 resource "aws_ebs_volume" "riftfound_data" {
+  count             = var.use_ec2 ? 1 : 0
   availability_zone = data.aws_availability_zones.available.names[0]
   size              = var.ebs_volume_size
   type              = "gp3"
   encrypted         = true
-  tags = { Name = "riftfound-data" }
+  tags              = { Name = "riftfound-data" }
 }
 
 # EC2 Instance
 resource "aws_instance" "riftfound" {
+  count                  = var.use_ec2 ? 1 : 0
   ami                    = data.aws_ami.amazon_linux_2023.id
   instance_type          = var.instance_type
   key_name               = var.ssh_key_name
-  vpc_security_group_ids = [aws_security_group.riftfound_ec2.id]
-  iam_instance_profile   = aws_iam_instance_profile.riftfound_ec2.name
+  vpc_security_group_ids = [aws_security_group.riftfound_ec2[0].id]
+  iam_instance_profile   = aws_iam_instance_profile.riftfound_ec2[0].name
   availability_zone      = data.aws_availability_zones.available.names[0]
 
   root_block_device {
@@ -178,15 +185,17 @@ resource "aws_instance" "riftfound" {
 }
 
 resource "aws_volume_attachment" "riftfound_data" {
+  count       = var.use_ec2 ? 1 : 0
   device_name = "/dev/xvdf"
-  volume_id   = aws_ebs_volume.riftfound_data.id
-  instance_id = aws_instance.riftfound.id
+  volume_id   = aws_ebs_volume.riftfound_data[0].id
+  instance_id = aws_instance.riftfound[0].id
 }
 
 resource "aws_eip" "riftfound" {
-  instance = aws_instance.riftfound.id
+  count    = var.use_ec2 ? 1 : 0
+  instance = aws_instance.riftfound[0].id
   domain   = "vpc"
-  tags = { Name = "riftfound-eip" }
+  tags     = { Name = "riftfound-eip" }
 }
 
 # S3 Bucket for Frontend
@@ -293,14 +302,18 @@ resource "aws_cloudfront_distribution" "main" {
     origin_access_control_id = aws_cloudfront_origin_access_control.frontend.id
   }
 
-  origin {
-    domain_name = aws_eip.riftfound.public_dns
-    origin_id   = "EC2-API"
-    custom_origin_config {
-      http_port              = 3001
-      https_port             = 443
-      origin_protocol_policy = "http-only"
-      origin_ssl_protocols   = ["TLSv1.2"]
+  # EC2-API origin (only when EC2 is enabled)
+  dynamic "origin" {
+    for_each = var.use_ec2 ? [1] : []
+    content {
+      domain_name = aws_eip.riftfound[0].public_dns
+      origin_id   = "EC2-API"
+      custom_origin_config {
+        http_port              = 3001
+        https_port             = 443
+        origin_protocol_policy = "http-only"
+        origin_ssl_protocols   = ["TLSv1.2"]
+      }
     }
   }
 
@@ -335,7 +348,7 @@ resource "aws_cloudfront_distribution" "main" {
     path_pattern           = "/api/*"
     allowed_methods        = ["DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"]
     cached_methods         = ["GET", "HEAD"]
-    target_origin_id       = var.use_dynamodb ? "APIGateway" : "EC2-API"
+    target_origin_id       = var.use_dynamodb || !var.use_ec2 ? "APIGateway" : "EC2-API"
     viewer_protocol_policy = "redirect-to-https"
     min_ttl                = 0
     default_ttl            = 0

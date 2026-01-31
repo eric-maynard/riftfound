@@ -89,17 +89,17 @@ if [[ $TOTAL_CACHE -gt 0 ]]; then
     echo ""
 fi
 
-# Google API calls
-GOOGLE_FORWARD=$(echo "$LOG_DATA" | grep -c 'type=google_forward' || echo "0")
-GOOGLE_REVERSE=$(echo "$LOG_DATA" | grep -c 'type=google_reverse' || echo "0")
-GOOGLE_AUTO=$(echo "$LOG_DATA" | grep -c 'type=google_autocomplete' || echo "0")
-GOOGLE_TOTAL=$((GOOGLE_FORWARD + GOOGLE_REVERSE + GOOGLE_AUTO))
+# Mapbox API calls
+MAPBOX_FORWARD=$(echo "$LOG_DATA" | grep -c 'type=mapbox_forward' || echo "0")
+MAPBOX_REVERSE=$(echo "$LOG_DATA" | grep -c 'type=mapbox_reverse' || echo "0")
+MAPBOX_AUTO=$(echo "$LOG_DATA" | grep -c 'type=mapbox_autocomplete' || echo "0")
+MAPBOX_TOTAL=$((MAPBOX_FORWARD + MAPBOX_REVERSE + MAPBOX_AUTO))
 
-echo "Google API calls:"
-echo "  Forward geocode:  $GOOGLE_FORWARD"
-echo "  Reverse geocode:  $GOOGLE_REVERSE"
-echo "  Autocomplete:     $GOOGLE_AUTO"
-echo "  Total:            $GOOGLE_TOTAL"
+echo "Mapbox API calls:"
+echo "  Forward geocode:  $MAPBOX_FORWARD"
+echo "  Reverse geocode:  $MAPBOX_REVERSE"
+echo "  Autocomplete:     $MAPBOX_AUTO"
+echo "  Total:            $MAPBOX_TOTAL"
 echo ""
 
 # Error rate
@@ -147,18 +147,18 @@ if [[ "$WITH_TRAFFIC" == "true" ]]; then
 
             echo "Visitors (last $DAYS days):        $UNIQUE_VISITORS"
             echo "Location searches (frontend):      $LOCATION_SEARCHES"
-            echo "Google Places API calls:           $GOOGLE_AUTO"
+            echo "Mapbox API calls:                  $MAPBOX_AUTO"
             echo ""
 
             if [[ $UNIQUE_VISITORS -gt 0 ]]; then
-                # Places API calls per visitor
-                PLACES_PER_VISIT=$(echo "scale=3; $GOOGLE_AUTO / $UNIQUE_VISITORS" | bc)
-                echo "Places API calls per visitor:      $PLACES_PER_VISIT"
+                # API calls per visitor
+                API_PER_VISIT=$(echo "scale=3; $MAPBOX_AUTO / $UNIQUE_VISITORS" | bc)
+                echo "API calls per visitor:             $API_PER_VISIT"
 
                 # Cache effectiveness: how many frontend searches resulted in API calls
                 if [[ $LOCATION_SEARCHES -gt 0 ]]; then
-                    API_RATE=$(echo "scale=1; $GOOGLE_AUTO * 100 / $LOCATION_SEARCHES" | bc)
-                    CACHE_SAVINGS=$((LOCATION_SEARCHES - GOOGLE_AUTO))
+                    API_RATE=$(echo "scale=1; $MAPBOX_AUTO * 100 / $LOCATION_SEARCHES" | bc)
+                    CACHE_SAVINGS=$((LOCATION_SEARCHES - MAPBOX_AUTO))
                     echo "API calls per location search:     ${API_RATE}%"
                     echo "Searches served from cache:        $CACHE_SAVINGS (saved API calls)"
                 fi

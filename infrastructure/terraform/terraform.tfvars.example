@@ -7,3 +7,10 @@ instance_type    = "t3.small"
 ssh_key_name     = "your-aws-key-pair-name"  # Create in AWS Console -> EC2 -> Key Pairs
 allowed_ssh_cidr = "YOUR_IP/32"              # e.g., "203.0.113.50/32" - find at whatismyip.com
 ebs_volume_size  = 20
+
+# Serverless infrastructure
+use_dynamodb     = true
+
+# Mapbox access token for geocoding (or use TF_VAR_mapbox_access_token env var)
+# Get one at https://account.mapbox.com/access-tokens/
+# mapbox_access_token = "pk.your-token"

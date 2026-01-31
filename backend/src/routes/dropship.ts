@@ -4,9 +4,9 @@ import * as dropshipService from '../services/dropshipService.js';
 
 const router = Router();
 
-// Schema for buylist items
+// Schema for buylist items (max 3 of each card)
 const BuylistItemSchema = z.object({
-  quantity: z.number().int().positive(),
+  quantity: z.number().int().positive().max(3, 'Orders are limited to 3x of each card'),
   cardName: z.string().min(1),
 });
 
@@ -16,11 +16,19 @@ const CheckRequestSchema = z.object({
   city: z.string().optional(),
 });
 
+// Schema for geocoded location
+const GeocodedLocationSchema = z.object({
+  displayName: z.string(),
+  latitude: z.number(),
+  longitude: z.number(),
+});
+
 // Schema for submit request
 const SubmitRequestSchema = z.object({
   email: z.string().email(),
   city: z.string().optional().default(''),
   items: z.array(BuylistItemSchema).min(1),
+  location: GeocodedLocationSchema.optional(),
 });
 
 // POST /api/dropship/check - Validate buylist

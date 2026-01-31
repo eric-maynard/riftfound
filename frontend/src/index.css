@@ -1139,6 +1139,12 @@ select:disabled {
   font-size: 0.875rem;
 }
 
+.check-result .geocoded-city {
+  margin-top: 0.25rem;
+  font-size: 0.8rem;
+  opacity: 0.9;
+}
+
 .dropship-success {
   text-align: center;
   padding: 3rem 1.5rem;

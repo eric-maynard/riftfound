@@ -104,7 +104,7 @@ function EventFiltersComponent({ filters, appliedFilters, onFiltersChange, onSea
       } catch {
         setSuggestions([]);
       }
-    }, 1000); // 1s debounce to reduce Google API calls
+    }, 600); // 600ms debounce to reduce API calls
 
     return () => clearTimeout(timer);
   }, [cityInput, filters.location?.displayName]);
@@ -127,18 +127,22 @@ function EventFiltersComponent({ filters, appliedFilters, onFiltersChange, onSea
   }, []);
 
   const handleSelectSuggestion = (suggestion: GeocodeSuggestion) => {
-    setCityInput(suggestion.displayName);
-    onFiltersChange({
+    const newLocation = {
+      lat: suggestion.latitude,
+      lng: suggestion.longitude,
+      displayName: suggestion.displayName,
+    };
+    const newFilters = {
       ...filters,
-      location: {
-        lat: suggestion.latitude,
-        lng: suggestion.longitude,
-        displayName: suggestion.displayName,
-      },
-    });
+      location: newLocation,
+    };
+    setCityInput(suggestion.displayName);
+    onFiltersChange(newFilters);
     setSuggestions([]);
     setShowSuggestions(false);
     setError(null);
+    // Automatically search when a suggestion is selected
+    onSearch(newFilters);
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {

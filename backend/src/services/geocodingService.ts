@@ -1,5 +1,5 @@
 import { getPool, getSqlite, useSqlite, useDynamoDB, addToPhotonQueue } from '../config/database.js';
-import { getGeocacheDynamoDB, setGeocacheDynamoDB, getPlaceDetailsDynamoDB, setPlaceDetailsDynamoDB } from '../adapters/dynamoAdapter.js';
+import { getGeocacheDynamoDB, setGeocacheDynamoDB } from '../adapters/dynamoAdapter.js';
 import { env } from '../config/env.js';
 import { appendFileSync } from 'fs';
 
@@ -16,8 +16,8 @@ function logPublicPhotonQuery(query: string): void {
 
 // Geocoding metrics logging
 // Format: [GEOCODE] type=<type> key=value ...
-// Types: cache_hit, cache_miss, google_forward, google_reverse, google_autocomplete, photon_forward, photon_reverse
-type GeoMetricType = 'cache_hit' | 'cache_miss' | 'google_forward' | 'google_reverse' | 'google_autocomplete' | 'photon_forward' | 'photon_reverse';
+// Types: cache_hit, cache_miss, mapbox_forward, mapbox_reverse, mapbox_autocomplete, photon_forward, photon_reverse
+type GeoMetricType = 'cache_hit' | 'cache_miss' | 'mapbox_forward' | 'mapbox_reverse' | 'mapbox_autocomplete' | 'photon_forward' | 'photon_reverse';
 
 function logGeoMetric(type: GeoMetricType, data: Record<string, string | number | boolean>): void {
   const parts = [`[GEOCODE] type=${type}`];
@@ -326,64 +326,37 @@ async function callPhotonWithFallback(query: string, limit: number, osmTag?: str
 }
 
 // ============================================================================
-// Google Maps API Functions
+// Mapbox Geocoding API Functions
 // ============================================================================
 
-const GOOGLE_MAPS_GEOCODE_URL = 'https://maps.googleapis.com/maps/api/geocode/json';
-const GOOGLE_PLACES_AUTOCOMPLETE_URL = 'https://places.googleapis.com/v1/places:autocomplete';
+const MAPBOX_GEOCODE_URL = 'https://api.mapbox.com/search/geocode/v6';
 
-interface GoogleGeocodeResult {
-  formatted_address: string;
+interface MapboxFeature {
   geometry: {
-    location: {
-      lat: number;
-      lng: number;
+    coordinates: [number, number]; // [lon, lat]
+  };
+  properties: {
+    mapbox_id: string;
+    feature_type: string;
+    full_address: string;
+    name: string;
+    context?: {
+      region?: { name: string; region_code?: string };
+      country?: { name: string; country_code?: string };
+      place?: { name: string };
+      district?: { name: string };
     };
   };
-  address_components: Array<{
-    long_name: string;
-    short_name: string;
-    types: string[];
-  }>;
 }
 
-interface GoogleGeocodeResponse {
-  status: string;
-  results: GoogleGeocodeResult[];
+interface MapboxGeocodingResponse {
+  type: string;
+  features: MapboxFeature[];
 }
 
-// Places API (New) response types
-interface PlacesAutocompleteSuggestion {
-  placePrediction?: {
-    placeId: string;
-    text: {
-      text: string;
-    };
-    structuredFormat?: {
-      mainText: { text: string };
-      secondaryText?: { text: string };
-    };
-    types: string[];
-  };
-}
-
-interface PlacesAutocompleteResponse {
-  suggestions: PlacesAutocompleteSuggestion[];
-}
-
-interface PlaceDetailsResponse {
-  location: {
-    latitude: number;
-    longitude: number;
-  };
-  displayName: {
-    text: string;
-  };
-}
-
-// Check if Google Maps API is available
-function hasGoogleMapsApiKey(): boolean {
-  return Boolean(env.GOOGLE_MAPS_API_KEY);
+// Check if Mapbox API is available
+function hasMapboxAccessToken(): boolean {
+  return Boolean(env.MAPBOX_ACCESS_TOKEN);
 }
 
 // Check if local Photon is enabled
@@ -391,204 +364,137 @@ function isPhotonEnabled(): boolean {
   return env.PHOTON_ENABLED;
 }
 
-// Forward geocode using Google Maps API
-async function callGoogleMapsGeocode(query: string): Promise<GeocodeResult | null> {
-  if (!env.GOOGLE_MAPS_API_KEY) return null;
+// Forward geocode using Mapbox API
+async function callMapboxGeocode(query: string): Promise<GeocodeResult | null> {
+  if (!env.MAPBOX_ACCESS_TOKEN) return null;
 
   try {
-    const url = new URL(GOOGLE_MAPS_GEOCODE_URL);
-    url.searchParams.set('address', query);
-    url.searchParams.set('key', env.GOOGLE_MAPS_API_KEY);
+    const url = new URL(`${MAPBOX_GEOCODE_URL}/forward`);
+    url.searchParams.set('q', query);
+    url.searchParams.set('access_token', env.MAPBOX_ACCESS_TOKEN);
+    url.searchParams.set('types', 'place,region,district');
+    url.searchParams.set('limit', '1');
 
     const response = await fetch(url.toString());
     if (!response.ok) {
-      logGeoMetric('google_forward', { query, success: false, error: `HTTP ${response.status}` });
+      logGeoMetric('mapbox_forward', { query, success: false, error: `HTTP ${response.status}` });
       return null;
     }
 
-    const data = await response.json() as GoogleGeocodeResponse;
-    if (data.status !== 'OK' || data.results.length === 0) {
-      logGeoMetric('google_forward', { query, success: false, error: data.status });
+    const data = await response.json() as MapboxGeocodingResponse;
+    if (!data.features || data.features.length === 0) {
+      logGeoMetric('mapbox_forward', { query, success: false, error: 'no_results' });
       return null;
     }
 
-    const result = data.results[0];
-    logGeoMetric('google_forward', { query, success: true });
+    const feature = data.features[0];
+    const [lon, lat] = feature.geometry.coordinates;
+    logGeoMetric('mapbox_forward', { query, success: true });
     return {
-      latitude: result.geometry.location.lat,
-      longitude: result.geometry.location.lng,
-      displayName: result.formatted_address,
+      latitude: lat,
+      longitude: lon,
+      displayName: feature.properties.full_address || feature.properties.name,
     };
   } catch (error) {
-    logGeoMetric('google_forward', { query, success: false, error: 'exception' });
+    logGeoMetric('mapbox_forward', { query, success: false, error: 'exception' });
     return null;
   }
 }
 
-// Reverse geocode using Google Maps API
-async function callGoogleMapsReverse(lat: number, lon: number): Promise<GeocodeResult | null> {
-  if (!env.GOOGLE_MAPS_API_KEY) return null;
+// Reverse geocode using Mapbox API
+async function callMapboxReverse(lat: number, lon: number): Promise<GeocodeResult | null> {
+  if (!env.MAPBOX_ACCESS_TOKEN) return null;
 
   const coords = `${lat.toFixed(4)},${lon.toFixed(4)}`;
   try {
-    const url = new URL(GOOGLE_MAPS_GEOCODE_URL);
-    url.searchParams.set('latlng', `${lat},${lon}`);
-    url.searchParams.set('key', env.GOOGLE_MAPS_API_KEY);
+    const url = new URL(`${MAPBOX_GEOCODE_URL}/reverse`);
+    url.searchParams.set('longitude', String(lon));
+    url.searchParams.set('latitude', String(lat));
+    url.searchParams.set('access_token', env.MAPBOX_ACCESS_TOKEN);
+    url.searchParams.set('types', 'place,region');
 
     const response = await fetch(url.toString());
     if (!response.ok) {
-      logGeoMetric('google_reverse', { coords, success: false, error: `HTTP ${response.status}` });
+      logGeoMetric('mapbox_reverse', { coords, success: false, error: `HTTP ${response.status}` });
       return null;
     }
 
-    const data = await response.json() as GoogleGeocodeResponse;
-    if (data.status !== 'OK' || data.results.length === 0) {
-      logGeoMetric('google_reverse', { coords, success: false, error: data.status });
+    const data = await response.json() as MapboxGeocodingResponse;
+    if (!data.features || data.features.length === 0) {
+      logGeoMetric('mapbox_reverse', { coords, success: false, error: 'no_results' });
       return null;
     }
 
-    const result = data.results[0];
-    // Extract city/state for cleaner display
-    const components = result.address_components;
-    const city = components.find(c => c.types.includes('locality'))?.long_name;
-    const state = components.find(c => c.types.includes('administrative_area_level_1'))?.short_name;
-    const country = components.find(c => c.types.includes('country'))?.long_name;
+    const feature = data.features[0];
+    // Build display name from context
+    const context = feature.properties.context;
+    const placeName = feature.properties.name;
+    const region = context?.region?.region_code || context?.region?.name;
+    const country = context?.country?.name;
 
     let displayName: string;
-    if (city && state) {
-      displayName = `${city}, ${state}`;
-    } else if (city && country) {
-      displayName = `${city}, ${country}`;
+    if (placeName && region) {
+      displayName = `${placeName}, ${region}`;
+    } else if (placeName && country) {
+      displayName = `${placeName}, ${country}`;
     } else {
-      displayName = result.formatted_address;
+      displayName = feature.properties.full_address || placeName || 'Unknown Location';
     }
 
-    logGeoMetric('google_reverse', { coords, success: true });
+    logGeoMetric('mapbox_reverse', { coords, success: true });
     return {
       latitude: lat,
       longitude: lon,
       displayName,
     };
   } catch (error) {
-    logGeoMetric('google_reverse', { coords, success: false, error: 'exception' });
+    logGeoMetric('mapbox_reverse', { coords, success: false, error: 'exception' });
     return null;
   }
 }
 
-// Get autocomplete suggestions using Google Places API (New)
-async function callGoogleMapsAutocomplete(query: string, limit: number): Promise<GeocodeSuggestion[]> {
-  if (!env.GOOGLE_MAPS_API_KEY) return [];
+// Get autocomplete suggestions using Mapbox Geocoding API
+// Mapbox returns coordinates directly with autocomplete=true, no separate details call needed
+async function callMapboxAutocomplete(query: string, limit: number): Promise<GeocodeSuggestion[]> {
+  if (!env.MAPBOX_ACCESS_TOKEN) return [];
 
   try {
-    const response = await fetch(GOOGLE_PLACES_AUTOCOMPLETE_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Goog-Api-Key': env.GOOGLE_MAPS_API_KEY,
-      },
-      body: JSON.stringify({
-        input: query,
-        includedPrimaryTypes: ['locality', 'administrative_area_level_1', 'administrative_area_level_2'],
-      }),
+    const url = new URL(`${MAPBOX_GEOCODE_URL}/forward`);
+    url.searchParams.set('q', query);
+    url.searchParams.set('access_token', env.MAPBOX_ACCESS_TOKEN);
+    url.searchParams.set('autocomplete', 'true');
+    url.searchParams.set('types', 'place,region,district,locality');
+    url.searchParams.set('limit', String(limit));
+
+    const response = await fetch(url.toString());
+    if (!response.ok) {
+      logGeoMetric('mapbox_autocomplete', { query, success: false, results: 0, error: `HTTP ${response.status}` });
+      return [];
+    }
+
+    const data = await response.json() as MapboxGeocodingResponse;
+    if (!data.features || data.features.length === 0) {
+      logGeoMetric('mapbox_autocomplete', { query, success: true, results: 0 });
+      return [];
+    }
+
+    const suggestions: GeocodeSuggestion[] = data.features.map(feature => {
+      const [lon, lat] = feature.geometry.coordinates;
+      const featureType = feature.properties.feature_type;
+
+      return {
+        latitude: lat,
+        longitude: lon,
+        displayName: feature.properties.full_address || feature.properties.name,
+        type: featureType === 'place' ? 'city' : featureType,
+      };
     });
 
-    if (!response.ok) {
-      logGeoMetric('google_autocomplete', { query, success: false, results: 0, error: `HTTP ${response.status}` });
-      return [];
-    }
-
-    const data = await response.json() as PlacesAutocompleteResponse;
-    if (!data.suggestions || data.suggestions.length === 0) {
-      logGeoMetric('google_autocomplete', { query, success: true, results: 0 });
-      return [];
-    }
-
-    // Limit predictions and fetch details for each to get coordinates
-    const predictions = data.suggestions.slice(0, limit);
-    const suggestions: GeocodeSuggestion[] = [];
-
-    for (const suggestion of predictions) {
-      if (!suggestion.placePrediction) continue;
-
-      const details = await fetchPlaceDetails(suggestion.placePrediction.placeId);
-      if (details) {
-        const displayName = suggestion.placePrediction.text.text;
-        const types = suggestion.placePrediction.types || [];
-        suggestions.push({
-          latitude: details.lat,
-          longitude: details.lng,
-          displayName,
-          type: types.includes('locality') ? 'city' : 'place',
-        });
-      }
-    }
-
-    logGeoMetric('google_autocomplete', { query, success: true, results: suggestions.length });
+    logGeoMetric('mapbox_autocomplete', { query, success: true, results: suggestions.length });
     return suggestions;
   } catch (error) {
-    logGeoMetric('google_autocomplete', { query, success: false, results: 0, error: 'exception' });
+    logGeoMetric('mapbox_autocomplete', { query, success: false, results: 0, error: 'exception' });
     return [];
-  }
-}
-
-// Fetch place details to get coordinates using Places API (New)
-// Uses DynamoDB cache to avoid repeated API calls for the same place_id
-async function fetchPlaceDetails(placeId: string): Promise<{ lat: number; lng: number } | null> {
-  if (!env.GOOGLE_MAPS_API_KEY) return null;
-
-  // Check cache first (DynamoDB only - SQLite dev doesn't need this optimization)
-  if (useDynamoDB()) {
-    try {
-      const cached = await getPlaceDetailsDynamoDB(placeId);
-      if (cached) {
-        return {
-          lat: cached.latitude,
-          lng: cached.longitude,
-        };
-      }
-    } catch (error) {
-      // Cache miss or error - continue to API call
-      console.error('Place details cache lookup failed:', error);
-    }
-  }
-
-  try {
-    const url = `https://places.googleapis.com/v1/places/${placeId}`;
-    const response = await fetch(url, {
-      headers: {
-        'X-Goog-Api-Key': env.GOOGLE_MAPS_API_KEY,
-        'X-Goog-FieldMask': 'location',
-      },
-    });
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error(`Place Details failed for ${placeId}: HTTP ${response.status} - ${errorText}`);
-      return null;
-    }
-
-    const data = await response.json() as PlaceDetailsResponse;
-    if (!data.location) {
-      console.error(`Place Details missing location for ${placeId}:`, JSON.stringify(data));
-      return null;
-    }
-
-    const result = {
-      lat: data.location.latitude,
-      lng: data.location.longitude,
-    };
-
-    // Cache the result (fire and forget)
-    if (useDynamoDB()) {
-      setPlaceDetailsDynamoDB(placeId, result.lat, result.lng).catch((error) => {
-        console.error('Failed to cache place details:', error);
-      });
-    }
-
-    return result;
-  } catch (error) {
-    console.error(`Place Details exception for ${placeId}:`, error);
-    return null;
   }
 }
 
@@ -673,7 +579,7 @@ async function cacheGeocode(query: string, result: GeocodeResult): Promise<void>
 }
 
 // Geocode a city/location
-// Precedence: ZIP lookup → cache → Google Maps → local Photon → public Photon
+// Precedence: ZIP lookup → cache → Mapbox → local Photon → public Photon
 export async function geocodeCity(query: string): Promise<GeocodeResult | null> {
   const trimmedQuery = query.trim();
 
@@ -699,12 +605,12 @@ export async function geocodeCity(query: string): Promise<GeocodeResult | null> 
 
   logGeoMetric('cache_miss', { query: trimmedQuery });
 
-  // Try Google Maps API first (if available)
-  if (hasGoogleMapsApiKey()) {
-    const googleResult = await callGoogleMapsGeocode(trimmedQuery);
-    if (googleResult) {
-      await cacheGeocode(query, googleResult);
-      return googleResult;
+  // Try Mapbox API first (if available)
+  if (hasMapboxAccessToken()) {
+    const mapboxResult = await callMapboxGeocode(trimmedQuery);
+    if (mapboxResult) {
+      await cacheGeocode(query, mapboxResult);
+      return mapboxResult;
     }
   }
 
@@ -762,7 +668,7 @@ export async function geocodeCity(query: string): Promise<GeocodeResult | null> 
 }
 
 // Get autocomplete suggestions
-// Precedence: ZIP lookup → Google Places (if available) → local Photon (if enabled)
+// Precedence: ZIP lookup → Mapbox (if available) → local Photon (if enabled)
 export async function geocodeSuggestions(query: string, limit = 4): Promise<GeocodeSuggestion[]> {
   if (!query || query.length < 2) {
     return [];
@@ -785,11 +691,11 @@ export async function geocodeSuggestions(query: string, limit = 4): Promise<Geoc
     return [];
   }
 
-  // Try Google Places API first (if available)
-  if (hasGoogleMapsApiKey()) {
-    const googleSuggestions = await callGoogleMapsAutocomplete(trimmedQuery, limit);
-    if (googleSuggestions.length > 0) {
-      return googleSuggestions;
+  // Try Mapbox API first (if available)
+  if (hasMapboxAccessToken()) {
+    const mapboxSuggestions = await callMapboxAutocomplete(trimmedQuery, limit);
+    if (mapboxSuggestions.length > 0) {
+      return mapboxSuggestions;
     }
   }
 
@@ -837,13 +743,13 @@ export async function geocodeSuggestions(query: string, limit = 4): Promise<Geoc
 }
 
 // Reverse geocode coordinates to get location name
-// Precedence: Google Maps → local Photon (if enabled) → public Photon
+// Precedence: Mapbox → local Photon (if enabled) → public Photon
 export async function reverseGeocode(lat: number, lon: number): Promise<GeocodeResult | null> {
-  // Try Google Maps API first (if available)
-  if (hasGoogleMapsApiKey()) {
-    const googleResult = await callGoogleMapsReverse(lat, lon);
-    if (googleResult) {
-      return googleResult;
+  // Try Mapbox API first (if available)
+  if (hasMapboxAccessToken()) {
+    const mapboxResult = await callMapboxReverse(lat, lon);
+    if (mapboxResult) {
+      return mapboxResult;
     }
   }
 
