@@ -60,11 +60,22 @@ export interface BuylistItem {
   cardName: string;
 }
 
+export interface PricedItem {
+  quantity: number;
+  cardName: string;
+  unitPrice: number | null;
+  totalPrice: number | null;
+  found: boolean;
+}
+
 export interface DropshipCheckResponse {
   data: {
     valid: boolean;
     totalCards: number;
     lineItems: number;
+    pricedItems: PricedItem[];
+    subtotal: number;
+    allFound: boolean;
   };
 }
 

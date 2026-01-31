@@ -4,6 +4,7 @@ import {
   submitDropshipRequest,
   geocodeCity,
   type BuylistItem,
+  type PricedItem,
 } from '../services/api';
 
 function parseBuylist(text: string): BuylistItem[] {
@@ -49,6 +50,9 @@ function DropshipPage() {
   const [checkResult, setCheckResult] = useState<{
     totalCards: number;
     lineItems: number;
+    pricedItems: PricedItem[];
+    subtotal: number;
+    allFound: boolean;
   } | null>(null);
   const [geocodedCity, setGeocodedCity] = useState<{
     displayName: string;
@@ -115,9 +119,20 @@ function DropshipPage() {
         return;
       }
 
+      // Check for unrecognized cards
+      const unrecognizedCards = response.data.pricedItems.filter(item => !item.found);
+      if (unrecognizedCards.length > 0) {
+        const cardNames = unrecognizedCards.map(item => `"${item.cardName}"`).join(', ');
+        setError(`Unrecognized card${unrecognizedCards.length > 1 ? 's' : ''}: ${cardNames}`);
+        return;
+      }
+
       setCheckResult({
         totalCards: response.data.totalCards,
         lineItems: response.data.lineItems,
+        pricedItems: response.data.pricedItems,
+        subtotal: response.data.subtotal,
+        allFound: response.data.allFound,
       });
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to validate. Please try again.');
@@ -271,11 +286,16 @@ function DropshipPage() {
 
         {checkResult && (
           <div className="check-result">
-            {checkResult.totalCards} card{checkResult.totalCards !== 1 ? 's' : ''} across{' '}
-            {checkResult.lineItems} line item{checkResult.lineItems !== 1 ? 's' : ''} ready to submit.
+            <div className="check-summary">
+              {checkResult.totalCards} card{checkResult.totalCards !== 1 ? 's' : ''} across{' '}
+              {checkResult.lineItems} line item{checkResult.lineItems !== 1 ? 's' : ''} ready to submit.
+            </div>
             {geocodedCity && (
               <div className="geocoded-city">Shipping to: {geocodedCity.displayName}</div>
             )}
+            <div className="estimated-cost">
+              Estimated Cost: ¥{((checkResult.subtotal * 1.2) + 20).toFixed(2)} CNY
+            </div>
           </div>
         )}
       </div>

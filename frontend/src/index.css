@@ -1145,6 +1145,13 @@ select:disabled {
   opacity: 0.9;
 }
 
+.check-result .estimated-cost {
+  margin-top: 0.5rem;
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--color-cyan);
+}
+
 .dropship-success {
   text-align: center;
   padding: 3rem 1.5rem;
