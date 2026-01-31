@@ -182,8 +182,11 @@ function DropshipPage() {
     <div className="container dropship-page">
       <h1>Dropship Request</h1>
       <p className="dropship-intro">
-        Enter your buylist below. We'll review your request and get back to you
-        with pricing and availability.
+        Enter your buylist and I'll reply back as quickly as I can with a cost
+        and timing estimate. I'm committed to doing this <em>at cost</em>, and
+        want to get product into the hands of real players.
+        <br />
+        Most orders will take 3 - 4 weeks to arrive.
       </p>
 
       <div className="dropship-form">
