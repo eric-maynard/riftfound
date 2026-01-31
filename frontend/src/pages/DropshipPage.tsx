@@ -11,18 +11,30 @@ function parseBuylist(text: string): BuylistItem[] {
   const items: BuylistItem[] = [];
 
   for (const line of lines) {
-    // Match patterns like "4 Card Name" or "4x Card Name" or just "Card Name"
-    const match = line.match(/^(\d+)x?\s+(.+)$/i);
+    const trimmed = line.trim();
+
+    // Skip section headers (lines ending with ":")
+    if (trimmed.endsWith(':')) {
+      continue;
+    }
+
+    // Skip common section header variations
+    if (/^(Legend|Champion|MainDeck|Battlefields?|Runes?|Sideboard|Deck|Main|Side)$/i.test(trimmed)) {
+      continue;
+    }
+
+    // Match patterns like "4 Card Name" or "4x Card Name"
+    const match = trimmed.match(/^(\d+)x?\s+(.+)$/i);
     if (match) {
       items.push({
         quantity: parseInt(match[1], 10),
         cardName: match[2].trim(),
       });
-    } else {
+    } else if (trimmed) {
       // No quantity specified, assume 1
       items.push({
         quantity: 1,
-        cardName: line.trim(),
+        cardName: trimmed,
       });
     }
   }
@@ -233,7 +245,7 @@ function DropshipPage() {
             rows={10}
           />
           <span className="form-hint">
-            Format: "4 Card Name" or "4x Card Name" or just "Card Name" for 1
+            Paste your decklist directly - section headers are automatically ignored.
           </span>
         </div>
 
