@@ -259,9 +259,7 @@ function DropshipPage() {
             placeholder={`Enter cards, one per line:\n4 Card Name\n2x Another Card\nSingle Card`}
             rows={10}
           />
-          <span className="form-hint">
-            Paste your decklist directly - section headers are automatically ignored.
-          </span>
+          <span className="form-hint">&nbsp;</span>
         </div>
 
         <div className="form-actions">
