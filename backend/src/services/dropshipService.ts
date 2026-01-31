@@ -270,16 +270,26 @@ export async function submitDropshipRequest(request: DropshipRequest): Promise<{
     throw new Error('Failed to save order');
   }
 
-  // Format the buylist for the email
-  const buylistText = checkResult.pricedItems
+  // Format quick list (e.g., "3x SFD 195")
+  const quickList = checkResult.pricedItems
     .map((item) => {
-      const setInfo = item.set && item.cardNumber ? ` [${item.set} #${item.cardNumber}]` : '';
-      const priceStr = item.unitPriceCny !== null
-        ? `¥${item.unitPriceCny.toFixed(2)} ea = ¥${item.totalPriceCny!.toFixed(2)}`
-        : '(price not found)';
-      return `${item.quantity}x ${item.cardName}${setInfo} - ${priceStr}`;
+      const setCode = item.set && item.cardNumber ? `${item.set} ${item.cardNumber}` : item.cardName;
+      return `${item.quantity}x ${setCode}`;
     })
     .join('\n');
+
+  // Format detailed table for text email
+  const detailRows = checkResult.pricedItems.map((item) => {
+    const qty = String(item.quantity).padStart(3);
+    const setInfo = item.set && item.cardNumber ? `${item.set} ${item.cardNumber}`.padEnd(12) : '—'.padEnd(12);
+    const name = item.cardName.substring(0, 25).padEnd(25);
+    const unit = item.unitPriceCny !== null ? `¥${item.unitPriceCny.toFixed(2)}`.padStart(8) : '—'.padStart(8);
+    const total = item.totalPriceCny !== null ? `¥${item.totalPriceCny.toFixed(2)}`.padStart(10) : '—'.padStart(10);
+    return `${qty}  ${setInfo}  ${name}  ${unit}  ${total}`;
+  });
+
+  const tableHeader = 'Qty  Set/Number    Card Name                  Unit CNY   Total CNY';
+  const tableDivider = '---  ------------  -------------------------  --------  ----------';
 
   const emailBody = `
 New Dropship Request
@@ -288,17 +298,29 @@ Order ID: ${orderId}
 From: ${email}
 City: ${city || 'Not provided'}
 
-Buylist (${checkResult.totalCards} cards, ${checkResult.lineItems} line items):
-----------------------------------------
-${buylistText}
-----------------------------------------
-Subtotal: ¥${checkResult.subtotalCny.toFixed(2)} CNY
-Shipping: $${shippingUsd.toFixed(2)} USD
-Estimated Total (with 20% buffer): ¥${estimatedTotalCny.toFixed(2)} CNY
+Quick List (${checkResult.totalCards} cards):
+${quickList}
+
+Detailed Breakdown:
+${tableHeader}
+${tableDivider}
+${detailRows.join('\n')}
+${tableDivider}
+${''.padStart(45)}Subtotal: ¥${checkResult.subtotalCny.toFixed(2)}
+${''.padStart(45)}Shipping: $${shippingUsd.toFixed(2)} USD
+${''.padStart(45)}Est Total: ¥${estimatedTotalCny.toFixed(2)}
 ${!checkResult.allFound ? '\n⚠️ Some cards were not found in price database.\n' : ''}
 
 Reply to this email to respond to the customer.
 `.trim();
+
+  // Quick list as HTML
+  const quickListHtml = checkResult.pricedItems
+    .map((item) => {
+      const setCode = item.set && item.cardNumber ? `${item.set} ${item.cardNumber}` : item.cardName;
+      return `${item.quantity}x ${setCode}`;
+    })
+    .join('<br>');
 
   const htmlBody = `
 <h2>New Dropship Request</h2>
@@ -306,13 +328,18 @@ Reply to this email to respond to the customer.
 <p><strong>From:</strong> ${email}</p>
 <p><strong>City:</strong> ${city || 'Not provided'}</p>
 
-<h3>Buylist (${checkResult.totalCards} cards, ${checkResult.lineItems} line items)</h3>
-<table style="border-collapse: collapse; width: 100%; max-width: 600px;">
+<h3>Quick List (${checkResult.totalCards} cards)</h3>
+<p style="font-family: monospace; background: #f5f5f5; padding: 10px; border-radius: 4px;">
+${quickListHtml}
+</p>
+
+<h3>Detailed Breakdown</h3>
+<table style="border-collapse: collapse; width: 100%; max-width: 700px; font-size: 14px;">
   <thead>
     <tr style="background-color: #f0f0f0;">
-      <th style="border: 1px solid #ddd; padding: 8px; text-align: left;">Qty</th>
-      <th style="border: 1px solid #ddd; padding: 8px; text-align: left;">Card</th>
-      <th style="border: 1px solid #ddd; padding: 8px; text-align: left;">Set</th>
+      <th style="border: 1px solid #ddd; padding: 8px; text-align: center;">Qty</th>
+      <th style="border: 1px solid #ddd; padding: 8px; text-align: left;">Set/Number</th>
+      <th style="border: 1px solid #ddd; padding: 8px; text-align: left;">Card Name</th>
       <th style="border: 1px solid #ddd; padding: 8px; text-align: right;">Unit (CNY)</th>
       <th style="border: 1px solid #ddd; padding: 8px; text-align: right;">Total (CNY)</th>
     </tr>
@@ -320,9 +347,9 @@ Reply to this email to respond to the customer.
   <tbody>
     ${checkResult.pricedItems.map(item => `
     <tr${!item.found ? ' style="color: #cc0000;"' : ''}>
-      <td style="border: 1px solid #ddd; padding: 8px;">${item.quantity}</td>
+      <td style="border: 1px solid #ddd; padding: 8px; text-align: center;">${item.quantity}</td>
+      <td style="border: 1px solid #ddd; padding: 8px; font-family: monospace;">${item.set && item.cardNumber ? `${item.set} ${item.cardNumber}` : '—'}</td>
       <td style="border: 1px solid #ddd; padding: 8px;">${item.cardName}</td>
-      <td style="border: 1px solid #ddd; padding: 8px;">${item.set && item.cardNumber ? `${item.set} #${item.cardNumber}` : '—'}</td>
       <td style="border: 1px solid #ddd; padding: 8px; text-align: right;">${item.unitPriceCny !== null ? `¥${item.unitPriceCny.toFixed(2)}` : '—'}</td>
       <td style="border: 1px solid #ddd; padding: 8px; text-align: right;">${item.totalPriceCny !== null ? `¥${item.totalPriceCny.toFixed(2)}` : '—'}</td>
     </tr>
@@ -330,15 +357,15 @@ Reply to this email to respond to the customer.
   </tbody>
   <tfoot>
     <tr>
-      <td colspan="4" style="border: 1px solid #ddd; padding: 8px;">Subtotal</td>
+      <td colspan="4" style="border: 1px solid #ddd; padding: 8px; text-align: right;">Subtotal</td>
       <td style="border: 1px solid #ddd; padding: 8px; text-align: right;">¥${checkResult.subtotalCny.toFixed(2)}</td>
     </tr>
     <tr>
-      <td colspan="4" style="border: 1px solid #ddd; padding: 8px;">Shipping</td>
+      <td colspan="4" style="border: 1px solid #ddd; padding: 8px; text-align: right;">Shipping</td>
       <td style="border: 1px solid #ddd; padding: 8px; text-align: right;">$${shippingUsd.toFixed(2)} USD</td>
     </tr>
     <tr style="font-weight: bold;">
-      <td colspan="4" style="border: 1px solid #ddd; padding: 8px;">Estimated Total (with 20% buffer)</td>
+      <td colspan="4" style="border: 1px solid #ddd; padding: 8px; text-align: right;">Estimated Total (with 20% buffer)</td>
       <td style="border: 1px solid #ddd; padding: 8px; text-align: right;">¥${estimatedTotalCny.toFixed(2)}</td>
     </tr>
   </tfoot>
