@@ -9,6 +9,9 @@ import {
   updateShopDisplayCityDynamoDB,
   upsertEventWithStoreDynamoDB,
   deleteOldEventsDynamoDB,
+  getLastStaleCleanupTimeDynamoDB,
+  setLastStaleCleanupTimeDynamoDB,
+  cleanupStaleEventsDynamoDB,
 } from './dynamodb.js';
 
 // Unified database interface
@@ -682,6 +685,26 @@ export function clearPhotonQueue(itemIds: number[]): void {
   } else {
     throw new Error('clearPhotonQueue not implemented for PostgreSQL yet');
   }
+}
+
+// Check if stale event cleanup should run (once per day)
+export async function shouldRunStaleCleanup(): Promise<boolean> {
+  if (!useDynamoDB()) return false;
+
+  const lastRun = await getLastStaleCleanupTimeDynamoDB();
+  if (!lastRun) return true;
+
+  const hoursSinceLastRun = (Date.now() - new Date(lastRun).getTime()) / (1000 * 60 * 60);
+  return hoursSinceLastRun >= 24;
+}
+
+// Remove upcoming events that no longer appear in the upstream API
+export async function cleanupStaleEvents(seenExternalIds: Set<string>): Promise<number> {
+  if (!useDynamoDB()) return 0;
+
+  const deleted = await cleanupStaleEventsDynamoDB(seenExternalIds);
+  await setLastStaleCleanupTimeDynamoDB(new Date().toISOString());
+  return deleted;
 }
 
 export async function closePool(): Promise<void> {

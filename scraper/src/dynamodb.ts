@@ -6,6 +6,7 @@ import {
   QueryCommand,
   DeleteCommand,
   BatchWriteCommand,
+  ScanCommand,
 } from '@aws-sdk/lib-dynamodb';
 import geohash from 'ngeohash';
 import { env } from './config.js';
@@ -524,6 +525,88 @@ export async function deleteOldEventsDynamoDB(daysOld = 60): Promise<number> {
       }
     }
   }
+
+  return deletedCount;
+}
+
+// Get the last time stale event cleanup ran
+export async function getLastStaleCleanupTimeDynamoDB(): Promise<string | null> {
+  const client = getDynamoClient();
+  const tableName = getTableName();
+
+  const response = await client.send(new GetCommand({
+    TableName: tableName,
+    Key: { PK: 'CONFIG#STALE_CLEANUP', SK: 'CONFIG#STALE_CLEANUP' },
+  }));
+
+  return (response.Item?.lastRunAt as string) ?? null;
+}
+
+// Record that stale event cleanup ran
+export async function setLastStaleCleanupTimeDynamoDB(timestamp: string): Promise<void> {
+  const client = getDynamoClient();
+  const tableName = getTableName();
+
+  await client.send(new PutCommand({
+    TableName: tableName,
+    Item: {
+      PK: 'CONFIG#STALE_CLEANUP',
+      SK: 'CONFIG#STALE_CLEANUP',
+      entityType: 'CONFIG',
+      lastRunAt: timestamp,
+    },
+  }));
+}
+
+// Remove upcoming events that no longer appear in the upstream API
+export async function cleanupStaleEventsDynamoDB(seenExternalIds: Set<string>): Promise<number> {
+  const client = getDynamoClient();
+  const tableName = getTableName();
+  const today = new Date().toISOString();
+
+  // Scan for all EVENT items with startDate >= today
+  let deletedCount = 0;
+  let lastEvaluatedKey: Record<string, unknown> | undefined;
+
+  do {
+    const response = await client.send(new ScanCommand({
+      TableName: tableName,
+      FilterExpression: 'entityType = :et AND startDate >= :today',
+      ExpressionAttributeValues: {
+        ':et': 'EVENT',
+        ':today': today,
+      },
+      ProjectionExpression: 'PK, SK, externalId, #n',
+      ExpressionAttributeNames: { '#n': 'name' },
+      ExclusiveStartKey: lastEvaluatedKey,
+    }));
+
+    if (response.Items) {
+      const staleItems = response.Items.filter(
+        item => !seenExternalIds.has(item.externalId as string)
+      );
+
+      // Delete in batches of 25
+      for (let i = 0; i < staleItems.length; i += 25) {
+        const batch = staleItems.slice(i, i + 25);
+        await client.send(new BatchWriteCommand({
+          RequestItems: {
+            [tableName]: batch.map(item => ({
+              DeleteRequest: {
+                Key: { PK: item.PK, SK: item.SK },
+              },
+            })),
+          },
+        }));
+        for (const item of batch) {
+          console.log(`  Removed stale event: ${item.name} (${item.externalId})`);
+        }
+        deletedCount += batch.length;
+      }
+    }
+
+    lastEvaluatedKey = response.LastEvaluatedKey as Record<string, unknown> | undefined;
+  } while (lastEvaluatedKey);
 
   return deletedCount;
 }

@@ -6,6 +6,8 @@ import {
   upsertEventWithStore,
   updateShopDisplayCity,
   deleteOldEvents,
+  shouldRunStaleCleanup,
+  cleanupStaleEvents,
   UpsertShopResult,
   getPhotonQueue,
   clearPhotonQueue,
@@ -111,6 +113,7 @@ async function runDistributedScrape(): Promise<{ found: number; created: number 
   let totalStores = 0;
   let totalCitiesGeocoded = 0;
   const storesSeen = new Set<string>();
+  const eventIdsSeen = new Set<string>();
   let currentPage = 1;
 
   // Queue of shops that need city geocoding
@@ -131,6 +134,7 @@ async function runDistributedScrape(): Promise<{ found: number; created: number 
       let pageSkipped = 0;
 
       for (const event of events) {
+        eventIdsSeen.add(event.externalId);
         const result = await upsertEventWithStore(event, event.storeInfo);
         if (result.created) {
           pageCreated++;
@@ -198,6 +202,21 @@ async function runDistributedScrape(): Promise<{ found: number; created: number 
     // Clean up old events (more than 60 days past)
     const deletedCount = await deleteOldEvents(60);
 
+    // Once per day, remove upcoming events that disappeared from the API (cancelled/removed)
+    let staleCount = 0;
+    if (eventIdsSeen.size > 0) {
+      const shouldCleanup = await shouldRunStaleCleanup();
+      if (shouldCleanup) {
+        console.log(`\nRunning stale event cleanup (${eventIdsSeen.size} events seen in API)...`);
+        staleCount = await cleanupStaleEvents(eventIdsSeen);
+        if (staleCount > 0) {
+          console.log(`Removed ${staleCount} stale events no longer in API`);
+        } else {
+          console.log('No stale events found');
+        }
+      }
+    }
+
     console.log(`\n========================================`);
     console.log(`Distributed scrape completed`);
     console.log(`  Total events found: ${totalFound}`);
@@ -214,6 +233,9 @@ async function runDistributedScrape(): Promise<{ found: number; created: number 
     console.log(`  Pages fetched: ${currentPage}`);
     if (deletedCount > 0) {
       console.log(`  Old events deleted: ${deletedCount}`);
+    }
+    if (staleCount > 0) {
+      console.log(`  Stale events removed: ${staleCount}`);
     }
     console.log(`========================================\n`);
 

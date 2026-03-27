@@ -18,6 +18,8 @@ import {
   upsertEventWithStore,
   updateShopDisplayCity,
   deleteOldEvents,
+  shouldRunStaleCleanup,
+  cleanupStaleEvents,
   UpsertShopResult,
 } from './database.js';
 import { fetchEventsPage, getEventCount } from './api.js';
@@ -71,6 +73,7 @@ export async function handler(
   let totalStores = 0;
   let totalCitiesGeocoded = 0;
   const storesSeen = new Set<string>();
+  const eventIdsSeen = new Set<string>();
   const shopsToGeocode: UpsertShopResult[] = [];
 
   try {
@@ -107,6 +110,7 @@ export async function handler(
 
       // Process events from this page
       for (const event of events) {
+        eventIdsSeen.add(event.externalId);
         const result = await upsertEventWithStore(event, event.storeInfo);
         if (result.created) {
           totalCreated++;
@@ -173,6 +177,21 @@ export async function handler(
       deletedCount = await deleteOldEvents(60);
     }
 
+    // Once per day, remove upcoming events that disappeared from the API (cancelled/removed)
+    let staleCount = 0;
+    if (eventIdsSeen.size > 0 && context.getRemainingTimeInMillis() > 30000) {
+      const shouldCleanup = await shouldRunStaleCleanup();
+      if (shouldCleanup) {
+        console.log(`Running stale event cleanup (${eventIdsSeen.size} events seen in API)...`);
+        staleCount = await cleanupStaleEvents(eventIdsSeen);
+        if (staleCount > 0) {
+          console.log(`Removed ${staleCount} stale events no longer in API`);
+        } else {
+          console.log('No stale events found');
+        }
+      }
+    }
+
     const skipRate = totalFound > 0 ? Math.round((totalSkipped / totalFound) * 100) : 0;
     const durationMs = Date.now() - startTime;
     const summary = {
@@ -186,6 +205,7 @@ export async function handler(
       citiesGeocoded: totalCitiesGeocoded,
       pagesProcessed: currentPage,
       deleted: deletedCount,
+      staleRemoved: staleCount,
       durationMs,
     };
 
