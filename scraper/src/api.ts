@@ -1,7 +1,7 @@
 import type { ScrapedEvent } from './database.js';
 
 const API_BASE = 'https://api.cloudflare.riftbound.uvsgames.com/hydraproxy/api/v2';
-const PAGE_SIZE = 1000;
+const PAGE_SIZE = 250; // API caps at 250 regardless of requested size
 const DAYS_FORWARD = 90; // Only fetch events within 90 days
 
 // API response types
