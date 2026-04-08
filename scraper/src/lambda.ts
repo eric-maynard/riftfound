@@ -22,7 +22,7 @@ import {
   cleanupStaleEvents,
   UpsertShopResult,
 } from './database.js';
-import { fetchEventsPage, getEventCount } from './api.js';
+import { fetchEventsPage, fetchEventTemplates, getEventCount } from './api.js';
 import { reverseGeocodeCity } from './geocoding.js';
 
 const cloudwatch = new CloudWatchClient({});
@@ -77,6 +77,9 @@ export async function handler(
   const shopsToGeocode: UpsertShopResult[] = [];
 
   try {
+    // Fetch event configuration templates for category mapping
+    await fetchEventTemplates();
+
     // Get total count to know how many pages we need
     const { total: totalExpected, pageCount } = await getEventCount();
     console.log(`API reports ${totalExpected} upcoming events (~${pageCount} pages)`);

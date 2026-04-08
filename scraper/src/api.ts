@@ -35,6 +35,7 @@ interface ApiEvent {
   registered_user_count: number;
   full_header_image_url: string | null;
   store: ApiStore;
+  event_configuration_template: string | null;
 }
 
 interface ApiResponse {
@@ -95,6 +96,52 @@ function inferEventCategory(name: string, description: string | null): string {
   return 'Other';
 }
 
+// Map from template UUID to event category (only Summoner Skirmish / Nexus Night)
+let templateCategoryMap: Map<string, string> = new Map();
+
+function categoryFromTemplateName(templateName: string): string | null {
+  const lower = templateName.toLowerCase();
+  if (lower.includes('summoner skirmish')) return 'Summoner Skirmish';
+  if (lower.includes('nexus night')) return 'Nexus Night';
+  return null;
+}
+
+/**
+ * Fetch event configuration templates and build a UUID → category map.
+ * Only maps templates whose name matches Summoner Skirmish or Nexus Night.
+ */
+export async function fetchEventTemplates(): Promise<void> {
+  try {
+    const url = `${API_BASE}/event-configuration-templates/?game_slug=riftbound`;
+    const response = await fetch(url, {
+      headers: {
+        'User-Agent': 'Riftfound/1.0 (Event Aggregator)',
+        'Accept': 'application/json',
+      },
+    });
+
+    if (!response.ok) {
+      console.warn(`Failed to fetch event templates: HTTP ${response.status}`);
+      return;
+    }
+
+    const templates: { id: string; name: string }[] = await response.json();
+    const map = new Map<string, string>();
+
+    for (const t of templates) {
+      const category = categoryFromTemplateName(t.name);
+      if (category) {
+        map.set(t.id, category);
+      }
+    }
+
+    templateCategoryMap = map;
+    console.log(`Loaded ${map.size} event template categories (${templates.length} templates total)`);
+  } catch (error) {
+    console.warn('Failed to fetch event templates, falling back to name inference:', error);
+  }
+}
+
 function convertApiEvent(apiEvent: ApiEvent): ScrapedEvent & { storeInfo: ApiStore } {
   const startDate = new Date(apiEvent.start_datetime);
   const endDate = apiEvent.end_datetime ? new Date(apiEvent.end_datetime) : null;
@@ -116,7 +163,8 @@ function convertApiEvent(apiEvent: ApiEvent): ScrapedEvent & { storeInfo: ApiSto
     startDate,
     startTime: null, // Frontend will convert from UTC startDate to local time
     endDate,
-    eventType: inferEventCategory(apiEvent.name, apiEvent.description),
+    eventType: (apiEvent.event_configuration_template && templateCategoryMap.get(apiEvent.event_configuration_template))
+      || inferEventCategory(apiEvent.name, apiEvent.description),
     organizer: apiEvent.store?.name || null,
     playerCount: apiEvent.registered_user_count,
     capacity: apiEvent.capacity,

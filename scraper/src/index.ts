@@ -12,7 +12,7 @@ import {
   getPhotonQueue,
   clearPhotonQueue,
 } from './database.js';
-import { fetchEventsPage, getEventCount } from './api.js';
+import { fetchEventsPage, fetchEventTemplates, getEventCount } from './api.js';
 import { env } from './config.js';
 import { reverseGeocodeCity } from './geocoding.js';
 import { execSync } from 'child_process';
@@ -82,6 +82,9 @@ async function runDistributedScrape(): Promise<{ found: number; created: number 
 
   // Process any queued Photon imports from previous searches/scrapes
   await processPhotonQueue();
+
+  // Fetch event configuration templates for category mapping
+  await fetchEventTemplates();
 
   // Get total count and pages needed
   const { total: totalExpected, pageCount } = await getEventCount();
