@@ -141,6 +141,7 @@ function saveCachedEvents(events: Event[], tooMany: boolean): void {
 interface Settings {
   weekStartsOnMonday: boolean;
   useKilometers: boolean;
+  showFullEvents: boolean;
   location?: {
     lat: number;
     lng: number;
@@ -153,6 +154,7 @@ interface Settings {
 const DEFAULT_SETTINGS: Settings = {
   weekStartsOnMonday: false,
   useKilometers: false,
+  showFullEvents: true,
 };
 
 function loadSettings(): Settings {
@@ -544,6 +546,15 @@ function CalendarPage() {
     });
   }, []);
 
+  // Toggle show full events setting
+  const handleToggleShowFullEvents = useCallback(() => {
+    setSettings(prev => {
+      const updated = { ...prev, showFullEvents: !prev.showFullEvents };
+      saveSettings(updated);
+      return updated;
+    });
+  }, []);
+
   // Handle share button click - copy shareable URL to clipboard
   const handleShare = useCallback(async () => {
     const url = buildShareableURL(appliedFilters);
@@ -584,8 +595,17 @@ function CalendarPage() {
     setSearchTrigger(t => t + 1);
   }, [stagedFilters]);
 
+  // Filter out full events if setting is off
+  const isEventFull = (event: Event): boolean =>
+    event.capacity != null && event.capacity > 0 &&
+    event.playerCount != null && event.playerCount >= event.capacity;
+
+  const displayEvents = settings.showFullEvents
+    ? events
+    : events.filter(event => !isEventFull(event));
+
   // Convert events to FullCalendar format
-  const calendarEvents: CalendarEvent[] = events.map((event) => {
+  const calendarEvents: CalendarEvent[] = displayEvents.map((event) => {
     const color = EVENT_COLORS[event.eventType || 'Other'] || EVENT_COLORS['Other'];
     return {
       id: event.id,
@@ -620,7 +640,7 @@ function CalendarPage() {
   // Get events for a specific date, sorted by start time then ID
   const getEventsForDate = useCallback((date: Date): Event[] => {
     const dateStr = date.toISOString().split('T')[0];
-    return events
+    return displayEvents
       .filter((event) => {
         const eventDate = new Date(event.startDate).toISOString().split('T')[0];
         return eventDate === dateStr;
@@ -631,7 +651,7 @@ function CalendarPage() {
         if (aTime !== bTime) return aTime - bTime;
         return a.id.localeCompare(b.id);
       });
-  }, [events]);
+  }, [displayEvents]);
 
   // Handle date click (on mobile, show day events modal)
   const handleDateClick = useCallback((info: DateClickArg) => {
@@ -794,6 +814,15 @@ function CalendarPage() {
                   type="checkbox"
                   checked={settings.useKilometers}
                   onChange={handleToggleUnits}
+                />
+                <span className="toggle-switch" />
+              </label>
+              <label className="settings-option">
+                <span>Show full events</span>
+                <input
+                  type="checkbox"
+                  checked={settings.showFullEvents}
+                  onChange={handleToggleShowFullEvents}
                 />
                 <span className="toggle-switch" />
               </label>
