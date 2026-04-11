@@ -845,7 +845,7 @@ function CalendarPage() {
           navLinks={isMobile}
           navLinkDayClick={handleNavLinkDayClick}
           headerToolbar={{
-            left: 'prev,next today',
+            left: 'prev,next',
             center: 'title',
             right: '',
           }}

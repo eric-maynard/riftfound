@@ -627,10 +627,6 @@ select:disabled {
   margin-bottom: 1rem;
 }
 
-.fc .fc-today-button {
-  display: none;
-}
-
 .fc .fc-toolbar-title {
   color: var(--color-text);
   font-size: 1.25rem;
