@@ -90,7 +90,8 @@ a:hover {
 
 .share-button,
 .settings-button {
-  display: flex;
+  display: none; /* TEMP: hiding to debug flash */
+  /* display: flex; */
   align-items: center;
   justify-content: center;
   width: 36px;
@@ -1186,6 +1187,13 @@ select:disabled {
   padding: 0.75rem 1rem;
   color: var(--color-error);
   margin-bottom: 1rem;
+}
+
+.price-disclaimer {
+  font-size: 0.875rem;
+  color: var(--color-yellow);
+  font-style: italic;
+  margin: 0.5rem 0;
 }
 
 .check-result {
