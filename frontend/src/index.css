@@ -90,8 +90,7 @@ a:hover {
 
 .share-button,
 .settings-button {
-  display: none; /* TEMP: hiding to debug flash */
-  /* display: flex; */
+  display: flex;
   align-items: center;
   justify-content: center;
   width: 36px;
@@ -238,7 +237,7 @@ a:hover {
 
 .updating-indicator {
   position: absolute;
-  top: 8px;
+  top: 48px;
   right: 8px;
   padding: 4px 10px;
   background-color: rgba(98, 114, 164, 0.9);
@@ -1252,5 +1251,140 @@ select:disabled {
 
   .dropship-form {
     padding: 1rem;
+  }
+}
+
+/* Dropship About Page */
+.dropship-about-page {
+  max-width: 1000px;
+  padding-top: 2rem;
+}
+
+.dropship-about-page h1 {
+  color: var(--color-text);
+  font-size: 1.75rem;
+  margin-bottom: 1.5rem;
+}
+
+.dropship-about-content {
+  background-color: var(--color-bg-secondary);
+  border: 1px solid var(--color-border);
+  border-radius: 0.5rem;
+  padding: 1.5rem;
+  margin-bottom: 1.5rem;
+  color: var(--color-text);
+  line-height: 1.7;
+}
+
+.dropship-about-content h2 {
+  color: var(--color-cyan);
+  font-size: 1.35rem;
+  margin-top: 2rem;
+  margin-bottom: 1rem;
+  border-bottom: 1px solid var(--color-border);
+  padding-bottom: 0.5rem;
+}
+
+.dropship-about-content h3 {
+  color: var(--color-text);
+  font-size: 1.1rem;
+  margin-top: 1.5rem;
+  margin-bottom: 0.75rem;
+}
+
+.dropship-about-content p {
+  margin-bottom: 1rem;
+}
+
+.dropship-about-content p:last-child {
+  margin-bottom: 0;
+}
+
+.dropship-about-content ul {
+  margin: 1rem 0;
+  padding-left: 1.5rem;
+}
+
+.dropship-about-content li {
+  margin-bottom: 0.5rem;
+}
+
+.dropship-about-content img {
+  max-width: 100%;
+  border-radius: 0.375rem;
+}
+
+.dropship-about-content figure {
+  margin: 0;
+}
+
+.dropship-about-content figcaption {
+  font-size: 0.8rem;
+  color: var(--color-text-muted);
+  text-align: center;
+  margin-top: 0.5rem;
+}
+
+.price-comparison {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+  margin: 1.5rem 0;
+}
+
+.price-comparison.stacked {
+  grid-template-columns: 1fr;
+  max-width: 600px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.dropship-about-cta {
+  text-align: center;
+  margin-top: 2rem;
+}
+
+.dropship-about-cta.inline {
+  margin: 1.5rem 0;
+}
+
+.dropship-about-cta .btn-primary {
+  display: inline-block;
+  padding: 0.75rem 2rem;
+  background-color: var(--color-cyan);
+  border: 1px solid var(--color-cyan);
+  border-radius: 0.375rem;
+  color: var(--color-bg);
+  font-size: 1rem;
+  font-weight: 600;
+  text-decoration: none;
+  transition: background-color 0.15s ease;
+}
+
+.dropship-about-cta .btn-primary:hover {
+  background-color: #6dd0e7;
+  border-color: #6dd0e7;
+  text-decoration: none;
+}
+
+@media (max-width: 600px) {
+  .dropship-about-page {
+    padding-top: 1rem;
+  }
+
+  .dropship-about-page h1 {
+    font-size: 1.5rem;
+  }
+
+  .dropship-about-content {
+    padding: 1rem;
+  }
+
+  .dropship-about-content h2 {
+    font-size: 1.2rem;
+  }
+
+  .price-comparison {
+    grid-template-columns: 1fr;
   }
 }
