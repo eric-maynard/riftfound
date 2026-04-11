@@ -235,16 +235,22 @@ a:hover {
   color: var(--color-text);
 }
 
-.updating-indicator {
-  position: absolute;
-  top: 48px;
-  right: 8px;
-  padding: 4px 10px;
-  background-color: rgba(98, 114, 164, 0.9);
-  color: var(--color-text);
-  font-size: 0.75rem;
-  border-radius: 4px;
-  z-index: 10;
+.fc .fc-updatingIndicator-button {
+  background: none !important;
+  border: none !important;
+  color: var(--color-text-muted) !important;
+  font-size: 0.75rem !important;
+  cursor: default !important;
+  padding: 0 0.5rem !important;
+  box-shadow: none !important;
+}
+
+.fc .fc-updatingIndicator-button:hover {
+  background: none !important;
+}
+
+.fc .fc-updatingIndicator-button:empty {
+  display: none;
 }
 
 /* Inputs */

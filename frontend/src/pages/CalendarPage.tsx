@@ -773,10 +773,6 @@ function CalendarPage() {
             <div>Loading events...</div>
           </div>
         )}
-        {isRefreshing && !loading && (
-          <div className="updating-indicator">Updating...</div>
-        )}
-
         <div className="settings-container" ref={settingsRef}>
           <button
             className="share-button"
@@ -844,8 +840,13 @@ function CalendarPage() {
           moreLinkClick={handleMoreLinkClick}
           navLinks={isMobile}
           navLinkDayClick={handleNavLinkDayClick}
+          customButtons={{
+            updatingIndicator: {
+              text: isRefreshing ? 'Updating...' : '',
+            },
+          }}
           headerToolbar={{
-            left: 'prev,next today',
+            left: 'prev,next today updatingIndicator',
             center: 'title',
             right: '',
           }}
