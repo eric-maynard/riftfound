@@ -20,6 +20,8 @@ interface EventFiltersProps {
   onSearch: (filtersOverride?: EventFilters) => void;
   availableFormats: string[];
   useKilometers?: boolean;
+  showFullEvents: boolean;
+  onToggleShowFullEvents: () => void;
 }
 
 const DISTANCE_VALUES = [5, 10, 25, 50, 100];
@@ -45,7 +47,7 @@ function filtersEqual(a: EventFilters, b: EventFilters): boolean {
   );
 }
 
-function EventFiltersComponent({ filters, appliedFilters, onFiltersChange, onSearch, availableFormats, useKilometers = false }: EventFiltersProps) {
+function EventFiltersComponent({ filters, appliedFilters, onFiltersChange, onSearch, availableFormats, useKilometers = false, showFullEvents, onToggleShowFullEvents }: EventFiltersProps) {
   const distanceOptions = getDistanceOptions(useKilometers);
   const [cityInput, setCityInput] = useState(filters.location?.displayName || '');
   const [suggestions, setSuggestions] = useState<GeocodeSuggestion[]>([]);
@@ -405,16 +407,26 @@ function EventFiltersComponent({ filters, appliedFilters, onFiltersChange, onSea
               </div>
             )}
           </div>
-          <a
-            href="#"
-            className="use-location-link"
-            onClick={(e) => {
-              e.preventDefault();
-              if (!loading) handleUseMyLocation();
-            }}
-          >
-            Use my current location
-          </a>
+          <div className="location-options-row">
+            <a
+              href="#"
+              className="use-location-link"
+              onClick={(e) => {
+                e.preventDefault();
+                if (!loading) handleUseMyLocation();
+              }}
+            >
+              Use my current location
+            </a>
+            <label className="hide-full-toggle">
+              <input
+                type="checkbox"
+                checked={!showFullEvents}
+                onChange={onToggleShowFullEvents}
+              />
+              <span>Hide full events</span>
+            </label>
+          </div>
         </div>
 
         <div className="filter-group search-group">

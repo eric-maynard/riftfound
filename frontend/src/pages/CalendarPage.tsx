@@ -750,6 +750,8 @@ function CalendarPage() {
           onSearch={handleSearch}
           availableFormats={AVAILABLE_FORMATS}
           useKilometers={settings.useKilometers}
+          showFullEvents={settings.showFullEvents}
+          onToggleShowFullEvents={handleToggleShowFullEvents}
         />
       </div>
 
@@ -814,15 +816,6 @@ function CalendarPage() {
                   type="checkbox"
                   checked={settings.useKilometers}
                   onChange={handleToggleUnits}
-                />
-                <span className="toggle-switch" />
-              </label>
-              <label className="settings-option">
-                <span>Show full events</span>
-                <input
-                  type="checkbox"
-                  checked={settings.showFullEvents}
-                  onChange={handleToggleShowFullEvents}
                 />
                 <span className="toggle-switch" />
               </label>
