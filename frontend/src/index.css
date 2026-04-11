@@ -504,7 +504,7 @@ select:disabled {
 }
 
 /* Hide full events toggle */
-.event-filters .hide-full-toggle {
+.event-filters .filter-group .hide-full-toggle {
   display: flex;
   align-items: center;
   gap: 0.375rem;
@@ -517,14 +517,14 @@ select:disabled {
   user-select: none;
 }
 
-.event-filters .hide-full-toggle input[type="checkbox"] {
+.event-filters .filter-group .hide-full-toggle input[type="checkbox"] {
   position: absolute;
   opacity: 0;
   width: 0;
   height: 0;
 }
 
-.event-filters .hide-full-toggle .toggle-switch {
+.event-filters .filter-group .hide-full-toggle .toggle-switch {
   position: relative;
   width: 28px;
   height: 16px;
@@ -534,7 +534,7 @@ select:disabled {
   flex-shrink: 0;
 }
 
-.event-filters .hide-full-toggle .toggle-switch::after {
+.event-filters .filter-group .hide-full-toggle .toggle-switch::after {
   content: '';
   position: absolute;
   top: 50%;
@@ -547,11 +547,11 @@ select:disabled {
   transition: left 0.2s;
 }
 
-.event-filters .hide-full-toggle input:checked + .toggle-switch {
+.event-filters .filter-group .hide-full-toggle input:checked + .toggle-switch {
   background-color: var(--color-cyan);
 }
 
-.event-filters .hide-full-toggle input:checked + .toggle-switch::after {
+.event-filters .filter-group .hide-full-toggle input:checked + .toggle-switch::after {
   left: 15px;
 }
 
