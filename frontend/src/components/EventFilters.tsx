@@ -407,26 +407,16 @@ function EventFiltersComponent({ filters, appliedFilters, onFiltersChange, onSea
               </div>
             )}
           </div>
-          <div className="location-options-row">
-            <a
-              href="#"
-              className="use-location-link"
-              onClick={(e) => {
-                e.preventDefault();
-                if (!loading) handleUseMyLocation();
-              }}
-            >
-              Use my current location
-            </a>
-            <label className="hide-full-toggle">
-              <input
-                type="checkbox"
-                checked={!showFullEvents}
-                onChange={onToggleShowFullEvents}
-              />
-              <span>Hide full events</span>
-            </label>
-          </div>
+          <a
+            href="#"
+            className="use-location-link"
+            onClick={(e) => {
+              e.preventDefault();
+              if (!loading) handleUseMyLocation();
+            }}
+          >
+            Use my current location
+          </a>
         </div>
 
         <div className="filter-group search-group">
@@ -440,6 +430,16 @@ function EventFiltersComponent({ filters, appliedFilters, onFiltersChange, onSea
           </button>
         </div>
       </div>
+
+      <label className="hide-full-toggle">
+        <input
+          type="checkbox"
+          checked={!showFullEvents}
+          onChange={onToggleShowFullEvents}
+        />
+        <span className="toggle-switch" />
+        <span>Hide full events</span>
+      </label>
 
       {error && <div className="filter-error">{error}</div>}
     </div>
