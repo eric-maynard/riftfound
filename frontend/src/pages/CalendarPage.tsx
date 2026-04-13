@@ -30,7 +30,7 @@ const AVAILABLE_FORMATS = ['Summoner Skirmish', 'Nexus Night', 'Pre-Rift', 'Othe
 const EVENT_COLORS: Record<string, string> = {
   'Nexus Night': '#bd93f9',      // Purple
   'Summoner Skirmish': '#ff79c6', // Pink
-  'Pre-Rift': '#a3be8c',          // Sage green
+  'Pre-Rift': '#73d393',          // Soft pastel green
   'Other': '#6272a4',             // Muted blue-grey
 };
 
