@@ -104,7 +104,7 @@ function EventTooltip({ event, position, isMobile, onClose }: EventTooltipProps)
             <span className="format-tag" style={{
               backgroundColor: event.eventType === 'Summoner Skirmish' ? '#ff79c6' :
                               event.eventType === 'Nexus Night' ? '#bd93f9' :
-                              event.eventType === 'Pre-Rift' ? '#50fa7b' : '#6272a4'
+                              event.eventType === 'Pre-Rift' ? '#a3be8c' : '#6272a4'
             }}>{event.eventType}</span>
           )}
 

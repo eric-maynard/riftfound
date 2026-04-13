@@ -13,7 +13,7 @@ interface DayEventsModalProps {
 const EVENT_COLORS: Record<string, string> = {
   'Nexus Night': '#bd93f9',
   'Summoner Skirmish': '#ff79c6',
-  'Pre-Rift': '#50fa7b',
+  'Pre-Rift': '#a3be8c',
   'Other': '#6272a4',
 };
 
