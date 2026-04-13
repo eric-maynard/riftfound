@@ -24,12 +24,13 @@ const DEFAULT_LOCATION = {
 const DEFAULT_DISTANCE_MILES = 25;
 
 // Event categories inferred from event names (Summoner Skirmish first)
-const AVAILABLE_FORMATS = ['Summoner Skirmish', 'Nexus Night', 'Other'];
+const AVAILABLE_FORMATS = ['Summoner Skirmish', 'Nexus Night', 'Pre-Rift', 'Other'];
 
 // Colors per event type (Dracula palette)
 const EVENT_COLORS: Record<string, string> = {
   'Nexus Night': '#bd93f9',      // Purple
   'Summoner Skirmish': '#ff79c6', // Pink
+  'Pre-Rift': '#50fa7b',          // Green
   'Other': '#6272a4',             // Muted blue-grey
 };
 

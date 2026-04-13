@@ -86,21 +86,26 @@ function parseCityFromAddress(fullAddress: string, storeCity: string | null, sto
   return storeCity;
 }
 
+const PRE_RIFT_RE = /pre[\s-]?rift/i;
+
 function inferEventCategory(name: string, description: string | null): string {
   // Infer category from event name and description
-  const text = `${name} ${description || ''}`.toLowerCase();
+  const text = `${name} ${description || ''}`;
+  const lower = text.toLowerCase();
 
-  if (text.includes('summoner skirmish')) return 'Summoner Skirmish';
-  if (text.includes('nexus night')) return 'Nexus Night';
+  if (PRE_RIFT_RE.test(text)) return 'Pre-Rift';
+  if (lower.includes('summoner skirmish')) return 'Summoner Skirmish';
+  if (lower.includes('nexus night')) return 'Nexus Night';
 
   return 'Other';
 }
 
-// Map from template UUID to event category (only Summoner Skirmish / Nexus Night)
+// Map from template UUID to event category
 let templateCategoryMap: Map<string, string> = new Map();
 
 function categoryFromTemplateName(templateName: string): string | null {
   const lower = templateName.toLowerCase();
+  if (PRE_RIFT_RE.test(templateName)) return 'Pre-Rift';
   if (lower.includes('summoner skirmish')) return 'Summoner Skirmish';
   if (lower.includes('nexus night')) return 'Nexus Night';
   return null;
@@ -108,7 +113,7 @@ function categoryFromTemplateName(templateName: string): string | null {
 
 /**
  * Fetch event configuration templates and build a UUID → category map.
- * Only maps templates whose name matches Summoner Skirmish or Nexus Night.
+ * Only maps templates whose name matches a known category.
  */
 export async function fetchEventTemplates(): Promise<void> {
   try {

@@ -4,6 +4,7 @@ import { useState, useRef, useEffect } from 'react';
 const TYPE_COLORS: Record<string, string> = {
   'Nexus Night': '#bd93f9',      // Purple
   'Summoner Skirmish': '#ff79c6', // Pink
+  'Pre-Rift': '#50fa7b',          // Green
   'Other': '#6272a4',             // Muted blue-grey
 };
 
