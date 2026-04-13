@@ -601,9 +601,24 @@ function CalendarPage() {
     event.capacity != null && event.capacity > 0 &&
     event.playerCount != null && event.playerCount >= event.capacity;
 
+  // Upstream sometimes has duplicate events (same store+name+time, different IDs).
+  // Collapse them, keeping the most recently created.
+  const dedupedEvents = (() => {
+    const groups = new Map<string, Event>();
+    for (const e of events) {
+      const shop = e.location || e.organizer || '';
+      const key = `${shop}|${e.name}|${e.startDate}`;
+      const existing = groups.get(key);
+      if (!existing || new Date(e.createdAt) > new Date(existing.createdAt)) {
+        groups.set(key, e);
+      }
+    }
+    return Array.from(groups.values());
+  })();
+
   const displayEvents = settings.showFullEvents
-    ? events
-    : events.filter(event => !isEventFull(event));
+    ? dedupedEvents
+    : dedupedEvents.filter(event => !isEventFull(event));
 
   // Convert events to FullCalendar format
   const calendarEvents: CalendarEvent[] = displayEvents.map((event) => {
