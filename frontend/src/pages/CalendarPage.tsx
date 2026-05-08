@@ -443,17 +443,16 @@ function CalendarPage() {
       format: appliedFilters.format,
     });
 
-    // Check in-memory cache - show cached data immediately but still fetch fresh
+    // Check in-memory cache - show cached data immediately, then refresh in background
     const cached = eventsCacheRef.current.get(cacheKey);
     if (cached) {
       console.log('Cache hit for:', cacheKey);
       setEvents(cached.events);
       setTooManyEvents(cached.tooMany);
       setLoading(false);
-      return; // In-memory cache is fresh enough, no need to refetch
+    } else {
+      console.log('Cache miss, fetching:', cacheKey);
     }
-
-    console.log('Cache miss, fetching:', cacheKey);
 
     async function fetchEvents() {
       const isUserSearch = isUserSearchRef.current;
