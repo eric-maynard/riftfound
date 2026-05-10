@@ -652,14 +652,15 @@ function CalendarPage() {
     setTooltipEvent(null);
   }, []);
 
-  // Get events for a specific date, sorted by start time then ID
+  // Get events for a specific date, sorted by start time then ID.
+  // Compare on local date components — FullCalendar buckets events by local
+  // day, so a UTC-date filter would mix in events from the wrong local day.
   const getEventsForDate = useCallback((date: Date): Event[] => {
-    const dateStr = date.toISOString().split('T')[0];
+    const localDateKey = (d: Date) =>
+      `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+    const dateStr = localDateKey(date);
     return displayEvents
-      .filter((event) => {
-        const eventDate = new Date(event.startDate).toISOString().split('T')[0];
-        return eventDate === dateStr;
-      })
+      .filter((event) => localDateKey(new Date(event.startDate)) === dateStr)
       .sort((a, b) => {
         const aTime = new Date(a.startDate).getTime();
         const bTime = new Date(b.startDate).getTime();
