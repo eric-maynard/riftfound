@@ -209,23 +209,20 @@ resource "aws_iam_role_policy" "lambda_cloudwatch_metrics" {
   })
 }
 
-resource "aws_iam_role_policy" "lambda_ses" {
+# Scraper self-invocation: coordinator invocation async-invokes N worker
+# invocations of the same function to shard pagination across concurrent runs.
+resource "aws_iam_role_policy" "lambda_self_invoke" {
   count = var.use_dynamodb ? 1 : 0
-  name  = "ses-send-email"
+  name  = "lambda-self-invoke"
   role  = aws_iam_role.lambda_role[0].id
 
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [
-      {
-        Effect = "Allow"
-        Action = [
-          "ses:SendEmail",
-          "ses:SendRawEmail"
-        ]
-        Resource = "*"
-      }
-    ]
+    Statement = [{
+      Effect   = "Allow"
+      Action   = "lambda:InvokeFunction"
+      Resource = "arn:aws:lambda:${var.aws_region}:*:function:riftfound-scraper-${var.environment}"
+    }]
   })
 }
 
@@ -248,13 +245,12 @@ resource "aws_lambda_function" "api" {
 
   environment {
     variables = {
-      NODE_ENV             = "production"
-      DB_TYPE              = "dynamodb"
-      DYNAMODB_TABLE_NAME  = aws_dynamodb_table.riftfound[0].name
-      PHOTON_ENABLED       = "false"  # No Photon in Lambda, use Mapbox
-      MAPBOX_ACCESS_TOKEN  = var.mapbox_access_token
+      NODE_ENV                            = "production"
+      DB_TYPE                             = "dynamodb"
+      DYNAMODB_TABLE_NAME                 = aws_dynamodb_table.riftfound[0].name
+      PHOTON_ENABLED                      = "false" # No Photon in Lambda, use Mapbox
+      MAPBOX_ACCESS_TOKEN                 = var.mapbox_access_token
       AWS_NODEJS_CONNECTION_REUSE_ENABLED = "1"
-      DROPSHIP_RECIPIENT_EMAIL = var.dropship_recipient_email
     }
   }
 
@@ -275,11 +271,11 @@ resource "aws_lambda_function_url" "api" {
   authorization_type = "NONE"
 
   cors {
-    allow_origins     = ["*"]
-    allow_methods     = ["*"]  # Use wildcard to avoid length constraints
-    allow_headers     = ["*"]
-    expose_headers    = ["*"]
-    max_age           = 3600
+    allow_origins  = ["*"]
+    allow_methods  = ["*"] # Use wildcard to avoid length constraints
+    allow_headers  = ["*"]
+    expose_headers = ["*"]
+    max_age        = 3600
   }
 }
 
@@ -293,8 +289,8 @@ resource "aws_lambda_function" "scraper" {
   role          = aws_iam_role.lambda_role[0].arn
   handler       = "lambda.handler"
   runtime       = "nodejs20.x"
-  timeout       = 900  # 15 minutes max
-  memory_size   = 1024
+  timeout       = 900 # 15 minutes max
+  memory_size   = 2048
 
   # Placeholder - actual code deployed separately
   filename         = "${path.module}/placeholder.zip"
@@ -302,11 +298,11 @@ resource "aws_lambda_function" "scraper" {
 
   environment {
     variables = {
-      NODE_ENV             = "production"
-      DB_TYPE              = "dynamodb"
-      DYNAMODB_TABLE_NAME  = aws_dynamodb_table.riftfound[0].name
-      PHOTON_ENABLED       = "false"  # No Photon in Lambda, use Mapbox
-      MAPBOX_ACCESS_TOKEN  = var.mapbox_access_token
+      NODE_ENV                            = "production"
+      DB_TYPE                             = "dynamodb"
+      DYNAMODB_TABLE_NAME                 = aws_dynamodb_table.riftfound[0].name
+      PHOTON_ENABLED                      = "false" # No Photon in Lambda, use Mapbox
+      MAPBOX_ACCESS_TOKEN                 = var.mapbox_access_token
       AWS_NODEJS_CONNECTION_REUSE_ENABLED = "1"
     }
   }
@@ -363,11 +359,11 @@ resource "aws_apigatewayv2_api" "main" {
   protocol_type = "HTTP"
 
   cors_configuration {
-    allow_origins     = ["*"]
-    allow_methods     = ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
-    allow_headers     = ["*"]
-    expose_headers    = ["*"]
-    max_age           = 3600
+    allow_origins  = ["*"]
+    allow_methods  = ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
+    allow_headers  = ["*"]
+    expose_headers = ["*"]
+    max_age        = 3600
   }
 
   tags = {
@@ -386,14 +382,14 @@ resource "aws_apigatewayv2_stage" "default" {
     destination_arn = aws_cloudwatch_log_group.api_gateway[0].arn
     format = jsonencode({
       requestId               = "$context.requestId"
-      sourceIp               = "$context.identity.sourceIp"
-      requestTime            = "$context.requestTime"
-      protocol               = "$context.protocol"
-      httpMethod             = "$context.httpMethod"
-      resourcePath           = "$context.resourcePath"
-      routeKey               = "$context.routeKey"
-      status                 = "$context.status"
-      responseLength         = "$context.responseLength"
+      sourceIp                = "$context.identity.sourceIp"
+      requestTime             = "$context.requestTime"
+      protocol                = "$context.protocol"
+      httpMethod              = "$context.httpMethod"
+      resourcePath            = "$context.resourcePath"
+      routeKey                = "$context.routeKey"
+      status                  = "$context.status"
+      responseLength          = "$context.responseLength"
       integrationErrorMessage = "$context.integrationErrorMessage"
     })
   }

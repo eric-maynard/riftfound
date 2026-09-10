@@ -33,6 +33,14 @@ cdk.context.json
 terraform.tfvars
 *.auto.tfvars
 
+# iykyk deployment (kept out of public repo for now)
+infrastructure/terraform/iykyk.tf
+infrastructure/terraform/iykyk_*.tf
+infrastructure/terraform/iykyk_user_data.sh
+infrastructure/terraform/iykyk_*.sh
+infrastructure/terraform/iykyk_*.ts
+infrastructure/terraform/iykyk_*.md
+
 # IDE
 .idea/
 .vscode/

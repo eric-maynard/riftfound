@@ -34,6 +34,11 @@ output "acm_validation_records" {
   }
 }
 
+output "route53_nameservers" {
+  description = "Paste these 4 nameservers into GoDaddy → Domain settings → Nameservers → 'I'll use my own nameservers' to activate Route53."
+  value       = var.use_route53 ? aws_route53_zone.riftfound[0].name_servers : null
+}
+
 output "godaddy_dns_instructions" {
   value = <<-EOT
 

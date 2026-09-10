@@ -52,6 +52,12 @@ variable "use_ec2" {
   default     = true
 }
 
+variable "use_route53" {
+  description = "Manage riftfound.com DNS in Route53 (apex + www ALIAS to CloudFront, ACM validation records). When enabled, update nameservers at the registrar to the aws_route53_zone.riftfound name servers."
+  type        = bool
+  default     = false
+}
+
 variable "mapbox_access_token" {
   description = "Mapbox access token for geocoding in Lambda functions"
   type        = string
@@ -59,8 +65,17 @@ variable "mapbox_access_token" {
   sensitive   = true
 }
 
-variable "dropship_recipient_email" {
-  description = "Email address to receive dropship requests"
+# Optional extra CloudFront origin. Left empty by default so the distribution
+# ignores it entirely; set both values in a private tfvars file to route a path
+# pattern to a custom HTTP origin (e.g. an EIP DNS name).
+variable "extra_origin_eip_name_tag" {
+  description = "Name tag of an EIP to add as an additional CloudFront origin (empty = disabled)"
+  type        = string
+  default     = ""
+}
+
+variable "extra_origin_path_pattern" {
+  description = "Path pattern routed to the extra origin (empty = disabled). Example: /foo/*"
   type        = string
   default     = ""
 }

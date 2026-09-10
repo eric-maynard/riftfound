@@ -86,8 +86,8 @@ resource "aws_iam_role" "riftfound_ec2" {
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
-      Action = "sts:AssumeRole"
-      Effect = "Allow"
+      Action    = "sts:AssumeRole"
+      Effect    = "Allow"
       Principal = { Service = "ec2.amazonaws.com" }
     }]
   })
@@ -198,10 +198,21 @@ resource "aws_eip" "riftfound" {
   tags     = { Name = "riftfound-eip" }
 }
 
+# Optional lookup for an additional EIP-backed origin. Toggled via
+# var.extra_origin_eip_name_tag; empty by default so this data source
+# is not evaluated.
+data "aws_eip" "extra_origin" {
+  count = var.extra_origin_eip_name_tag != "" ? 1 : 0
+  filter {
+    name   = "tag:Name"
+    values = [var.extra_origin_eip_name_tag]
+  }
+}
+
 # S3 Bucket for Frontend
 resource "aws_s3_bucket" "frontend" {
   bucket = "riftfound-frontend-${random_id.bucket_suffix.hex}"
-  tags = { Name = "riftfound-frontend" }
+  tags   = { Name = "riftfound-frontend" }
 }
 
 # S3 Bucket for CloudFront Logs
@@ -332,6 +343,21 @@ resource "aws_cloudfront_distribution" "main" {
     }
   }
 
+  # Optional extra origin (see var.extra_origin_*)
+  dynamic "origin" {
+    for_each = var.extra_origin_eip_name_tag != "" ? [1] : []
+    content {
+      domain_name = data.aws_eip.extra_origin[0].public_dns
+      origin_id   = "ExtraOrigin"
+      custom_origin_config {
+        http_port              = 80
+        https_port             = 443
+        origin_protocol_policy = "http-only"
+        origin_ssl_protocols   = ["TLSv1.2"]
+      }
+    }
+  }
+
   default_cache_behavior {
     allowed_methods        = ["GET", "HEAD", "OPTIONS"]
     cached_methods         = ["GET", "HEAD"]
@@ -360,6 +386,30 @@ resource "aws_cloudfront_distribution" "main" {
     }
   }
 
+  # Optional extra cache behavior (see var.extra_origin_*)
+  dynamic "ordered_cache_behavior" {
+    for_each = var.extra_origin_path_pattern != "" && var.extra_origin_eip_name_tag != "" ? [1] : []
+    content {
+      path_pattern           = var.extra_origin_path_pattern
+      allowed_methods        = ["DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"]
+      cached_methods         = ["GET", "HEAD"]
+      target_origin_id       = "ExtraOrigin"
+      viewer_protocol_policy = "redirect-to-https"
+      min_ttl                = 0
+      default_ttl            = 0
+      max_ttl                = 0
+      compress               = true
+      forwarded_values {
+        query_string = true
+        # CloudFront disallows Connection/Host/Upgrade in the legacy header
+        # whitelist — WebSocket upgrade is handled automatically for custom
+        # origins regardless of what's forwarded here.
+        headers = ["Origin", "Access-Control-Request-Headers", "Access-Control-Request-Method", "Authorization", "Sec-WebSocket-Key", "Sec-WebSocket-Version", "Sec-WebSocket-Protocol", "Sec-WebSocket-Extensions"]
+        cookies { forward = "all" }
+      }
+    }
+  }
+
   custom_error_response {
     error_code         = 403
     response_code      = 200
@@ -382,6 +432,6 @@ resource "aws_cloudfront_distribution" "main" {
     minimum_protocol_version = "TLSv1.2_2021"
   }
 
-  tags = { Name = "riftfound-cdn" }
+  tags       = { Name = "riftfound-cdn" }
   depends_on = [aws_acm_certificate.main]
 }
