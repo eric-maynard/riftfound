@@ -50,8 +50,6 @@ export const EntityPrefix = {
   GEOCACHE: 'GEOCACHE#',
   SCRAPE_RUN: 'SCRAPE_RUN',
   ZIPCODE: 'ZIPCODE#',
-  PRICE: 'PRICE#',
-  ORDER: 'ORDER#',
 } as const;
 
 // Helper to create event keys
@@ -117,31 +115,6 @@ export function zipcodeKeys(zipcode: string) {
   return {
     PK: `${EntityPrefix.ZIPCODE}${zipcode}`,
     SK: 'ZIPCODE',
-  };
-}
-
-// Helper to create price keys (normalized card name as key)
-export function priceKeys(cardName: string) {
-  const normalized = cardName.toLowerCase().trim();
-  return {
-    PK: `${EntityPrefix.PRICE}${normalized}`,
-    SK: 'PRICE',
-  };
-}
-
-// Helper to create order keys
-export function orderKeys(orderId: string) {
-  return {
-    PK: `${EntityPrefix.ORDER}${orderId}`,
-    SK: `${EntityPrefix.ORDER}${orderId}`,
-  };
-}
-
-// Helper to create order GSI1 keys (for listing orders by date)
-export function orderGSI1Keys(createdAt: string, orderId: string) {
-  return {
-    GSI1PK: 'ORDERS',
-    GSI1SK: `${createdAt}#${orderId}`,
   };
 }
 

@@ -33,10 +33,6 @@ const envSchema = z.object({
 
   // Geocoding - Mapbox API (optional, takes precedence over Photon)
   MAPBOX_ACCESS_TOKEN: z.string().optional(),
-
-  // Dropship email notifications (optional - logs to console if not set)
-  DROPSHIP_RECIPIENT_EMAIL: z.string().email().optional(),
-  DROPSHIP_SENDER_EMAIL: z.string().email().optional(), // Falls back to recipient if not set
 });
 
 export type Env = z.infer<typeof envSchema>;

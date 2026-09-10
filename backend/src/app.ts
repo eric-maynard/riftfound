@@ -5,7 +5,6 @@ import { errorHandler, notFoundHandler } from './middleware/errorHandler.js';
 import { generalLimiter } from './middleware/rateLimit.js';
 import eventsRouter from './routes/events.js';
 import healthRouter from './routes/health.js';
-import dropshipRouter from './routes/dropship.js';
 
 const app = express();
 
@@ -30,7 +29,6 @@ if (!isLambda) {
 // Routes
 app.use('/api/events', eventsRouter);
 app.use('/api/health', healthRouter);
-app.use('/api/dropship', dropshipRouter);
 
 // Error handling
 app.use(notFoundHandler);
