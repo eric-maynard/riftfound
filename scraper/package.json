@@ -14,6 +14,7 @@
   "dependencies": {
     "@aws-sdk/client-cloudwatch": "^3.972.0",
     "@aws-sdk/client-dynamodb": "^3.600.0",
+    "@aws-sdk/client-lambda": "^3.1129.0",
     "@aws-sdk/lib-dynamodb": "^3.600.0",
     "@types/ngeohash": "^0.6.8",
     "better-sqlite3": "^12.5.0",
