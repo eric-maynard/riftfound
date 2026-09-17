@@ -29,6 +29,15 @@ const envSchema = z.object({
   // Scraper
   SCRAPE_INTERVAL_MINUTES: z.string().transform(Number).default('60'),
 
+  // Second event source: Riot's official playriftbound API
+  PLAYRIFTBOUND_ENABLED: z.string().transform(v => v !== 'false').default('true'),
+  // Delay between playriftbound requests (polite rate limit, ~1 req/sec)
+  PLAYRIFTBOUND_REQUEST_DELAY_MS: z.string().transform(Number).default('1000'),
+  // Anchors swept per run; the rest roll over to later runs (see sources/playriftbound.ts)
+  PLAYRIFTBOUND_MAX_ANCHORS_PER_RUN: z.string().transform(Number).default('150'),
+  // Optional override for the persisted GraphQL query hash (normally self-healing)
+  PLAYRIFTBOUND_QUERY_HASH: z.string().optional(),
+
   // Geocoding - Photon (self-hosted)
   PHOTON_URL: z.string().default('http://localhost:2322'),
   PHOTON_ENABLED: z.string().transform(v => v !== 'false').default('true'),

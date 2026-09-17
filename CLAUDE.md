@@ -1,6 +1,11 @@
 # Riftfound
 
-Event calendar aggregator for Riftbound TCG events, scraped from https://locator.riftbound.uvsgames.com/
+Event calendar aggregator for Riftbound TCG events, scraped from two sources and merged:
+
+- **UVS Games** store locator API (https://locator.riftbound.uvsgames.com/)
+- **Riot's official playriftbound event API** (https://events.playriftbound.com/)
+
+See [scraper/CLAUDE.md](scraper/CLAUDE.md) for how the two sources are fetched and de-duplicated.
 
 ## Architecture
 
@@ -34,6 +39,13 @@ riftfound/
 - **Shops table**: Stores geocoded locations to avoid re-geocoding. Events reference shops via `shop_id`.
 - **Calendar mode**: API returns all events in 3-month window without pagination when `calendarMode=true`.
 - **Distance filtering**: Haversine formula. Frontend uses miles, backend uses km internally.
+- **Two event sources**: UVS Games (one global query, paginated) plus Riot's playriftbound API
+  (persisted GraphQL query; it clamps its distance filter to ~161km, so it is swept from many
+  anchor coordinates seeded by the UVS pass, in rotating batches). Matched on a location+time
+  de-duplication key, guarded by a price+category check, then **field-merged** so Riot's
+  authoritative event type and registration URL land on the incumbent UVS row.
+- **Sanitisation**: every free-text field from either source is stripped of HTML before it
+  reaches the database (`scraper/src/sanitize.ts`).
 
 ## Default Behavior
 
@@ -46,6 +58,9 @@ riftfound/
 Key vars (see `.env.example` for full list):
 - `DB_TYPE`: `sqlite`, `postgres`, or `dynamodb`
 - `MAPBOX_ACCESS_TOKEN`: Required for production geocoding (public token with default scopes)
+- `PLAYRIFTBOUND_ENABLED`: Enable Riot's playriftbound event source (default: `true`)
+- `PLAYRIFTBOUND_REQUEST_DELAY_MS`: Polite rate limit for playriftbound (default: `1000`)
+- `PLAYRIFTBOUND_QUERY_HASH`: Manual override for Riot's persisted query hash (normally self-healing)
 
 ## Deployment
 

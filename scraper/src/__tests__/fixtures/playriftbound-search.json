@@ -1,0 +1,183 @@
+{
+    "data": {
+        "__typename": "Query",
+        "competeTournamentSearch": {
+            "__typename": "CompeteTournamentSearchConnection",
+            "edges": [
+                {
+                    "__typename": "CompeteTournamentSearchEdge",
+                    "cursor": "REFURToxNzkwODk5MjAwOjExNzI0ODgyMDkzNDEwMDQ2Mg",
+                    "node": {
+                        "__typename": "RbTournamentSearchResult",
+                        "distanceMeters": 113119,
+                        "organizer": {
+                            "__typename": "OrganizerSummary",
+                            "id": "019ffd01-5760-75a4-8ddb-bb3705490b5b",
+                            "isFavorited": null,
+                            "name": "EbisuCollections ",
+                            "physicalAddress": {
+                                "__typename": "Location",
+                                "adminArea1": "CA",
+                                "city": "Gilroy",
+                                "formattedAddress": "8300 Arroyo Cir #240, Gilroy, CA 95020, USA",
+                                "latitude": 37.020373,
+                                "longitude": -121.56048120000001
+                            }
+                        },
+                        "tournament": {
+                            "__typename": "CompeteTournament",
+                            "config": {
+                                "__typename": "RiftboundTournamentConfig",
+                                "format": "CONSTRUCTED",
+                                "participantCapacity": 16,
+                                "playerFormat": "ONE_V_ONE",
+                                "tournamentType": "NEXUS_NIGHT"
+                            },
+                            "entryFee": {
+                                "__typename": "CompeteEntryFee",
+                                "currency": "USD",
+                                "minorUnits": 500
+                            },
+                            "id": "117248820934100462",
+                            "name": "Nexus Night x Ebisu Collections",
+                            "pricing": "PAID",
+                            "registrantCounts": [],
+                            "startsAt": "2026-10-02T00:00:00Z"
+                        }
+                    }
+                },
+                {
+                    "__typename": "CompeteTournamentSearchEdge",
+                    "cursor": "REFURToxNzkwOTAyODAwOjExNzIwOTQxMTg2MjE1NjI1Ng",
+                    "node": {
+                        "__typename": "RbTournamentSearchResult",
+                        "distanceMeters": 59337,
+                        "organizer": {
+                            "__typename": "OrganizerSummary",
+                            "id": "019fb060-8b51-7c92-acb8-1660b4ea853f",
+                            "isFavorited": null,
+                            "name": "Pokerecyclers",
+                            "physicalAddress": {
+                                "__typename": "Location",
+                                "adminArea1": "CA",
+                                "city": "Antioch",
+                                "formattedAddress": "806 W 3rd St, Antioch, CA 94509, USA",
+                                "latitude": 38.0162814,
+                                "longitude": -121.816311
+                            }
+                        },
+                        "tournament": {
+                            "__typename": "CompeteTournament",
+                            "config": {
+                                "__typename": "RiftboundTournamentConfig",
+                                "format": "CONSTRUCTED",
+                                "participantCapacity": 20,
+                                "playerFormat": "ONE_V_ONE",
+                                "tournamentType": "NEXUS_NIGHT"
+                            },
+                            "entryFee": {
+                                "__typename": "CompeteEntryFee",
+                                "currency": "USD",
+                                "minorUnits": 1500
+                            },
+                            "id": "117209411862156256",
+                            "name": "Pokerecyclers Weekly Bo3 Nexus Night",
+                            "pricing": "PAID",
+                            "registrantCounts": [],
+                            "startsAt": "2026-10-02T01:00:00Z"
+                        }
+                    }
+                },
+                {
+                    "__typename": "CompeteTournamentSearchEdge",
+                    "cursor": "REFURToxNzkwOTAyODAwOjExNzI1NDYzNzY2ODc5NjExMA",
+                    "node": {
+                        "__typename": "RbTournamentSearchResult",
+                        "distanceMeters": 97420,
+                        "organizer": {
+                            "__typename": "OrganizerSummary",
+                            "id": "01a001b6-74c1-78fa-94a2-35358b62252c",
+                            "isFavorited": null,
+                            "name": "Sword and Board Games",
+                            "physicalAddress": {
+                                "__typename": "Location",
+                                "adminArea1": "CA",
+                                "city": "Capitola",
+                                "formattedAddress": "1855 41st Ave ste j07, Capitola, CA 95010, USA",
+                                "latitude": 36.975980899999996,
+                                "longitude": -121.9668627
+                            }
+                        },
+                        "tournament": {
+                            "__typename": "CompeteTournament",
+                            "config": {
+                                "__typename": "RiftboundTournamentConfig",
+                                "format": "CONSTRUCTED",
+                                "participantCapacity": 32,
+                                "playerFormat": "ONE_V_ONE",
+                                "tournamentType": "NEXUS_NIGHT"
+                            },
+                            "entryFee": {
+                                "__typename": "CompeteEntryFee",
+                                "currency": "USD",
+                                "minorUnits": 1000
+                            },
+                            "id": "117254637668796110",
+                            "name": "Nexus Night at Sword and Board Games",
+                            "pricing": "PAID",
+                            "registrantCounts": [],
+                            "startsAt": "2026-10-02T01:00:00Z"
+                        }
+                    }
+                },
+                {
+                    "__typename": "CompeteTournamentSearchEdge",
+                    "cursor": "REFURToxNzkwOTAyODAwOjExNzI3Njk3ODYzOTAzNTk2OA",
+                    "node": {
+                        "__typename": "RbTournamentSearchResult",
+                        "distanceMeters": 37061,
+                        "organizer": {
+                            "__typename": "OrganizerSummary",
+                            "id": "019ffc9c-d559-772b-a118-d82235ebf696",
+                            "isFavorited": null,
+                            "name": "Games of Martinez",
+                            "physicalAddress": {
+                                "__typename": "Location",
+                                "adminArea1": "CA",
+                                "city": "Martinez",
+                                "formattedAddress": "1155 Arnold Dr, Martinez, CA 94553, USA",
+                                "latitude": 37.9948627,
+                                "longitude": -122.10211799999999
+                            }
+                        },
+                        "tournament": {
+                            "__typename": "CompeteTournament",
+                            "config": {
+                                "__typename": "RiftboundTournamentConfig",
+                                "format": "CONSTRUCTED",
+                                "participantCapacity": 32,
+                                "playerFormat": "ONE_V_ONE",
+                                "tournamentType": "NEXUS_NIGHT"
+                            },
+                            "entryFee": {
+                                "__typename": "CompeteEntryFee",
+                                "currency": "USD",
+                                "minorUnits": 1500
+                            },
+                            "id": "117276978639035968",
+                            "name": "Nexus Night at Games of Martinez",
+                            "pricing": "PAID",
+                            "registrantCounts": [],
+                            "startsAt": "2026-10-02T01:00:00Z"
+                        }
+                    }
+                }
+            ],
+            "pageInfo": {
+                "__typename": "PageInfo",
+                "endCursor": "REFURToxNzkwOTAyODAwOjExNzI3Njk3ODYzOTAzNTk2OA",
+                "hasNextPage": true
+            }
+        }
+    }
+}

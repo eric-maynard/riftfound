@@ -1,11 +1,13 @@
 import type { ScrapedEvent } from './database.js';
+import { sanitizeScrapedEvent, sanitizeStoreInfo } from './sanitize.js';
+import { SOURCE_UVS } from './merge.js';
 
 const API_BASE = 'https://api.cloudflare.riftbound.uvsgames.com/hydraproxy/api/v2';
 const PAGE_SIZE = 250; // API caps at 250 regardless of requested size
 const DAYS_FORWARD = 90; // Only fetch events within 90 days
 
 // API response types
-interface ApiStore {
+export interface ApiStore {
   id: number;
   name: string;
   full_address: string;
@@ -18,7 +20,7 @@ interface ApiStore {
   email: string | null;
 }
 
-interface ApiEvent {
+export interface ApiEvent {
   id: number;
   name: string;
   description: string | null;
@@ -47,11 +49,18 @@ interface ApiResponse {
   results: ApiEvent[];
 }
 
+/** A UVS Games event in the scraper's unified shape, with its store attached. */
+export type UvsEvent = ScrapedEvent & { storeInfo: ApiStore };
+
 function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-function formatPrice(cents: number, currency: string): string {
+/**
+ * Format a price for display. Shared with the playriftbound source so both
+ * sources produce identical price strings ('Free', '$15.00').
+ */
+export function formatPrice(cents: number, currency: string): string {
   if (cents === 0) return 'Free';
   const dollars = cents / 100;
   const symbol = currency === 'USD' ? '$' : currency === 'EUR' ? '€' : currency === 'GBP' ? '£' : '';
@@ -147,14 +156,16 @@ export async function fetchEventTemplates(): Promise<void> {
   }
 }
 
-function convertApiEvent(apiEvent: ApiEvent): ScrapedEvent & { storeInfo: ApiStore } {
+export function convertApiEvent(apiEvent: ApiEvent): ScrapedEvent & { storeInfo: ApiStore } {
   const startDate = new Date(apiEvent.start_datetime);
   const endDate = apiEvent.end_datetime ? new Date(apiEvent.end_datetime) : null;
 
   // Store time as null - frontend will extract from startDate ISO string
   // This avoids timezone conversion issues with server locale
 
-  return {
+  // Store owners type these fields themselves, so strip any markup before the
+  // record is compared, merged or written anywhere (see sanitize.ts).
+  return sanitizeScrapedEvent({
     externalId: String(apiEvent.id),
     name: apiEvent.name,
     description: apiEvent.description,
@@ -176,9 +187,10 @@ function convertApiEvent(apiEvent: ApiEvent): ScrapedEvent & { storeInfo: ApiSto
     price: formatPrice(apiEvent.cost_in_cents, apiEvent.currency),
     url: null, // API doesn't provide event URL
     imageUrl: apiEvent.full_header_image_url,
+    sources: [SOURCE_UVS],
     // Include store info for upsert
-    storeInfo: apiEvent.store,
-  };
+    storeInfo: sanitizeStoreInfo(apiEvent.store),
+  });
 }
 
 /**

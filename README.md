@@ -76,6 +76,13 @@ npm test              # Run all tests (Vitest)
 - **Geocoding**: Mapbox API (primary) with self-hosted Photon (OSM-based) as fallback for dev.
 - **Shops table**: Geocoded store locations, events reference via `shop_id`
 - **Scraper**: Runs every 60min cycle, fetches all ~30k events with requests distributed evenly across the cycle to avoid rate limiting
+- **Event sources**: Two, merged and de-duplicated by location + start time:
+  - UVS Games store locator API (one global query, paginated across the cycle)
+  - Riot's official playriftbound API, which adds authoritative event types and
+    registration links. It clamps every search to a ~161km radius around a
+    coordinate, so there is no global query - the scraper sweeps anchors seeded
+    from known event locations, a rotating batch per run at ~1 request/second.
+    See [scraper/CLAUDE.md](scraper/CLAUDE.md).
 
 ## Deployment
 

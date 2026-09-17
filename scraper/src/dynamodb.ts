@@ -7,10 +7,12 @@ import {
   DeleteCommand,
   BatchWriteCommand,
   ScanCommand,
+  UpdateCommand,
 } from '@aws-sdk/lib-dynamodb';
 import geohash from 'ngeohash';
 import { env } from './config.js';
 import type { ScrapedEvent, StoreInfo, UpsertEventResult, UpsertShopResult } from './database.js';
+import { preserveMergedFields, type MergeOwnedFields } from './merge.js';
 
 // DynamoDB client singleton
 let docClient: DynamoDBDocumentClient | null = null;
@@ -116,6 +118,8 @@ interface DynamoEventItem {
   price: string | null;
   url: string | null;
   imageUrl: string | null;
+  /** Contributing source(s): ['uvs'], ['playriftbound'] or both when field-merged. */
+  sources: string[] | null;
   shopId: number | null;
   shopExternalId: number | null;
   shopName: string | null;
@@ -183,6 +187,7 @@ function hasEventChanged(existing: DynamoEventItem, newItem: DynamoEventItem): b
     existing.capacity !== newItem.capacity ||
     existing.price !== newItem.price ||
     existing.url !== newItem.url ||
+    (existing.sources ?? []).join(',') !== (newItem.sources ?? []).join(',') ||
     existing.shopId !== newItem.shopId ||
     existing.shopName !== newItem.shopName ||
     existing.shopLatitude !== newItem.shopLatitude ||
@@ -417,7 +422,7 @@ export async function upsertEventWithStoreDynamoDB(
     ? geohash.encode(storeInfo.latitude, storeInfo.longitude, 3)
     : undefined;
 
-  const item: DynamoEventItem = {
+  let item: DynamoEventItem = {
     ...eventKeysVal,
     ...gsi1Keys,
     ...gsi2Keys,
@@ -443,6 +448,7 @@ export async function upsertEventWithStoreDynamoDB(
     price: event.price ?? null,
     url: event.url ?? null,
     imageUrl: event.imageUrl ?? null,
+    sources: event.sources?.length ? event.sources : null,
     shopId: storeInfo?.id ?? null,
     shopExternalId: storeInfo?.id ?? null,
     shopName: storeInfo?.name ?? null,
@@ -453,6 +459,12 @@ export async function upsertEventWithStoreDynamoDB(
     scrapedAt: now,
     ttl,
   };
+
+  // A row the playriftbound pass field-merged stays merged when the UVS pass
+  // re-writes it; otherwise every UVS cycle reverts the merge (see merge.ts).
+  if (existingEvent) {
+    item = preserveMergedFields(item, existingEvent, item.startDate);
+  }
 
   // Skip write if nothing changed (saves WCUs)
   if (!isNew && existingEvent && !hasEventChanged(existingEvent, item)) {
@@ -559,7 +571,10 @@ export async function setLastStaleCleanupTimeDynamoDB(timestamp: string): Promis
 }
 
 // Remove upcoming events that no longer appear in the upstream API
-export async function cleanupStaleEventsDynamoDB(seenExternalIds: Set<string>): Promise<number> {
+export async function cleanupStaleEventsDynamoDB(
+  seenExternalIds: Set<string>,
+  protectedExternalIdPrefixes: string[] = []
+): Promise<number> {
   const client = getDynamoClient();
   const tableName = getTableName();
   const today = new Date().toISOString();
@@ -582,9 +597,12 @@ export async function cleanupStaleEventsDynamoDB(seenExternalIds: Set<string>): 
     }));
 
     if (response.Items) {
-      const staleItems = response.Items.filter(
-        item => !seenExternalIds.has(item.externalId as string)
-      );
+      const staleItems = response.Items.filter(item => {
+        const externalId = item.externalId as string;
+        if (seenExternalIds.has(externalId)) return false;
+        // Never delete events from a source that did not run this cycle
+        return !protectedExternalIdPrefixes.some(prefix => externalId.startsWith(prefix));
+      });
 
       // Delete in batches of 25
       for (let i = 0; i < staleItems.length; i += 25) {
@@ -623,4 +641,129 @@ export async function getShopByExternalIdDynamoDB(externalId: number): Promise<D
   }));
 
   return response.Item as DynamoShopItem | null;
+}
+
+/** The subset of a stored event needed to seed and de-duplicate the playriftbound pass. */
+export interface StoredEventSummary extends MergeOwnedFields {
+  externalId: string;
+  name: string;
+  latitude: number | null;
+  longitude: number | null;
+  startDate: Date;
+}
+
+/**
+ * Load every stored event starting from yesterday up to `daysForward` days out,
+ * via the GSI1 date partitions (one Query per day, a few in parallel).
+ *
+ * The sharded Lambda scraper has no single invocation that sees the whole UVS
+ * feed, so the playriftbound invocation reads the UVS rows back from the table
+ * instead of collecting them in memory.
+ */
+export async function loadUpcomingEventsDynamoDB(daysForward: number): Promise<StoredEventSummary[]> {
+  const client = getDynamoClient();
+  const tableName = getTableName();
+
+  const dates: string[] = [];
+  const day = new Date();
+  day.setUTCDate(day.getUTCDate() - 1);
+  for (let i = 0; i <= daysForward + 2; i++) {
+    dates.push(day.toISOString().split('T')[0]);
+    day.setUTCDate(day.getUTCDate() + 1);
+  }
+
+  const results: StoredEventSummary[] = [];
+  const CONCURRENCY = 8;
+
+  const loadDate = async (date: string) => {
+    let lastEvaluatedKey: Record<string, unknown> | undefined;
+    do {
+      const response = await client.send(new QueryCommand({
+        TableName: tableName,
+        IndexName: 'GSI1',
+        KeyConditionExpression: 'GSI1PK = :pk',
+        ExpressionAttributeValues: { ':pk': `DATE#${date}` },
+        ProjectionExpression:
+          'externalId, #name, latitude, longitude, startDate, eventType, #url, playerCount, capacity, price, sources',
+        ExpressionAttributeNames: { '#url': 'url', '#name': 'name' },
+        ExclusiveStartKey: lastEvaluatedKey,
+      }));
+      for (const item of response.Items ?? []) {
+        if (typeof item.externalId !== 'string' || typeof item.startDate !== 'string') continue;
+        results.push({
+          externalId: item.externalId,
+          name: (item.name as string) ?? '',
+          latitude: (item.latitude as number | null) ?? null,
+          longitude: (item.longitude as number | null) ?? null,
+          startDate: new Date(item.startDate),
+          eventType: (item.eventType as string | null) ?? null,
+          url: (item.url as string | null) ?? null,
+          playerCount: (item.playerCount as number | null) ?? null,
+          capacity: (item.capacity as number | null) ?? null,
+          price: (item.price as string | null) ?? null,
+          sources: (item.sources as string[] | null) ?? null,
+        });
+      }
+      lastEvaluatedKey = response.LastEvaluatedKey as Record<string, unknown> | undefined;
+    } while (lastEvaluatedKey);
+  };
+
+  for (let i = 0; i < dates.length; i += CONCURRENCY) {
+    await Promise.all(dates.slice(i, i + CONCURRENCY).map(loadDate));
+  }
+
+  return results;
+}
+
+/**
+ * Write only the field-merge-owned attributes onto an existing event row.
+ * Never creates a row: if the UVS row vanished in the meantime this is a no-op.
+ */
+export async function applyMergedEventFieldsDynamoDB(
+  externalId: string,
+  changes: Partial<MergeOwnedFields>
+): Promise<boolean> {
+  const entries = Object.entries(changes);
+  if (entries.length === 0) return false;
+
+  const names: Record<string, string> = {};
+  const values: Record<string, unknown> = { ':now': new Date().toISOString() };
+  const sets = entries.map(([key, value], i) => {
+    names[`#f${i}`] = key;
+    values[`:v${i}`] = value ?? null;
+    return `#f${i} = :v${i}`;
+  });
+  sets.push('updatedAt = :now');
+
+  try {
+    await getDynamoClient().send(new UpdateCommand({
+      TableName: getTableName(),
+      Key: eventKeys(externalId),
+      UpdateExpression: `SET ${sets.join(', ')}`,
+      ConditionExpression: 'attribute_exists(PK)',
+      ExpressionAttributeNames: names,
+      ExpressionAttributeValues: values,
+    }));
+    return true;
+  } catch (error) {
+    if ((error as { name?: string }).name === 'ConditionalCheckFailedException') return false;
+    throw error;
+  }
+}
+
+/** Delete event rows by external id (batched, 25 per request). */
+export async function deleteEventsDynamoDB(externalIds: string[]): Promise<number> {
+  const client = getDynamoClient();
+  const tableName = getTableName();
+  let deleted = 0;
+  for (let i = 0; i < externalIds.length; i += 25) {
+    const batch = externalIds.slice(i, i + 25);
+    await client.send(new BatchWriteCommand({
+      RequestItems: {
+        [tableName]: batch.map(id => ({ DeleteRequest: { Key: eventKeys(id) } })),
+      },
+    }));
+    deleted += batch.length;
+  }
+  return deleted;
 }

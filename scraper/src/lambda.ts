@@ -22,8 +22,17 @@ import {
   shouldRunStaleCleanup,
   cleanupStaleEvents,
   UpsertShopResult,
+  supportsStoredEventReads,
+  loadUpcomingEvents,
+  applyMergedEventFields,
+  deleteEventsByExternalId,
+  type StoredEventSummary,
 } from './database.js';
 import { fetchEventsPage, fetchEventTemplates, getEventCount } from './api.js';
+import { fetchPlayriftboundEvents, PLAYRIFTBOUND_ID_PREFIX } from './sources/playriftbound.js';
+import { buildDedupeIndex, markEventSeen, splitDuplicates } from './dedupe.js';
+import { mergeEventRecords, mergedFieldChanges } from './merge.js';
+import { env } from './config.js';
 import { reverseGeocodeCity } from './geocoding.js';
 
 const cloudwatch = new CloudWatchClient({});
@@ -45,9 +54,32 @@ interface WorkerEvent {
   shardCount: number;
 }
 
+// Second source (Riot's playriftbound API) runs as its own invocation, dispatched
+// by the coordinator alongside the UVS workers. No UVS worker sees the whole feed,
+// so this invocation reads the UVS rows back from the table instead: once before
+// the sweep (anchor coordinates) and once after it (de-dupe index), by which time
+// the UVS workers for this cycle have normally finished writing.
+interface PlayriftboundEvent {
+  mode: 'playriftbound';
+}
+
+// Time kept back from the sweep for the post-sweep table reload, upserts, city
+// geocoding and metrics.
+const PRB_RESERVED_MS = Number(process.env.PLAYRIFTBOUND_RESERVED_MS ?? '300000');
+const PRB_DAYS_FORWARD = 90;
+
 function isWorkerEvent(event: unknown): event is WorkerEvent {
   return typeof event === 'object' && event !== null &&
     (event as { mode?: string }).mode === 'worker';
+}
+
+function isPlayriftboundEvent(event: unknown): event is PlayriftboundEvent {
+  return typeof event === 'object' && event !== null &&
+    (event as { mode?: string }).mode === 'playriftbound';
+}
+
+function isPlayriftboundId(externalId: string): boolean {
+  return externalId.startsWith(PLAYRIFTBOUND_ID_PREFIX);
 }
 
 async function publishMetrics(metrics: {
@@ -57,17 +89,20 @@ async function publishMetrics(metrics: {
   skipped: number;
   skipRate: number;
   durationMs: number;
-}): Promise<void> {
+}, source?: string): Promise<void> {
+  // UVS worker metrics keep their existing dimensionless series; the second
+  // source publishes under a Source dimension so it doesn't skew those graphs.
+  const Dimensions = source ? [{ Name: 'Source', Value: source }] : undefined;
   try {
     await cloudwatch.send(new PutMetricDataCommand({
       Namespace: 'Riftfound/Scraper',
       MetricData: [
-        { MetricName: 'EventsFound', Value: metrics.found, Unit: 'Count' },
-        { MetricName: 'EventsCreated', Value: metrics.created, Unit: 'Count' },
-        { MetricName: 'EventsUpdated', Value: metrics.updated, Unit: 'Count' },
-        { MetricName: 'EventsSkipped', Value: metrics.skipped, Unit: 'Count' },
-        { MetricName: 'SkipRate', Value: metrics.skipRate, Unit: 'Percent' },
-        { MetricName: 'DurationMs', Value: metrics.durationMs, Unit: 'Milliseconds' },
+        { MetricName: 'EventsFound', Value: metrics.found, Unit: 'Count', Dimensions },
+        { MetricName: 'EventsCreated', Value: metrics.created, Unit: 'Count', Dimensions },
+        { MetricName: 'EventsUpdated', Value: metrics.updated, Unit: 'Count', Dimensions },
+        { MetricName: 'EventsSkipped', Value: metrics.skipped, Unit: 'Count', Dimensions },
+        { MetricName: 'SkipRate', Value: metrics.skipRate, Unit: 'Percent', Dimensions },
+        { MetricName: 'DurationMs', Value: metrics.durationMs, Unit: 'Milliseconds', Dimensions },
       ],
     }));
   } catch (error) {
@@ -80,12 +115,14 @@ async function publishMetrics(metrics: {
  *
  * - EventBridge scheduled invocations (no `mode` field) → coordinator.
  * - Coordinator's own async invocations (`mode: 'worker'`) → worker.
+ * - Coordinator's own async invocation (`mode: 'playriftbound'`) → second source.
  */
 export async function handler(
-  event: ScheduledEvent | WorkerEvent,
+  event: ScheduledEvent | WorkerEvent | PlayriftboundEvent,
   context: Context
 ): Promise<{ statusCode: number; body: string }> {
   if (isWorkerEvent(event)) return runWorker(event, context);
+  if (isPlayriftboundEvent(event)) return runPlayriftbound(context);
   return runCoordinator(event as ScheduledEvent, context);
 }
 
@@ -141,6 +178,16 @@ async function runCoordinator(
       }))
     ));
 
+    // Second source gets its own invocation (and its own 15-minute budget).
+    const playriftboundDispatched = env.PLAYRIFTBOUND_ENABLED && supportsStoredEventReads();
+    if (playriftboundDispatched) {
+      await lambda.send(new InvokeCommand({
+        FunctionName: functionName,
+        InvocationType: 'Event',
+        Payload: Buffer.from(JSON.stringify({ mode: 'playriftbound' } satisfies PlayriftboundEvent)),
+      }));
+    }
+
     // Coordinator does the fast housekeeping itself; workers only page-scrape.
     let deletedCount = 0;
     if (context.getRemainingTimeInMillis() > 15000) {
@@ -153,6 +200,7 @@ async function runCoordinator(
       shards: shards.length,
       totalPages: pageCount,
       totalExpected,
+      playriftboundDispatched,
       deletedOldEvents: deletedCount,
       durationMs,
     };
@@ -188,6 +236,7 @@ async function runWorker(
   let totalCreated = 0;
   let totalUpdated = 0;
   let totalSkipped = 0;
+  let totalDuplicateIds = 0;  // Same event id returned twice by the API's unstable paging
   let totalStores = 0;
   let totalCitiesGeocoded = 0;
   const storesSeen = new Set<string>();
@@ -207,11 +256,18 @@ async function runWorker(
       console.log(`Fetching page ${currentPage}/${event.endPage} (shard ${event.shardIndex + 1}/${event.shardCount})...`);
       const { events: pageEvents } = await fetchEventsPage(currentPage);
 
-      totalFound += pageEvents.length;
-
       // Process events from this page
       for (const apiEvent of pageEvents) {
-        eventIdsSeen.add(apiEvent.externalId);
+        // Offset pagination is unstable upstream, so the same event id shows up
+        // on more than one page within a run (~1.5% of rows). Skip the repeats
+        // within this shard; repeats across shards are caught by the upsert's
+        // unchanged-row check instead.
+        if (!markEventSeen(eventIdsSeen, apiEvent.externalId)) {
+          totalDuplicateIds++;
+          continue;
+        }
+
+        totalFound++;
         const result = await upsertEventWithStore(apiEvent, apiEvent.storeInfo);
         if (result.created) {
           totalCreated++;
@@ -288,6 +344,7 @@ async function runWorker(
       skipped: totalSkipped,
       skipRate: `${skipRate}%`,
       stores: totalStores,
+      duplicateIdsSkipped: totalDuplicateIds,
       citiesGeocoded: totalCitiesGeocoded,
       pagesProcessed: currentPage,
       deleted: deletedCount,
@@ -322,5 +379,150 @@ async function runWorker(
       statusCode: 500,
       body: JSON.stringify({ error: message }),
     };
+  }
+}
+
+async function runPlayriftbound(
+  context: Context
+): Promise<{ statusCode: number; body: string }> {
+  console.log('playriftbound invocation');
+
+  const startTime = Date.now();
+  if (!env.PLAYRIFTBOUND_ENABLED) {
+    return { statusCode: 200, body: JSON.stringify({ message: 'playriftbound source disabled' }) };
+  }
+  if (!supportsStoredEventReads()) {
+    return { statusCode: 200, body: JSON.stringify({ message: 'playriftbound pass requires DynamoDB' }) };
+  }
+
+  const runId = await startScrapeRun();
+  const isUvsRow = (e: StoredEventSummary) => !isPlayriftboundId(e.externalId);
+
+  try {
+    // 1. Anchor coordinates from the UVS rows already in the table. Anchors are
+    //    ~156km geohash cells, so rows from the previous cycle are just as good.
+    const before = await loadUpcomingEvents(PRB_DAYS_FORWARD);
+    const coordinates = before.filter(isUvsRow).map(e => ({ latitude: e.latitude, longitude: e.longitude }));
+    console.log(`Loaded ${before.length} stored events (${coordinates.length} UVS) in ${Date.now() - startTime}ms`);
+
+    // 2. Rate-limited sweep, bounded by the invocation's time budget.
+    const prbResult = await fetchPlayriftboundEvents({
+      requestDelayMs: env.PLAYRIFTBOUND_REQUEST_DELAY_MS,
+      maxAnchorsPerRun: env.PLAYRIFTBOUND_MAX_ANCHORS_PER_RUN,
+      queryHash: env.PLAYRIFTBOUND_QUERY_HASH,
+      coordinates,
+      deadline: Date.now() + context.getRemainingTimeInMillis() - PRB_RESERVED_MS,
+    });
+
+    // 3. De-dupe index from a fresh read, so UVS rows this cycle's workers wrote
+    //    during the sweep are matched rather than duplicated.
+    const after = await loadUpcomingEvents(PRB_DAYS_FORWARD);
+    const storedById = new Map(after.map(e => [e.externalId, e]));
+    const uvsIndex = buildDedupeIndex(after.filter(isUvsRow));
+    const { unique, matched } = splitDuplicates(prbResult.events, uvsIndex);
+
+    let mergeWritten = 0;
+    let mergeSkipped = 0;
+    let created = 0;
+    let updated = 0;
+    let skipped = 0;
+    let citiesGeocoded = 0;
+    let notWritten = 0;
+    const orphanPrbRows: string[] = [];
+    const storesSeen = new Set<string>();
+    const shopsToGeocode: UpsertShopResult[] = [];
+
+    // 4. Matched pairs: write Riot's merge-owned fields onto the UVS row. Only
+    //    the changed attributes are written; nothing else on the row is touched.
+    for (const { secondary, primary } of matched) {
+      const merged = mergeEventRecords(primary, secondary);
+      const changes = mergedFieldChanges(primary, merged);
+      if (changes && await applyMergedEventFields(primary.externalId, changes)) {
+        mergeWritten++;
+      } else {
+        mergeSkipped++;
+      }
+      // A Riot event inserted on its own before its UVS twin was known is now a
+      // duplicate row - remove it.
+      if (storedById.has(secondary.externalId)) {
+        orphanPrbRows.push(secondary.externalId);
+      }
+    }
+    const orphansDeleted = orphanPrbRows.length > 0 ? await deleteEventsByExternalId(orphanPrbRows) : 0;
+
+    // 5. Riot-only events become their own rows.
+    for (const event of unique) {
+      if (context.getRemainingTimeInMillis() < 45000) {
+        notWritten = unique.length - (created + updated + skipped);
+        console.warn(`Low on time - ${notWritten} playriftbound events left for the next sweep of their anchors`);
+        break;
+      }
+      const result = await upsertEventWithStore(event, event.storeInfo);
+      if (result.created) created++;
+      else if (result.skipped) skipped++;
+      else updated++;
+
+      if (event.storeInfo && !storesSeen.has(event.storeInfo.name)) {
+        storesSeen.add(event.storeInfo.name);
+        if (result.shopResult?.needsCityGeocode) shopsToGeocode.push(result.shopResult);
+      }
+    }
+
+    // 6. City names for newly synthesised organizer shops.
+    for (const shop of shopsToGeocode) {
+      if (context.getRemainingTimeInMillis() < 20000) {
+        console.warn('Skipping remaining geocoding - low time');
+        break;
+      }
+      try {
+        const city = await reverseGeocodeCity(shop.latitude, shop.longitude);
+        if (city) {
+          updateShopDisplayCity(shop.shopId, city);
+          citiesGeocoded++;
+        }
+      } catch (error) {
+        console.error(`Failed to geocode shop ${shop.shopId}:`, error);
+      }
+    }
+
+    const found = prbResult.events.length;
+    await completeScrapeRun(runId, { eventsFound: found, eventsCreated: created, eventsUpdated: updated + mergeWritten });
+
+    const durationMs = Date.now() - startTime;
+    const summary = {
+      message: 'playriftbound pass completed',
+      found,
+      created,
+      updated,
+      skipped,
+      notWritten,
+      mergedIntoUvs: matched.length,
+      mergeWritten,
+      mergeSkipped,
+      orphansDeleted,
+      anchors: `${prbResult.anchorsQueried}/${prbResult.anchorsAvailable}`,
+      anchorsFailed: prbResult.anchorsFailed,
+      requests: prbResult.requests,
+      sourceFailed: prbResult.failed,
+      citiesGeocoded,
+      durationMs,
+    };
+    console.log('playriftbound summary:', summary);
+
+    await publishMetrics({
+      found,
+      created,
+      updated: updated + mergeWritten,
+      skipped: skipped + mergeSkipped,
+      skipRate: found > 0 ? Math.round(((skipped + mergeSkipped) / found) * 100) : 0,
+      durationMs,
+    }, 'playriftbound');
+
+    return { statusCode: 200, body: JSON.stringify(summary) };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error('playriftbound pass failed:', message);
+    await failScrapeRun(runId, message);
+    return { statusCode: 500, body: JSON.stringify({ error: message }) };
   }
 }

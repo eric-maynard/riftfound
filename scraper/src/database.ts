@@ -1,6 +1,7 @@
 import { Pool } from 'pg';
 import Database from 'better-sqlite3';
 import { env } from './config.js';
+import { sanitizeScrapedEvent, sanitizeStoreInfo } from './sanitize.js';
 import {
   startScrapeRunDynamoDB,
   completeScrapeRunDynamoDB,
@@ -12,7 +13,12 @@ import {
   getLastStaleCleanupTimeDynamoDB,
   setLastStaleCleanupTimeDynamoDB,
   cleanupStaleEventsDynamoDB,
+  loadUpcomingEventsDynamoDB,
+  applyMergedEventFieldsDynamoDB,
+  deleteEventsDynamoDB,
+  type StoredEventSummary,
 } from './dynamodb.js';
+import type { MergeOwnedFields } from './merge.js';
 
 // Unified database interface
 export interface ScrapedEvent {
@@ -36,6 +42,12 @@ export interface ScrapedEvent {
   price?: string | null; // e.g., "A$15.00", "Free Event"
   url?: string | null;
   imageUrl?: string | null;
+  /**
+   * Which upstream source(s) this record came from ('uvs', 'playriftbound').
+   * Two entries means the two sources' records were field-merged (see merge.ts),
+   * and is stored so the origin of a row stays inspectable.
+   */
+  sources?: string[] | null;
 }
 
 // SQLite implementation
@@ -93,6 +105,7 @@ function initSqliteSchema(db: Database.Database) {
       price TEXT,
       url TEXT,
       image_url TEXT,
+      sources TEXT,
       shop_id INTEGER REFERENCES shops(id),
       created_at TEXT DEFAULT (datetime('now')),
       updated_at TEXT DEFAULT (datetime('now')),
@@ -155,6 +168,9 @@ function initSqliteSchema(db: Database.Database) {
   } catch { /* column exists */ }
   try {
     db.exec(`ALTER TABLE events ADD COLUMN price TEXT`);
+  } catch { /* column exists */ }
+  try {
+    db.exec(`ALTER TABLE events ADD COLUMN sources TEXT`);
   } catch { /* column exists */ }
   try {
     db.exec(`ALTER TABLE events ADD COLUMN shop_id INTEGER REFERENCES shops(id)`);
@@ -339,7 +355,11 @@ export interface UpsertShopResult {
 
 // Upsert a shop with full info from API (includes coordinates)
 // Uses external_id (API store ID) as unique identifier to handle stores with same name in different locations
-export async function upsertShopFromApi(store: StoreInfo): Promise<UpsertShopResult> {
+export async function upsertShopFromApi(rawStore: StoreInfo): Promise<UpsertShopResult> {
+  // Store names are free text typed by store owners and reach the DB verbatim,
+  // so they are cleaned here as well as at the event boundary (see sanitize.ts).
+  const store = sanitizeStoreInfo(rawStore);
+
   if (useDynamoDB()) {
     return upsertShopFromApiDynamoDB(store);
   } else if (useSqlite()) {
@@ -431,9 +451,14 @@ export interface UpsertEventResult {
 
 // Upsert event with store info from API (no geocoding needed)
 export async function upsertEventWithStore(
-  event: ScrapedEvent,
-  storeInfo: StoreInfo | null
+  rawEvent: ScrapedEvent,
+  rawStoreInfo: StoreInfo | null
 ): Promise<UpsertEventResult> {
+  // Single choke point for both sources and all three backends: nothing reaches
+  // a table without having its free text stripped of markup first (sanitize.ts).
+  const event = sanitizeScrapedEvent(rawEvent);
+  const storeInfo = rawStoreInfo ? sanitizeStoreInfo(rawStoreInfo) : null;
+
   if (useDynamoDB()) {
     return upsertEventWithStoreDynamoDB(event, storeInfo);
   }
@@ -456,6 +481,14 @@ export async function upsertEventWithStore(
   };
 }
 
+/**
+ * Sources are stored as a comma separated list ('uvs', 'uvs,playriftbound') so a
+ * merged row's origin can be read straight out of the table.
+ */
+function serializeSources(sources: string[] | null | undefined): string | null {
+  return sources && sources.length > 0 ? sources.join(',') : null;
+}
+
 async function upsertEventInternal(event: ScrapedEvent, shopId: number | null): Promise<{ created: boolean }> {
 
   if (useSqlite()) {
@@ -470,7 +503,7 @@ async function upsertEventInternal(event: ScrapedEvent, shopId: number | null): 
           name = ?, description = ?, location = ?, address = ?, city = ?, state = ?,
           country = ?, latitude = ?, longitude = ?, start_date = ?, start_time = ?,
           end_date = ?, event_type = ?, organizer = ?, player_count = ?, capacity = ?,
-          price = ?, url = ?, image_url = ?, shop_id = ?, scraped_at = datetime('now'), updated_at = datetime('now')
+          price = ?, url = ?, image_url = ?, sources = ?, shop_id = ?, scraped_at = datetime('now'), updated_at = datetime('now')
         WHERE external_id = ?
       `).run(
         event.name, event.description ?? null, event.location ?? null,
@@ -479,7 +512,8 @@ async function upsertEventInternal(event: ScrapedEvent, shopId: number | null): 
         event.startDate.toISOString(), event.startTime ?? null,
         event.endDate?.toISOString() ?? null, event.eventType ?? null,
         event.organizer ?? null, event.playerCount ?? null, event.capacity ?? null,
-        event.price ?? null, event.url ?? null, event.imageUrl ?? null, shopId, event.externalId
+        event.price ?? null, event.url ?? null, event.imageUrl ?? null,
+        serializeSources(event.sources), shopId, event.externalId
       );
       return { created: false };
     } else {
@@ -487,8 +521,8 @@ async function upsertEventInternal(event: ScrapedEvent, shopId: number | null): 
         INSERT INTO events (
           external_id, name, description, location, address, city, state, country,
           latitude, longitude, start_date, start_time, end_date, event_type, organizer,
-          player_count, capacity, price, url, image_url, shop_id, scraped_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+          player_count, capacity, price, url, image_url, sources, shop_id, scraped_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
       `).run(
         event.externalId, event.name, event.description ?? null, event.location ?? null,
         event.address ?? null, event.city ?? null, event.state ?? null,
@@ -496,11 +530,14 @@ async function upsertEventInternal(event: ScrapedEvent, shopId: number | null): 
         event.startDate.toISOString(), event.startTime ?? null,
         event.endDate?.toISOString() ?? null, event.eventType ?? null,
         event.organizer ?? null, event.playerCount ?? null, event.capacity ?? null,
-        event.price ?? null, event.url ?? null, event.imageUrl ?? null, shopId
+        event.price ?? null, event.url ?? null, event.imageUrl ?? null,
+        serializeSources(event.sources), shopId
       );
       return { created: true };
     }
   } else {
+    // Note: the PostgreSQL dev schema (infrastructure/init.sql) has no `sources`
+    // column, so origin tracking is persisted on SQLite and DynamoDB only.
     const pool = getPgPool();
     const result = await pool.query(
       `INSERT INTO events (
@@ -699,10 +736,20 @@ export async function shouldRunStaleCleanup(): Promise<boolean> {
 }
 
 // Remove upcoming events that no longer appear in the upstream API
-export async function cleanupStaleEvents(seenExternalIds: Set<string>): Promise<number> {
+/**
+ * Remove upcoming events that no longer appear in any source.
+ *
+ * `protectedExternalIdPrefixes` shields events belonging to a source that did not
+ * run this cycle (disabled or failed), so a temporary source outage cannot delete
+ * that source's events.
+ */
+export async function cleanupStaleEvents(
+  seenExternalIds: Set<string>,
+  protectedExternalIdPrefixes: string[] = []
+): Promise<number> {
   if (!useDynamoDB()) return 0;
 
-  const deleted = await cleanupStaleEventsDynamoDB(seenExternalIds);
+  const deleted = await cleanupStaleEventsDynamoDB(seenExternalIds, protectedExternalIdPrefixes);
   await setLastStaleCleanupTimeDynamoDB(new Date().toISOString());
   return deleted;
 }
@@ -716,4 +763,36 @@ export async function closePool(): Promise<void> {
     await pgPool.end();
     pgPool = null;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Sharded Lambda support (DynamoDB only)
+// ---------------------------------------------------------------------------
+
+export type { StoredEventSummary } from './dynamodb.js';
+
+/** Whether the table-backed playriftbound pass (lambda.ts) can run on this backend. */
+export function supportsStoredEventReads(): boolean {
+  return useDynamoDB();
+}
+
+/** Upcoming stored events (UVS and playriftbound rows) for the next `daysForward` days. */
+export async function loadUpcomingEvents(daysForward = 90): Promise<StoredEventSummary[]> {
+  if (!useDynamoDB()) throw new Error('loadUpcomingEvents is only implemented for DynamoDB');
+  return loadUpcomingEventsDynamoDB(daysForward);
+}
+
+/** Write field-merge results onto an existing event row. */
+export async function applyMergedEventFields(
+  externalId: string,
+  changes: Partial<MergeOwnedFields>
+): Promise<boolean> {
+  if (!useDynamoDB()) throw new Error('applyMergedEventFields is only implemented for DynamoDB');
+  return applyMergedEventFieldsDynamoDB(externalId, changes);
+}
+
+/** Delete event rows by external id. */
+export async function deleteEventsByExternalId(externalIds: string[]): Promise<number> {
+  if (!useDynamoDB()) throw new Error('deleteEventsByExternalId is only implemented for DynamoDB');
+  return deleteEventsDynamoDB(externalIds);
 }
