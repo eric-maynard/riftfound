@@ -142,6 +142,8 @@ router.get('/:id', async (req: Request, res: Response, next: NextFunction) => {
   }
 });
 
+const PLAYRIFTBOUND_EVENT_URL_PREFIX = 'https://playriftbound.com/en-us/events/';
+
 // GET /api/events/:id/visit - Track click and redirect to external event page
 router.get('/:id/visit', async (req: Request, res: Response, next: NextFunction) => {
   try {
@@ -152,7 +154,14 @@ router.get('/:id/visit', async (req: Request, res: Response, next: NextFunction)
       return;
     }
 
-    // Build the external locator URL and redirect
+    // Riot-only events (from the playriftbound source) have no UVS locator page;
+    // send them to their Riot registration page. Everything else, including UVS
+    // events merged with a Riot twin, keeps the UVS locator link.
+    if (event.externalId.startsWith('prb-') && event.url?.startsWith(PLAYRIFTBOUND_EVENT_URL_PREFIX)) {
+      res.redirect(302, event.url);
+      return;
+    }
+
     const locatorUrl = `https://locator.riftbound.uvsgames.com/events/${event.externalId}`;
     res.redirect(302, locatorUrl);
   } catch (error) {

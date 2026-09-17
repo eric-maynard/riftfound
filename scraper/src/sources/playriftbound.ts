@@ -46,6 +46,16 @@ const DEFAULT_QUERY_HASH = 'acbcbba681a9c9a8063f792f7d665ba1eda81b19528b6af19e52
 
 const PAGE_SIZE = 100;
 
+/** Identify ourselves honestly - never as Riot's own web client. */
+const USER_AGENT = 'Riftfound/1.0 (+https://riftfound.com)';
+const CLIENT_NAME = 'Riftfound';
+
+/** Per-request timeout, so one hung connection can't eat the Lambda's budget. */
+const REQUEST_TIMEOUT_MS = 20_000;
+
+/** Consecutive failed anchors before the source gives up for the run. */
+const MAX_CONSECUTIVE_ANCHOR_FAILURES = 3;
+
 /**
  * Radius requested around each anchor.
  *
@@ -67,7 +77,7 @@ export const ANCHOR_GEOHASH_PRECISION = 3;
 
 const DEFAULT_REQUEST_DELAY_MS = 1000; // ~1 req/sec: polite by default
 const DEFAULT_ANCHOR_DELAY_MS = 2000; // extra breather between anchors
-const DEFAULT_MAX_ANCHORS_PER_RUN = 150; // ~3 minutes of requests per cycle
+const DEFAULT_MAX_ANCHORS_PER_RUN = 150; // ~6-9 minutes of requests per cycle
 const ROTATION_PERIOD_MS = 24 * 60 * 60 * 1000; // one full pass over all anchors per day
 const MAX_PAGES_PER_ANCHOR = 12; // safety valve (1,200 events within one cell)
 const MAX_CHUNKS_TO_PROBE = 60; // safety valve for manifest rediscovery
@@ -333,9 +343,11 @@ async function fetchText(url: string): Promise<string | null> {
   try {
     const response = await fetch(url, {
       headers: {
-        'User-Agent': 'Riftfound/1.0 (Event Aggregator)',
+        'User-Agent': USER_AGENT,
         'Accept': '*/*',
       },
+      redirect: 'error',
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
     if (!response.ok) return null;
     return await response.text();
@@ -353,7 +365,7 @@ async function fetchText(url: string): Promise<string | null> {
  *    chunk names the lazily-loaded manifest chunk, so nested chunk references
  *    are harvested and probed as well.
  */
-async function rediscoverQueryHash(requestDelayMs: number): Promise<string | null> {
+async function rediscoverQueryHash(requestDelayMs: number, deadline?: number): Promise<string | null> {
   const direct = await fetchText(MANIFEST_CHUNK_URL);
   if (direct) {
     const hash = extractQueryHashFromChunk(direct);
@@ -384,6 +396,10 @@ async function rediscoverQueryHash(requestDelayMs: number): Promise<string | nul
 
   let probed = 0;
   while (queue.length > 0 && probed < MAX_CHUNKS_TO_PROBE) {
+    if (deadline !== undefined && Date.now() >= deadline) {
+      console.error(`[playriftbound] time budget reached after probing ${probed} chunks for the persisted query manifest`);
+      return null;
+    }
     const name = queue.shift() as string;
     await sleep(requestDelayMs);
     probed++;
@@ -515,6 +531,8 @@ function eventPrice(tournament: PrbTournament): string | null {
 export function convertTournamentNode(node: PrbTournamentNode): (ScrapedEvent & { storeInfo: StoreInfo }) | null {
   const tournament = node?.tournament;
   if (!tournament?.id || !tournament.startsAt) return null;
+  // Ids are numeric today; anything else would end up in a URL we build.
+  if (!/^\d+$/.test(String(tournament.id))) return null;
 
   const startDate = new Date(tournament.startsAt);
   if (Number.isNaN(startDate.getTime())) return null;
@@ -613,13 +631,21 @@ async function requestSearchPage(
 ): Promise<PrbSearchResponse> {
   const response = await fetch(buildSearchUrl(anchor, hash, after), {
     headers: {
-      'User-Agent': 'Riftfound/1.0 (Event Aggregator)',
+      'User-Agent': USER_AGENT,
       'Accept': 'application/json',
       'apollo-require-preflight': 'true',
-      'apollographql-client-name': 'Esports Web',
+      'apollographql-client-name': CLIENT_NAME,
       'apollographql-client-version': '1.0.0',
     },
+    redirect: 'error',
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
   });
+
+  // Rate limited, blocked or Riot is having a bad time: stop the whole source
+  // for this run rather than keep hammering it anchor after anchor.
+  if (response.status === 429 || response.status === 403 || response.status >= 500) {
+    throw new BackoffError(`HTTP ${response.status}${response.headers.get('retry-after') ? ` (retry-after ${response.headers.get('retry-after')})` : ''}`);
+  }
 
   // A stale persisted query hash comes back as HTTP 404 with a GraphQL error
   // body, so parse the body before deciding the request failed.
@@ -637,6 +663,8 @@ async function requestSearchPage(
 
   return parsed;
 }
+
+class BackoffError extends Error {}
 
 function isStaleHashError(response: PrbSearchResponse): boolean {
   return (response.errors ?? []).some(
@@ -694,6 +722,8 @@ export async function fetchPlayriftboundEvents(options: PlayriftboundOptions = {
       `${requestDelayMs}ms between requests, rotation ${rotation.toFixed(3)})`
   );
 
+  let consecutiveFailures = 0;
+
   for (const anchor of anchors) {
     if (options.deadline !== undefined && Date.now() >= options.deadline) {
       console.warn(
@@ -733,7 +763,7 @@ export async function fetchPlayriftboundEvents(options: PlayriftboundOptions = {
             `[playriftbound] persisted query hash ${hash} rejected by the API - refreshing from Riot's manifest`
           );
           hashRefreshed = true;
-          const refreshed = await rediscoverQueryHash(requestDelayMs);
+          const refreshed = await rediscoverQueryHash(requestDelayMs, options.deadline);
           if (!refreshed) {
             console.error(
               '[playriftbound] could not resolve a persisted query hash; skipping this source for this run. ' +
@@ -783,12 +813,23 @@ export async function fetchPlayriftboundEvents(options: PlayriftboundOptions = {
         after = search.pageInfo.endCursor;
       }
 
+      if (pages >= MAX_PAGES_PER_ANCHOR) {
+        console.warn(`[playriftbound]   ${anchor.name}: hit the ${MAX_PAGES_PER_ANCHOR}-page cap, results truncated`);
+      }
       if (anchorEvents > 0) {
         console.log(`[playriftbound]   ${anchor.name}: ${anchorEvents} new events over ${pages} page(s)`);
       }
+      consecutiveFailures = 0;
     } catch (error) {
       result.anchorsFailed++;
+      consecutiveFailures++;
       const message = error instanceof Error ? error.message : String(error);
+      if (error instanceof BackoffError || consecutiveFailures >= MAX_CONSECUTIVE_ANCHOR_FAILURES) {
+        console.error(`[playriftbound]   ${anchor.name}: failed (${message}) - backing off, stopping this source for the run`);
+        result.failed = true;
+        result.partial = true;
+        return finalise(result, byExternalId);
+      }
       console.error(`[playriftbound]   ${anchor.name}: failed (${message}) - continuing with remaining anchors`);
     }
   }

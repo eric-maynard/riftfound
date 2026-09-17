@@ -6,7 +6,7 @@ CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 -- Shops dimension table (stores/organizers with geocoded locations)
 CREATE TABLE IF NOT EXISTS shops (
     id SERIAL PRIMARY KEY,
-    external_id INTEGER UNIQUE NOT NULL,
+    external_id BIGINT UNIQUE NOT NULL,
     name VARCHAR(500) NOT NULL,
     location_text VARCHAR(500),
     latitude DECIMAL(10, 8),

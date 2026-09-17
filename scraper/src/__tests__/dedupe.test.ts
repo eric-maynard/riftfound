@@ -309,3 +309,22 @@ describe('one primary per secondary', () => {
     expect(matched.map(m => m.primary.id)).toEqual(['990011', '990012']);
   });
 });
+
+describe('best candidate selection', () => {
+  const base = { latitude: 37.9419, longitude: -121.7367, startDate: new Date('2026-10-19T01:00:00Z') };
+
+  it('prefers the candidate whose category and price match over the first acceptable one', () => {
+    // Neighbouring cell, no price: acceptable, but a worse match.
+    const nexus = { ...base, id: '1', latitude: base.latitude - 0.001, longitude: base.longitude - 0.001, eventType: 'Nexus Night', price: null };
+    const preRift = { ...base, id: '2', eventType: 'Pre-Rift', price: '$40.00' };
+    const riot = { ...base, id: 'prb-1', eventType: 'Pre-Rift', price: '$40.00' };
+    expect(findDuplicate(riot, buildDedupeIndex([nexus, preRift]))?.id).toBe('2');
+  });
+
+  it('treats "Other" as unclassified rather than a conflicting category', () => {
+    const uvs = { ...base, id: '1', eventType: 'Other', price: 'Free' };
+    const riot = { ...base, id: 'prb-1', eventType: 'Nexus Night', price: '$5.00' };
+    expect(looksLikeDifferentEvent(riot, uvs)).toBe(false);
+    expect(findDuplicate(riot, buildDedupeIndex([uvs]))?.id).toBe('1');
+  });
+});

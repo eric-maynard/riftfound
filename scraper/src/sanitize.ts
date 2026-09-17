@@ -19,10 +19,12 @@ import type { ScrapedEvent, StoreInfo } from './database.js';
  *    together with their contents, so the payload's body never survives as text.
  * 2. Any remaining tags are removed, repeatedly, so nested constructions like
  *    `<scr<b>ipt>` cannot re-form a tag once the inner tag is stripped.
- * 3. Stray angle brackets and control characters are dropped, so no partial tag
- *    can be reassembled downstream.
- * 4. Whitespace (including NBSP and newlines) is collapsed to single spaces and
- *    the result is trimmed.
+ * 3. Control characters are dropped. Angle brackets that don't form a tag
+ *    ("Ages <18", "<3") are kept: React escapes all text on output, so they are
+ *    harmless, and stripping them mangles real descriptions.
+ * 4. Whitespace is collapsed to single spaces and trimmed. Descriptions are the
+ *    exception: they render with pre-wrap, so their line breaks are kept (runs
+ *    of blank lines are capped).
  *
  * Records are cleaned and kept, never dropped: an event with a poisoned
  * organizer name is still a real event that people want to see on the calendar.
@@ -30,18 +32,19 @@ import type { ScrapedEvent, StoreInfo } from './database.js';
 
 /** Elements whose *contents* are as dangerous as the tag itself. */
 const DANGEROUS_BLOCK_RE =
-  /<\s*(script|style|iframe|object|embed|noscript|template|svg|math)\b[^>]*>[\s\S]*?(?:<\s*\/\s*\1\s*>|$)/gi;
+  /<\s*(script|style|iframe|object|embed|noscript|template|svg|math)\b[^>]*>[\s\S]*?<\s*\/\s*\1\s*>/gi;
 
-/** Same elements when self-closed or left unterminated, e.g. a bare `<script src=…>`. */
+/** Same elements when self-closed or left unterminated, e.g. a bare `<script src=…>`.
+ *  Only the tag is removed, so an unclosed `<style>` can't swallow the rest of the text. */
 const DANGEROUS_OPEN_TAG_RE = /<\s*\/?\s*(script|style|iframe|object|embed|noscript|template|svg|math)\b[^>]*>?/gi;
 
-/** Any remaining tag, including comments and CDATA-ish `<!… >` constructs. */
-const ANY_TAG_RE = /<[^<>]*>/g;
+/** Any remaining tag-shaped construct (`<b>`, `</p>`, `<!-- -->`), not a bare `<` or `>`. */
+const ANY_TAG_RE = /<\s*[a-zA-Z!\/?][^<>]*>/g;
 
-/** C0/C1 control characters (keep nothing: tabs/newlines are handled as whitespace first). */
-const CONTROL_CHARS_RE = /[\u0000-\u001f\u007f-\u009f]/g;
+/** C0/C1 control characters, except tab and newline (handled as whitespace below). */
+const CONTROL_CHARS_RE = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g;
 
-const WHITESPACE_RE = /[\s\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]+/g;
+const HORIZONTAL_WHITESPACE_RE = /[ \t\u00a0\u1680\u2000-\u200a\u202f\u205f\u3000]+/g;
 
 /** Repeatedly apply a replacement until the string stops changing. */
 function stripUntilStable(value: string, pattern: RegExp): string {
@@ -58,18 +61,20 @@ function stripUntilStable(value: string, pattern: RegExp): string {
 /**
  * Clean a single free-text value. Always returns a string (possibly empty).
  */
-export function sanitizeToString(value: unknown): string {
+export function sanitizeToString(value: unknown, multiline = false): string {
   if (value === null || value === undefined) return '';
   const raw = typeof value === 'string' ? value : String(value);
 
   let cleaned = stripUntilStable(raw, DANGEROUS_BLOCK_RE);
   cleaned = stripUntilStable(cleaned, DANGEROUS_OPEN_TAG_RE);
   cleaned = stripUntilStable(cleaned, ANY_TAG_RE);
-  // Whatever is left cannot be a tag any more; drop the brackets so nothing can
-  // be reassembled into one further down the stack.
-  cleaned = cleaned.replace(/[<>]/g, '');
+  cleaned = cleaned.replace(/\r\n?|[\u2028\u2029]/g, '\n');
   cleaned = cleaned.replace(CONTROL_CHARS_RE, ' ');
-  cleaned = cleaned.replace(WHITESPACE_RE, ' ').trim();
+  cleaned = cleaned.replace(HORIZONTAL_WHITESPACE_RE, ' ');
+  cleaned = multiline
+    ? cleaned.replace(/ *\n */g, '\n').replace(/\n{3,}/g, '\n\n')
+    : cleaned.replace(/ *\n[ \n]*/g, ' ');
+  cleaned = cleaned.trim();
 
   return cleaned;
 }
@@ -78,8 +83,8 @@ export function sanitizeToString(value: unknown): string {
  * Clean an optional free-text value. Empty results become null rather than ''
  * so the DB keeps a single representation of "no value".
  */
-export function sanitizeText(value: string | null | undefined): string | null {
-  const cleaned = sanitizeToString(value);
+export function sanitizeText(value: string | null | undefined, multiline = false): string | null {
+  const cleaned = sanitizeToString(value, multiline);
   return cleaned.length > 0 ? cleaned : null;
 }
 
@@ -93,7 +98,7 @@ export function sanitizeScrapedEvent<T extends ScrapedEvent>(event: T): T {
   return {
     ...event,
     name: sanitizeRequiredText(event.name),
-    description: sanitizeText(event.description),
+    description: sanitizeText(event.description, true),
     location: sanitizeText(event.location),
     organizer: sanitizeText(event.organizer),
     address: sanitizeText(event.address),

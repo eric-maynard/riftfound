@@ -46,6 +46,19 @@ describe('sanitizeText', () => {
     expect(sanitizeText('  Nexus\n\tNight   Weekly Event  ')).toBe('Nexus Night Weekly Event');
   });
 
+  it('keeps angle brackets that are not tags', () => {
+    expect(sanitizeText('Ages <18 welcome, bring snacks <3')).toBe('Ages <18 welcome, bring snacks <3');
+    expect(sanitizeText('Deck size > 40')).toBe('Deck size > 40');
+  });
+
+  it('does not let an unclosed style tag swallow the rest of the text', () => {
+    expect(sanitizeText('Pre-Rift <style> at the shop')).toBe('Pre-Rift at the shop');
+  });
+
+  it('keeps line breaks in multiline text, capping blank-line runs', () => {
+    expect(sanitizeText('Line one  \r\n\n\n\nLine two\n\tLine three', true)).toBe('Line one\n\nLine two\nLine three');
+  });
+
   it('returns null for empty or markup-only values', () => {
     expect(sanitizeText(null)).toBeNull();
     expect(sanitizeText(undefined)).toBeNull();
@@ -63,7 +76,7 @@ describe('sanitizeScrapedEvent', () => {
     const cleaned = sanitizeScrapedEvent({
       externalId: 'prb-117096731805661097',
       name: 'Pre-Rift<script>alert(1)</script>',
-      description: 'Come play!<img src=x onerror=alert(1)>',
+      description: 'Come play!<img src=x onerror=alert(1)>\nBring a deck.',
       location: LIVE_XSS_PAYLOAD,
       organizer: LIVE_XSS_PAYLOAD,
       address: '123 Main St<b>,</b> Martinez, CA',
@@ -77,7 +90,7 @@ describe('sanitizeScrapedEvent', () => {
     });
 
     expect(cleaned.name).toBe('Pre-Rift');
-    expect(cleaned.description).toBe('Come play!');
+    expect(cleaned.description).toBe('Come play!\nBring a deck.');
     expect(cleaned.location).toBe(CLEAN_NAME);
     expect(cleaned.organizer).toBe(CLEAN_NAME);
     expect(cleaned.address).toBe('123 Main St , Martinez, CA');

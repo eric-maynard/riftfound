@@ -111,7 +111,9 @@ function normalizePrice(price: string | null | undefined): string | null {
 function normalizeCategory(eventType: string | null | undefined): string | null {
   if (eventType === null || eventType === undefined) return null;
   const value = eventType.trim().toLowerCase();
-  return value || null;
+  // "Other" is each source's "couldn't classify it" fallback, not a category -
+  // treat it like a missing value (merge.ts does the same).
+  return value && value !== 'other' ? value : null;
 }
 
 /** Two values conflict only when both are present and differ. */
@@ -166,8 +168,9 @@ export function buildDedupeIndex<T extends DedupeableEvent>(events: Iterable<T>)
 /**
  * Find the primary-source event that `event` duplicates, or null.
  *
- * Candidates come from the event's own cell plus the eight around it; the first
- * one that survives the price/category guard wins. Primary events listed in
+ * Candidates come from the event's own cell plus the eight around it. Of those
+ * that survive the price/category guard, the best one wins: matching category,
+ * then matching price, then being in the event's own cell. Primary events listed in
  * `claimed` are skipped: one primary record can only be the duplicate of one
  * secondary record, so a store's second Riot tournament at the same minute is a
  * separate event rather than a second copy of the same UVS row.
@@ -177,17 +180,29 @@ export function findDuplicate<T extends DedupeableEvent>(
   index: ReadonlyMap<string, T[]>,
   claimed?: ReadonlySet<T>
 ): T | null {
+  const ownKey = eventDedupeKey(event);
+  const category = normalizeCategory(event.eventType);
+  const price = normalizePrice(event.price);
+  let best: T | null = null;
+  let bestScore = -1;
+
   for (const key of dedupeKeyCandidates(event)) {
     const bucket = index.get(key);
     if (!bucket) continue;
     for (const candidate of bucket) {
       if (claimed?.has(candidate)) continue;
-      if (!looksLikeDifferentEvent(event, candidate)) {
-        return candidate;
+      if (looksLikeDifferentEvent(event, candidate)) continue;
+      const score =
+        (category !== null && normalizeCategory(candidate.eventType) === category ? 4 : 0) +
+        (price !== null && normalizePrice(candidate.price) === price ? 2 : 0) +
+        (key === ownKey ? 1 : 0);
+      if (score > bestScore) {
+        best = candidate;
+        bestScore = score;
       }
     }
   }
-  return null;
+  return best;
 }
 
 export interface DedupeMatch<S extends DedupeableEvent, P extends DedupeableEvent> {

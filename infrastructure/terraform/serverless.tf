@@ -304,6 +304,9 @@ resource "aws_lambda_function" "scraper" {
       PHOTON_ENABLED                      = "false" # No Photon in Lambda, use Mapbox
       MAPBOX_ACCESS_TOKEN                 = var.mapbox_access_token
       AWS_NODEJS_CONNECTION_REUSE_ENABLED = "1"
+      # Kill switch for the Riot playriftbound source (no code deploy needed)
+      PLAYRIFTBOUND_ENABLED             = "true"
+      PLAYRIFTBOUND_MAX_ANCHORS_PER_RUN = "150"
     }
   }
 
@@ -315,6 +318,15 @@ resource "aws_lambda_function" "scraper" {
   lifecycle {
     ignore_changes = [filename, source_code_hash]
   }
+}
+
+# Async invocations (coordinator -> workers / playriftbound) must not be retried
+# on timeout: a retry would re-scrape UVS pages and re-sweep Riot's API.
+resource "aws_lambda_function_event_invoke_config" "scraper" {
+  count                        = var.use_dynamodb ? 1 : 0
+  function_name                = aws_lambda_function.scraper[0].function_name
+  maximum_retry_attempts       = 0
+  maximum_event_age_in_seconds = 3600
 }
 
 # ============================================
