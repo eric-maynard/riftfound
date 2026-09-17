@@ -10,7 +10,10 @@ import {
   UpdateCommand,
 } from '@aws-sdk/lib-dynamodb';
 import geohash from 'ngeohash';
+import { gzipSync, gunzipSync } from 'node:zlib';
 import { env } from './config.js';
+import type { ScrapeCycle } from './cancellations.js';
+import type { ShopCandidate } from './shopMatch.js';
 import type { ScrapedEvent, StoreInfo, UpsertEventResult, UpsertShopResult } from './database.js';
 import { preserveMergedFields, type MergeOwnedFields } from './merge.js';
 
@@ -382,14 +385,17 @@ export async function updateShopDisplayCityDynamoDB(shopExternalId: number, disp
 // Upsert event with store info
 export async function upsertEventWithStoreDynamoDB(
   event: ScrapedEvent,
-  storeInfo: StoreInfo | null
+  storeInfo: StoreInfo | null,
+  options: { existingShop?: boolean } = {}
 ): Promise<UpsertEventResult> {
   const client = getDynamoClient();
   const tableName = getTableName();
 
-  // First, upsert the shop if provided
+  // First, upsert the shop if provided. `existingShop` means storeInfo points at a
+  // shop row owned by another source (a UVS shop a Riot organizer resolved to),
+  // which must be referenced but never overwritten.
   let shopResult: UpsertShopResult | undefined;
-  if (storeInfo) {
+  if (storeInfo && !options.existingShop) {
     shopResult = await upsertShopFromApiDynamoDB(storeInfo);
   }
 
@@ -650,6 +656,11 @@ export interface StoredEventSummary extends MergeOwnedFields {
   latitude: number | null;
   longitude: number | null;
   startDate: Date;
+  createdAt?: Date | null;
+  shopExternalId?: number | null;
+  shopName?: string | null;
+  shopLatitude?: number | null;
+  shopLongitude?: number | null;
 }
 
 /**
@@ -684,8 +695,10 @@ export async function loadUpcomingEventsDynamoDB(daysForward: number): Promise<S
         KeyConditionExpression: 'GSI1PK = :pk',
         ExpressionAttributeValues: { ':pk': `DATE#${date}` },
         ProjectionExpression:
-          'externalId, #name, latitude, longitude, startDate, eventType, #url, playerCount, capacity, price, sources',
-        ExpressionAttributeNames: { '#url': 'url', '#name': 'name' },
+          'externalId, #name, latitude, longitude, startDate, eventType, #url, playerCount, #capacity, price, sources, ' +
+          'createdAt, shopExternalId, shopName, shopLatitude, shopLongitude',
+        // name, url and capacity are DynamoDB reserved words
+        ExpressionAttributeNames: { '#url': 'url', '#name': 'name', '#capacity': 'capacity' },
         ExclusiveStartKey: lastEvaluatedKey,
       }));
       for (const item of response.Items ?? []) {
@@ -702,6 +715,11 @@ export async function loadUpcomingEventsDynamoDB(daysForward: number): Promise<S
           capacity: (item.capacity as number | null) ?? null,
           price: (item.price as string | null) ?? null,
           sources: (item.sources as string[] | null) ?? null,
+          createdAt: typeof item.createdAt === 'string' ? new Date(item.createdAt) : null,
+          shopExternalId: (item.shopExternalId as number | null) ?? null,
+          shopName: (item.shopName as string | null) ?? null,
+          shopLatitude: (item.shopLatitude as number | null) ?? null,
+          shopLongitude: (item.shopLongitude as number | null) ?? null,
         });
       }
       lastEvaluatedKey = response.LastEvaluatedKey as Record<string, unknown> | undefined;
@@ -761,6 +779,213 @@ export async function deleteEventsDynamoDB(externalIds: string[]): Promise<numbe
     await client.send(new BatchWriteCommand({
       RequestItems: {
         [tableName]: batch.map(id => ({ DeleteRequest: { Key: eventKeys(id) } })),
+      },
+    }));
+    deleted += batch.length;
+  }
+  return deleted;
+}
+
+// ---------------------------------------------------------------------------
+// Scrape cycles: which UVS event ids each sharded run saw (cancellation checks)
+// ---------------------------------------------------------------------------
+
+const SCRAPE_CYCLE_PK = 'SCRAPE_CYCLE';
+const SCRAPE_CYCLE_TTL_SECONDS = 3 * 24 * 60 * 60;
+
+function cycleTtl(): number {
+  return Math.floor(Date.now() / 1000) + SCRAPE_CYCLE_TTL_SECONDS;
+}
+
+/** Coordinator: record a cycle before dispatching its shards. */
+export async function recordScrapeCycleDynamoDB(cycle: {
+  cycleId: string;
+  shardCount: number;
+  totalExpected: number;
+}): Promise<void> {
+  await getDynamoClient().send(new PutCommand({
+    TableName: getTableName(),
+    Item: {
+      PK: SCRAPE_CYCLE_PK,
+      SK: cycle.cycleId,
+      entityType: 'SCRAPE_CYCLE',
+      startedAt: cycle.cycleId,
+      shardCount: cycle.shardCount,
+      totalExpected: cycle.totalExpected,
+      ttl: cycleTtl(),
+    },
+  }));
+}
+
+/**
+ * Worker: record the event ids its shard saw. Stored gzipped (a shard sees ~10k
+ * ids, ~80KB raw) to stay far below DynamoDB's 400KB item limit.
+ */
+export async function recordShardSeenIdsDynamoDB(
+  cycleId: string,
+  shardIndex: number,
+  ids: Iterable<string>,
+  complete: boolean
+): Promise<void> {
+  const list = [...ids];
+  await getDynamoClient().send(new PutCommand({
+    TableName: getTableName(),
+    Item: {
+      PK: `${SCRAPE_CYCLE_PK}#${cycleId}`,
+      SK: `SHARD#${String(shardIndex).padStart(3, '0')}`,
+      entityType: 'SCRAPE_CYCLE_SHARD',
+      shardIndex,
+      complete,
+      idCount: list.length,
+      idsGz: gzipSync(Buffer.from(list.join(','))),
+      ttl: cycleTtl(),
+    },
+  }));
+}
+
+/** Cycles started within [since, until], newest first, with their shard records. */
+export async function loadScrapeCyclesDynamoDB(since: Date, until: Date): Promise<ScrapeCycle[]> {
+  const client = getDynamoClient();
+  const tableName = getTableName();
+
+  const cycles: ScrapeCycle[] = [];
+  const response = await client.send(new QueryCommand({
+    TableName: tableName,
+    KeyConditionExpression: 'PK = :pk AND SK BETWEEN :since AND :until',
+    ExpressionAttributeValues: {
+      ':pk': SCRAPE_CYCLE_PK,
+      ':since': since.toISOString(),
+      ':until': until.toISOString(),
+    },
+    ScanIndexForward: false,
+  }));
+
+  for (const item of response.Items ?? []) {
+    const cycleId = item.SK as string;
+    const shards: ScrapeCycle['shards'] = [];
+    let lastEvaluatedKey: Record<string, unknown> | undefined;
+    do {
+      const shardResponse = await client.send(new QueryCommand({
+        TableName: tableName,
+        KeyConditionExpression: 'PK = :pk',
+        ExpressionAttributeValues: { ':pk': `${SCRAPE_CYCLE_PK}#${cycleId}` },
+        ExclusiveStartKey: lastEvaluatedKey,
+      }));
+      for (const shard of shardResponse.Items ?? []) {
+        const raw = shard.idsGz ? gunzipSync(Buffer.from(shard.idsGz as Uint8Array)).toString() : '';
+        shards.push({
+          shardIndex: shard.shardIndex as number,
+          complete: shard.complete === true,
+          ids: raw ? raw.split(',') : [],
+        });
+      }
+      lastEvaluatedKey = shardResponse.LastEvaluatedKey as Record<string, unknown> | undefined;
+    } while (lastEvaluatedKey);
+
+    cycles.push({
+      cycleId,
+      startedAt: new Date(item.startedAt as string),
+      shardCount: item.shardCount as number,
+      totalExpected: item.totalExpected as number,
+      shards,
+    });
+  }
+
+  return cycles;
+}
+
+// ---------------------------------------------------------------------------
+// Shop de-duplication across sources
+// ---------------------------------------------------------------------------
+
+/** Every shop row in the given precision-4 geohash cells (GeohashIndex holds only shops). */
+export async function loadShopsByGeohash4DynamoDB(cells: string[]): Promise<ShopCandidate[]> {
+  const client = getDynamoClient();
+  const tableName = getTableName();
+  const shops: ShopCandidate[] = [];
+  const CONCURRENCY = 16;
+
+  const loadCell = async (cell: string) => {
+    let lastEvaluatedKey: Record<string, unknown> | undefined;
+    do {
+      const response = await client.send(new QueryCommand({
+        TableName: tableName,
+        IndexName: 'GeohashIndex',
+        KeyConditionExpression: 'geohash4 = :gh',
+        FilterExpression: 'entityType = :shop',
+        ExpressionAttributeValues: { ':gh': cell, ':shop': 'SHOP' },
+        ProjectionExpression: 'externalId, #name, latitude, longitude',
+        ExpressionAttributeNames: { '#name': 'name' },
+        ExclusiveStartKey: lastEvaluatedKey,
+      }));
+      for (const item of response.Items ?? []) {
+        if (typeof item.externalId !== 'number' || typeof item.latitude !== 'number' || typeof item.longitude !== 'number') {
+          continue;
+        }
+        shops.push({
+          externalId: item.externalId,
+          name: (item.name as string) ?? '',
+          latitude: item.latitude,
+          longitude: item.longitude,
+        });
+      }
+      lastEvaluatedKey = response.LastEvaluatedKey as Record<string, unknown> | undefined;
+    } while (lastEvaluatedKey);
+  };
+
+  for (let i = 0; i < cells.length; i += CONCURRENCY) {
+    await Promise.all(cells.slice(i, i + CONCURRENCY).map(loadCell));
+  }
+  return shops;
+}
+
+/** Point existing event rows at a different shop (and its name/location). */
+export async function repointEventsToShopDynamoDB(
+  events: { externalId: string; startDate: Date }[],
+  shop: ShopCandidate
+): Promise<number> {
+  const client = getDynamoClient();
+  const tableName = getTableName();
+  let updated = 0;
+  for (const event of events) {
+    try {
+      await client.send(new UpdateCommand({
+        TableName: tableName,
+        Key: eventKeys(event.externalId),
+        UpdateExpression:
+          'SET shopId = :id, shopExternalId = :id, shopName = :name, shopLatitude = :lat, shopLongitude = :lon, ' +
+          '#location = :name, organizer = :name, GSI2PK = :gsi2pk, GSI2SK = :start, geohash3 = :gh3, updatedAt = :now',
+        ConditionExpression: 'attribute_exists(PK)',
+        ExpressionAttributeNames: { '#location': 'location' },
+        ExpressionAttributeValues: {
+          ':id': shop.externalId,
+          ':name': shop.name,
+          ':lat': shop.latitude,
+          ':lon': shop.longitude,
+          ':gsi2pk': `SHOP#${shop.externalId}`,
+          ':start': event.startDate.toISOString(),
+          ':gh3': geohash.encode(shop.latitude, shop.longitude, 3),
+          ':now': new Date().toISOString(),
+        },
+      }));
+      updated++;
+    } catch (error) {
+      if ((error as { name?: string }).name !== 'ConditionalCheckFailedException') throw error;
+    }
+  }
+  return updated;
+}
+
+/** Delete shop rows by external id (batched, 25 per request). */
+export async function deleteShopsDynamoDB(externalIds: number[]): Promise<number> {
+  const client = getDynamoClient();
+  const tableName = getTableName();
+  let deleted = 0;
+  for (let i = 0; i < externalIds.length; i += 25) {
+    const batch = externalIds.slice(i, i + 25);
+    await client.send(new BatchWriteCommand({
+      RequestItems: {
+        [tableName]: batch.map(id => ({ DeleteRequest: { Key: shopKeys(id) } })),
       },
     }));
     deleted += batch.length;

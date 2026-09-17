@@ -161,8 +161,35 @@ row merged when a UVS worker re-writes it (`preserveMergedFields` in merge.ts);
 otherwise every UVS cycle would revert Riot's type/url until the anchor is next
 swept.
 
-Stale-event cleanup is not run by the sharded Lambda (a worker only sees its own
-page range), so the `prb-` protection below applies to `index.ts` only.
+### Cancelled events (`src/cancellations.ts`)
+
+Neither source reports cancellations, so rows are removed when their source stops
+listing them. The sharded Lambda does this per source:
+
+- **UVS**: the coordinator writes a `SCRAPE_CYCLE` item and passes its `cycleId`
+  to the workers; each worker writes the event ids its shard saw (gzipped, under
+  `SCRAPE_CYCLE#<cycleId>`, 3-day TTL) and whether it paged to the end. At the
+  start of each run the coordinator deletes upcoming UVS rows that none of the
+  last **3 complete cycles** saw. Several cycles are required because UVS offset
+  pagination drifts mid-scrape. Guards: start more than 3h away and inside the
+  fetch window, created before the oldest of those cycles, and no more than
+  max(500, 5%) deletions or it does nothing.
+- **playriftbound**: an anchor whose pages were read to the end returns every
+  event within its radius, so stored `prb-` rows within (radius - 5km) of such an
+  anchor that weren't returned are deleted. Guards: start more than 3h away,
+  created before the sweep, no more than max(25, 20%) of covered rows.
+
+Rescheduled events keep their id in both sources, so the upsert simply moves them.
+
+### Shops shared by both sources
+
+A Riot organizer that is a store UVS already lists is attached to the UVS shop row
+instead of getting its own (`src/shopMatch.ts`). Evidence, strongest first: a Riot
+event of that organizer de-duplicated against a UVS event (its shop wins by vote),
+else a UVS shop within 250m with a similar name, or the only UVS shop within 50m.
+Resolved organizers' events are written with the UVS shop's id/name/coordinates
+(the UVS shop row itself is never written by this pass), older stored events are
+re-pointed, and the synthesised shop row is deleted.
 
 ## De-duplication
 
@@ -237,12 +264,12 @@ apart.
 playriftbound events are stored with a `prb-` prefix on `external_id` so they can
 never collide with UVS numeric ids, and their organizers are stored as shops with
 a synthesised numeric `external_id` (FNV-1a hash of Riot's organizer UUID, offset
-into a reserved range).
+into a reserved range) unless they resolve to a UVS shop (see above).
 
 Because anchors are swept in rotating batches, a playriftbound event missing from
-one run's "seen" set is expected rather than cancelled, so `prb-` events are
-always excluded from the daily stale-event cleanup and are aged out by
-`deleteOldEvents` / the DynamoDB TTL instead.
+one run's "seen" set is expected rather than cancelled, so `index.ts`'s whole-run
+stale cleanup always excludes `prb-` events; the Lambda uses the per-anchor rule
+above instead.
 
 ## Sanitisation
 

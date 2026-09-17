@@ -93,6 +93,11 @@ export const PLAYRIFTBOUND_ID_PREFIX = 'prb-';
 const ORGANIZER_ID_OFFSET = 2_000_000_000;
 const ORGANIZER_ID_SPACE = 1_000_000_000;
 
+/** Whether a shop external id was synthesised from a Riot organizer (vs a UVS store id). */
+export function isSynthesizedShopId(id: number | null | undefined): boolean {
+  return typeof id === 'number' && id >= ORGANIZER_ID_OFFSET && id < ORGANIZER_ID_OFFSET + ORGANIZER_ID_SPACE;
+}
+
 export interface Anchor {
   name: string;
   latitude: number;
@@ -306,6 +311,13 @@ export interface PlayriftboundResult {
   failed: boolean;
   /** True when only part of the anchor set was swept (the normal case). */
   partial: boolean;
+  /**
+   * Anchors whose results were read to the end (no error, no page cap, no
+   * deadline cut). Every event within their radius and horizon was returned.
+   */
+  completedAnchors: Anchor[];
+  /** Events starting after this were not collected. */
+  horizon: Date;
 }
 
 function sleep(ms: number): Promise<void> {
@@ -708,6 +720,8 @@ export async function fetchPlayriftboundEvents(options: PlayriftboundOptions = {
     duplicatesWithinSource: 0,
     failed: false,
     partial: anchors.length < allAnchors.length,
+    completedAnchors: [],
+    horizon,
   };
 
   // Configured override wins, then the cached/rediscovered hash, then the default.
@@ -738,6 +752,7 @@ export async function fetchPlayriftboundEvents(options: PlayriftboundOptions = {
     let after: string | null = null;
     let pages = 0;
     let anchorEvents = 0;
+    let anchorComplete = false;
 
     try {
       while (pages < MAX_PAGES_PER_ANCHOR) {
@@ -808,12 +823,16 @@ export async function fetchPlayriftboundEvents(options: PlayriftboundOptions = {
 
         // Results are ordered by date, so once a page ends past the calendar
         // horizon there is nothing left worth paging for at this anchor.
-        if (lastStart && lastStart > horizon) break;
-        if (!search.pageInfo?.hasNextPage || !search.pageInfo.endCursor) break;
+        if ((lastStart && lastStart > horizon) || !search.pageInfo?.hasNextPage || !search.pageInfo.endCursor) {
+          anchorComplete = true;
+          break;
+        }
         after = search.pageInfo.endCursor;
       }
 
-      if (pages >= MAX_PAGES_PER_ANCHOR) {
+      if (anchorComplete) {
+        result.completedAnchors.push(anchor);
+      } else if (pages >= MAX_PAGES_PER_ANCHOR) {
         console.warn(`[playriftbound]   ${anchor.name}: hit the ${MAX_PAGES_PER_ANCHOR}-page cap, results truncated`);
       }
       if (anchorEvents > 0) {

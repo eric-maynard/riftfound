@@ -16,9 +16,17 @@ import {
   loadUpcomingEventsDynamoDB,
   applyMergedEventFieldsDynamoDB,
   deleteEventsDynamoDB,
+  recordScrapeCycleDynamoDB,
+  recordShardSeenIdsDynamoDB,
+  loadScrapeCyclesDynamoDB,
+  loadShopsByGeohash4DynamoDB,
+  repointEventsToShopDynamoDB,
+  deleteShopsDynamoDB,
   type StoredEventSummary,
 } from './dynamodb.js';
 import type { MergeOwnedFields } from './merge.js';
+import type { ScrapeCycle } from './cancellations.js';
+import type { ShopCandidate } from './shopMatch.js';
 
 // Unified database interface
 export interface ScrapedEvent {
@@ -452,7 +460,8 @@ export interface UpsertEventResult {
 // Upsert event with store info from API (no geocoding needed)
 export async function upsertEventWithStore(
   rawEvent: ScrapedEvent,
-  rawStoreInfo: StoreInfo | null
+  rawStoreInfo: StoreInfo | null,
+  options: { existingShop?: boolean } = {}
 ): Promise<UpsertEventResult> {
   // Single choke point for both sources and all three backends: nothing reaches
   // a table without having its free text stripped of markup first (sanitize.ts).
@@ -460,7 +469,7 @@ export async function upsertEventWithStore(
   const storeInfo = rawStoreInfo ? sanitizeStoreInfo(rawStoreInfo) : null;
 
   if (useDynamoDB()) {
-    return upsertEventWithStoreDynamoDB(event, storeInfo);
+    return upsertEventWithStoreDynamoDB(event, storeInfo, options);
   }
 
   // First, upsert the shop with full coordinates from API
@@ -795,4 +804,48 @@ export async function applyMergedEventFields(
 export async function deleteEventsByExternalId(externalIds: string[]): Promise<number> {
   if (!useDynamoDB()) throw new Error('deleteEventsByExternalId is only implemented for DynamoDB');
   return deleteEventsDynamoDB(externalIds);
+}
+
+/** Record a sharded scrape cycle (coordinator). */
+export async function recordScrapeCycle(cycle: { cycleId: string; shardCount: number; totalExpected: number }): Promise<void> {
+  if (!useDynamoDB()) return;
+  return recordScrapeCycleDynamoDB(cycle);
+}
+
+/** Record the UVS event ids one shard saw (worker). */
+export async function recordShardSeenIds(
+  cycleId: string,
+  shardIndex: number,
+  ids: Iterable<string>,
+  complete: boolean
+): Promise<void> {
+  if (!useDynamoDB()) return;
+  return recordShardSeenIdsDynamoDB(cycleId, shardIndex, ids, complete);
+}
+
+/** Scrape cycles started within [since, until], newest first. */
+export async function loadScrapeCycles(since: Date, until: Date): Promise<ScrapeCycle[]> {
+  if (!useDynamoDB()) return [];
+  return loadScrapeCyclesDynamoDB(since, until);
+}
+
+/** Shop rows in the given precision-4 geohash cells. */
+export async function loadShopsByGeohash4(cells: string[]): Promise<ShopCandidate[]> {
+  if (!useDynamoDB()) throw new Error('loadShopsByGeohash4 is only implemented for DynamoDB');
+  return loadShopsByGeohash4DynamoDB(cells);
+}
+
+/** Point stored events at another shop row. */
+export async function repointEventsToShop(
+  events: { externalId: string; startDate: Date }[],
+  shop: ShopCandidate
+): Promise<number> {
+  if (!useDynamoDB()) throw new Error('repointEventsToShop is only implemented for DynamoDB');
+  return repointEventsToShopDynamoDB(events, shop);
+}
+
+/** Delete shop rows by external id. */
+export async function deleteShopsByExternalId(externalIds: number[]): Promise<number> {
+  if (!useDynamoDB()) throw new Error('deleteShopsByExternalId is only implemented for DynamoDB');
+  return deleteShopsDynamoDB(externalIds);
 }

@@ -304,3 +304,33 @@ export async function fetchEventsPage(
     hasMore: data.next_page_number !== null,
   };
 }
+
+/** Statuses on the UVS event detail endpoint that mean the event is off the calendar. */
+const GONE_EVENT_STATUSES = new Set(['CANCELED', 'CANCELLED', 'UNLISTED']);
+
+/**
+ * Ask UVS directly whether an event still exists, before deleting it for having
+ * dropped out of the listing. 'gone' only on a 404 or an explicit cancelled /
+ * unlisted status; anything unexpected is 'unknown' and the event is kept.
+ * Throws on rate limiting / server errors so the caller stops verifying.
+ */
+export async function fetchEventLiveness(externalId: string): Promise<'gone' | 'live' | 'unknown'> {
+  const response = await fetch(`${API_BASE}/events/${encodeURIComponent(externalId)}/`, {
+    headers: {
+      'User-Agent': 'Riftfound/1.0 (Event Aggregator)',
+      'Accept': 'application/json',
+    },
+    signal: AbortSignal.timeout(15_000),
+  });
+
+  if (response.status === 404) return 'gone';
+  if (response.status === 429 || response.status >= 500) {
+    throw new Error(`HTTP ${response.status} verifying event ${externalId}`);
+  }
+  if (!response.ok) return 'unknown';
+
+  const data = await response.json() as { id?: number; event_status?: string };
+  if (String(data.id) !== externalId) return 'unknown';
+  if (data.event_status && GONE_EVENT_STATUSES.has(data.event_status.toUpperCase())) return 'gone';
+  return data.event_status === 'SCHEDULED' ? 'live' : 'unknown';
+}
