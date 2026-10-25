@@ -17,6 +17,13 @@ import type { ScrapedEvent } from './database.js';
  *                   specific UVS category - that is a missing value, not a
  *                   better one.
  * - `url`        -> Riot. UVS has no event URL on any row; Riot has one on 100%.
+ * - `playFormat` -> Riot, always. It *is* Riot's `RiftboundTournamentConfig.format`,
+ *                   and no UVS record ever carries one (the UVS response has an
+ *                   `event_format` string, but api.ts does not read it), so
+ *                   there is nothing to weigh it against: Riot's value wins and
+ *                   a UVS write never overwrites it. Null is the normal,
+ *                   permanent value on rows Riot has never seen - see
+ *                   ScrapedEvent.playFormat.
  * - `playerCount`-> UVS. Riot returns an empty `registrantCounts` for ~70% of
  *                   events, so its count is null 72% of the time. Riot's value
  *                   is only used when UVS has none.
@@ -88,6 +95,10 @@ export function mergeEventRecords<U extends ScrapedEvent, P extends ScrapedEvent
     // Riot is authoritative.
     eventType: mergeEventType(uvsEvent.eventType, playriftboundEvent.eventType),
     url: playriftboundEvent.url ?? uvsEvent.url ?? null,
+    // Riot owns this outright - no UVS record carries a format. The fallback to
+    // the incumbent value is there so a node that happens to arrive without a
+    // format cannot wipe one we already captured: it is unbackfillable.
+    playFormat: playriftboundEvent.playFormat ?? uvsEvent.playFormat ?? null,
 
     // UVS wins, Riot only fills the gaps.
     playerCount: uvsEvent.playerCount ?? playriftboundEvent.playerCount ?? null,
@@ -109,6 +120,8 @@ export function mergeEventRecords<U extends ScrapedEvent, P extends ScrapedEvent
 export interface MergeOwnedFields {
   eventType: string | null;
   url: string | null;
+  /** Riot's event format enum; Riot-owned, so a UVS write must never drop it. */
+  playFormat: string | null;
   playerCount: number | null;
   capacity: number | null;
   price: string | null;
@@ -152,6 +165,9 @@ export function preserveMergedFields<T extends MergeOwnedInput>(
     ...incoming,
     eventType: mergeEventType(incoming.eventType, existing.eventType),
     url: incoming.url ?? existing.url ?? null,
+    // A UVS worker never has a playFormat, so without this every UVS re-write
+    // would blank a value that can never be recaptured for a past event.
+    playFormat: incoming.playFormat ?? existing.playFormat ?? null,
     playerCount: incoming.playerCount ?? existing.playerCount ?? null,
     capacity: incoming.capacity ?? existing.capacity ?? null,
     price: incoming.price ?? existing.price ?? null,
@@ -168,7 +184,7 @@ export function mergedFieldChanges(
   merged: MergeOwnedInput
 ): Partial<MergeOwnedFields> | null {
   const changes: Partial<MergeOwnedFields> = {};
-  const scalarKeys = ['eventType', 'url', 'playerCount', 'capacity', 'price'] as const;
+  const scalarKeys = ['eventType', 'url', 'playFormat', 'playerCount', 'capacity', 'price'] as const;
   for (const key of scalarKeys) {
     const before = stored[key] ?? null;
     const after = merged[key] ?? null;

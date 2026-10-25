@@ -11,9 +11,11 @@ import {
   UpsertShopResult,
   getPhotonQueue,
   clearPhotonQueue,
+  supportsEventFacts,
 } from './database.js';
 import { fetchEventsPage, fetchEventTemplates, getEventCount, type UvsEvent } from './api.js';
 import { fetchPlayriftboundEvents, PLAYRIFTBOUND_ID_PREFIX } from './sources/playriftbound.js';
+import { runPlayriftboundResultsPass } from './sources/playriftboundResults.js';
 import { addToDedupeIndex, markEventSeen, splitDuplicates, type DedupeIndex } from './dedupe.js';
 import { mergeEventRecords } from './merge.js';
 import { env } from './config.js';
@@ -134,6 +136,8 @@ async function runDistributedScrape(): Promise<{ found: number; created: number 
   let prbMergeSkipped = 0;
   let prbAnchorsQueried = 0;
   let prbAnchorsAvailable = 0;
+  let prbRostersWritten = 0;
+  let prbResultsWritten = 0;
 
   // Coordinates of every UVS event this cycle. The playriftbound API only
   // searches around a coordinate (with a hard ~161km radius cap), so these seed
@@ -293,6 +297,24 @@ async function runDistributedScrape(): Promise<{ found: number; created: number 
       console.log('\nplayriftbound source disabled (PLAYRIFTBOUND_ENABLED=false)');
     }
 
+    // Third pass over the same source: rosters for events about to happen and
+    // results for events that already did. It works off the event rows above
+    // rather than the network feed, so it runs last and its failures are its own.
+    if (env.PLAYRIFTBOUND_ENABLED && env.PLAYRIFTBOUND_RESULTS_ENABLED && supportsEventFacts()) {
+      console.log(`\n=== playriftbound rosters + results ===`);
+      try {
+        const factsSummary = await runPlayriftboundResultsPass({
+          requestDelayMs: env.PLAYRIFTBOUND_REQUEST_DELAY_MS,
+          maxEvents: env.PLAYRIFTBOUND_RESULTS_MAX_EVENTS_PER_RUN,
+          lookbackDays: env.PLAYRIFTBOUND_RESULTS_LOOKBACK_DAYS,
+        });
+        prbRostersWritten = factsSummary.rostersWritten;
+        prbResultsWritten = factsSummary.resultsWritten;
+      } catch (error) {
+        console.error('playriftbound results pass failed:', error instanceof Error ? error.message : error);
+      }
+    }
+
     // Process shops that need city geocoding
     if (shopsToGeocode.length > 0) {
       console.log(`\nGeocoding cities for ${shopsToGeocode.length} shops...`);
@@ -353,6 +375,9 @@ async function runDistributedScrape(): Promise<{ found: number; created: number 
       `${prbMerged > 0 ? ` (+${prbMerged} field-merged into UVS events)` : ''}`);
     if (prbAnchorsAvailable > 0) {
       console.log(`  playriftbound anchors swept: ${prbAnchorsQueried}/${prbAnchorsAvailable}`);
+    }
+    if (prbRostersWritten > 0 || prbResultsWritten > 0) {
+      console.log(`  playriftbound facts captured: ${prbRostersWritten} rosters, ${prbResultsWritten} results`);
     }
     console.log(`  Unique stores: ${totalStores}`);
     if (totalCitiesGeocoded > 0) {

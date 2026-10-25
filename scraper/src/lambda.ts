@@ -30,6 +30,9 @@ import {
   loadShopsByGeohash4,
   repointEventsToShop,
   deleteShopsByExternalId,
+  supportsEventFacts,
+  supportsRankingWrites,
+  getLastRankingRefit,
   type StoredEventSummary,
 } from './database.js';
 import { fetchEventLiveness, fetchEventsPage, fetchEventTemplates, getEventCount } from './api.js';
@@ -39,6 +42,9 @@ import {
   ANCHOR_RADIUS_METERS,
   PLAYRIFTBOUND_ID_PREFIX,
 } from './sources/playriftbound.js';
+import { runPlayriftboundResultsPass } from './sources/playriftboundResults.js';
+import { refitDue, runRankingPass } from './ranking/pass.js';
+import { parsePrereleaseTypes } from './ranking/sets.js';
 import {
   findCancelledPlayriftboundEvents,
   findCancelledUvsEvents,
@@ -83,10 +89,35 @@ interface PlayriftboundEvent {
   mode: 'playriftbound';
 }
 
+// Third pass (rosters + results) also gets its own invocation: it is a long run
+// of small, independent page fetches with no dependency on the other two passes
+// beyond the event rows they already wrote.
+interface PlayriftboundResultsEvent {
+  mode: 'playriftboundResults';
+}
+
+// Fourth pass (player ratings) is a batch refit of the whole stored history, so
+// it gets its own invocation *and* its own cadence: the coordinator only
+// dispatches it once `RANKING_REFIT_INTERVAL_HOURS` have passed since the last
+// one completed. Gating in the coordinator rather than with a second EventBridge
+// rule keeps this change inside the Lambda - no infrastructure to apply - and
+// means the cadence is an environment variable rather than a Terraform edit.
+interface RankingEvent {
+  mode: 'ranking';
+}
+
 // Time kept back from the sweep for the post-sweep table reload, upserts, city
 // geocoding and metrics.
 const PRB_RESERVED_MS = Number(process.env.PLAYRIFTBOUND_RESERVED_MS ?? '300000');
 const PRB_DAYS_FORWARD = 90;
+
+// The results pass writes as it goes, so it only needs enough slack to finish
+// the event it is on and log its summary.
+const PRB_RESULTS_RESERVED_MS = Number(process.env.PLAYRIFTBOUND_RESULTS_RESERVED_MS ?? '60000');
+
+// The rating pass writes everything at the end, so it needs enough slack left
+// to get the whole snapshot out rather than being killed mid-write.
+const RANKING_RESERVED_MS = Number(process.env.RANKING_RESERVED_MS ?? '120000');
 
 function isWorkerEvent(event: unknown): event is WorkerEvent {
   return typeof event === 'object' && event !== null &&
@@ -96,6 +127,16 @@ function isWorkerEvent(event: unknown): event is WorkerEvent {
 function isPlayriftboundEvent(event: unknown): event is PlayriftboundEvent {
   return typeof event === 'object' && event !== null &&
     (event as { mode?: string }).mode === 'playriftbound';
+}
+
+function isPlayriftboundResultsEvent(event: unknown): event is PlayriftboundResultsEvent {
+  return typeof event === 'object' && event !== null &&
+    (event as { mode?: string }).mode === 'playriftboundResults';
+}
+
+function isRankingEvent(event: unknown): event is RankingEvent {
+  return typeof event === 'object' && event !== null &&
+    (event as { mode?: string }).mode === 'ranking';
 }
 
 function isPlayriftboundId(externalId: string): boolean {
@@ -136,13 +177,19 @@ async function publishMetrics(metrics: {
  * - EventBridge scheduled invocations (no `mode` field) → coordinator.
  * - Coordinator's own async invocations (`mode: 'worker'`) → worker.
  * - Coordinator's own async invocation (`mode: 'playriftbound'`) → second source.
+ * - Coordinator's own async invocation (`mode: 'playriftboundResults'`) → rosters
+ *   and results for events already in the table.
+ * - Coordinator's own async invocation (`mode: 'ranking'`) → the player rating
+ *   refit, dispatched only when its interval has elapsed.
  */
 export async function handler(
-  event: ScheduledEvent | WorkerEvent | PlayriftboundEvent,
+  event: ScheduledEvent | WorkerEvent | PlayriftboundEvent | PlayriftboundResultsEvent | RankingEvent,
   context: Context
 ): Promise<{ statusCode: number; body: string }> {
   if (isWorkerEvent(event)) return runWorker(event, context);
   if (isPlayriftboundEvent(event)) return runPlayriftbound(context);
+  if (isPlayriftboundResultsEvent(event)) return runPlayriftboundResults(context);
+  if (isRankingEvent(event)) return runRanking(context);
   return runCoordinator(event as ScheduledEvent, context);
 }
 
@@ -216,6 +263,47 @@ async function runCoordinator(
       }));
     }
 
+    // Third pass likewise. It reads the event rows the previous cycle wrote, so
+    // it does not have to wait for this cycle's workers.
+    const playriftboundResultsDispatched =
+      env.PLAYRIFTBOUND_ENABLED && env.PLAYRIFTBOUND_RESULTS_ENABLED && supportsEventFacts();
+    if (playriftboundResultsDispatched) {
+      await lambda.send(new InvokeCommand({
+        FunctionName: functionName,
+        InvocationType: 'Event',
+        Payload: Buffer.from(
+          JSON.stringify({ mode: 'playriftboundResults' } satisfies PlayriftboundResultsEvent)
+        ),
+      }));
+    }
+
+    // Rating refit. Unlike the three scrape passes this one does not need to
+    // run every cycle - it is a refit of the whole stored history, not an
+    // increment - so the coordinator checks the elapsed time first and most
+    // cycles dispatch nothing.
+    let rankingDispatched = false;
+    let rankingSkippedReason: string | undefined;
+    if (!env.RANKING_ENABLED) rankingSkippedReason = 'disabled';
+    else if (!supportsRankingWrites()) rankingSkippedReason = 'requires DynamoDB';
+    else {
+      try {
+        const lastRefit = await getLastRankingRefit();
+        if (refitDue(lastRefit, env.RANKING_REFIT_INTERVAL_HOURS)) {
+          await lambda.send(new InvokeCommand({
+            FunctionName: functionName,
+            InvocationType: 'Event',
+            Payload: Buffer.from(JSON.stringify({ mode: 'ranking' } satisfies RankingEvent)),
+          }));
+          rankingDispatched = true;
+        } else {
+          rankingSkippedReason = `last refit ${lastRefit}, interval ${env.RANKING_REFIT_INTERVAL_HOURS}h`;
+        }
+      } catch (error) {
+        rankingSkippedReason = error instanceof Error ? error.message : String(error);
+        console.error('Rating refit dispatch check failed:', rankingSkippedReason);
+      }
+    }
+
     // Coordinator does the fast housekeeping itself; workers only page-scrape.
     let deletedCount = 0;
     if (context.getRemainingTimeInMillis() > 15000) {
@@ -238,6 +326,9 @@ async function runCoordinator(
       totalPages: pageCount,
       totalExpected,
       playriftboundDispatched,
+      playriftboundResultsDispatched,
+      rankingDispatched,
+      rankingSkippedReason,
       deletedOldEvents: deletedCount,
       cancelledEventsRemoved: cancelled.removed,
       cancelledEventsUnconfirmed: cancelled.unconfirmed ?? 0,
@@ -621,6 +712,133 @@ async function runPlayriftbound(
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error('playriftbound pass failed:', message);
+    await failScrapeRun(runId, message);
+    return { statusCode: 500, body: JSON.stringify({ error: message }) };
+  }
+}
+
+/**
+ * Third pass: one page fetch per event for rosters (pre-event) and results
+ * (post-event).
+ *
+ * Deadline-aware in exactly the same way as the playriftbound sweep: it stops
+ * before the invocation's budget runs out and whatever is left rolls over to the
+ * next run, rather than the pass being killed mid-write.
+ */
+async function runPlayriftboundResults(
+  context: Context
+): Promise<{ statusCode: number; body: string }> {
+  console.log('playriftbound results invocation');
+
+  if (!env.PLAYRIFTBOUND_RESULTS_ENABLED) {
+    return { statusCode: 200, body: JSON.stringify({ message: 'playriftbound results pass disabled' }) };
+  }
+  if (!supportsEventFacts()) {
+    return { statusCode: 200, body: JSON.stringify({ message: 'results storage requires DynamoDB' }) };
+  }
+
+  const runId = await startScrapeRun();
+  try {
+    const summary = await runPlayriftboundResultsPass({
+      requestDelayMs: env.PLAYRIFTBOUND_REQUEST_DELAY_MS,
+      maxEvents: env.PLAYRIFTBOUND_RESULTS_MAX_EVENTS_PER_RUN,
+      lookbackDays: env.PLAYRIFTBOUND_RESULTS_LOOKBACK_DAYS,
+      deadline: Date.now() + context.getRemainingTimeInMillis() - PRB_RESULTS_RESERVED_MS,
+    });
+
+    console.log('playriftbound results summary:', summary);
+    await completeScrapeRun(runId, {
+      eventsFound: summary.fetched,
+      eventsCreated: summary.resultsWritten + summary.rostersWritten,
+      eventsUpdated: 0,
+    });
+
+    await publishMetrics({
+      found: summary.fetched,
+      created: summary.resultsWritten + summary.rostersWritten,
+      updated: 0,
+      skipped: summary.unchanged,
+      skipRate: summary.fetched > 0 ? Math.round((summary.unchanged / summary.fetched) * 100) : 0,
+      durationMs: summary.durationMs,
+    }, 'playriftbound-results');
+
+    return { statusCode: 200, body: JSON.stringify(summary) };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error('playriftbound results pass failed:', message);
+    await failScrapeRun(runId, message);
+    return { statusCode: 500, body: JSON.stringify({ error: message }) };
+  }
+}
+
+/**
+ * Fourth pass: refit player ratings from the stored tournament facts.
+ *
+ * Reads only (fact rows + shop labels + event names), fits in memory, then
+ * writes the derived items in one go. Deadline-aware like the other passes, but
+ * with the opposite failure mode: it writes nothing if it cannot finish, because
+ * a ladder fitted on part of the history is worse than the previous ladder. The
+ * next cycle simply tries again.
+ */
+async function runRanking(context: Context): Promise<{ statusCode: number; body: string }> {
+  console.log('ranking invocation');
+
+  if (!env.RANKING_ENABLED) {
+    return { statusCode: 200, body: JSON.stringify({ message: 'rating pass disabled' }) };
+  }
+  if (!supportsRankingWrites()) {
+    return { statusCode: 200, body: JSON.stringify({ message: 'ratings require DynamoDB' }) };
+  }
+
+  const runId = await startScrapeRun();
+  try {
+    const summary = await runRankingPass({
+      historyDays: env.RANKING_HISTORY_DAYS,
+      maxMatches: env.RANKING_MAX_MATCHES,
+      setTable: env.RANKING_SET_TABLE,
+      prerelease: {
+        prereleaseTypes: parsePrereleaseTypes(env.RANKING_PRERELEASE_TYPES),
+        leadDays: env.RANKING_PRERELEASE_LEAD_DAYS,
+      },
+      deadline: Date.now() + context.getRemainingTimeInMillis() - RANKING_RESERVED_MS,
+      whr: {
+        priorSigmaElo: env.RANKING_PRIOR_SIGMA_ELO,
+        driftEloPerSqrtDay: env.RANKING_DRIFT_ELO_PER_SQRT_DAY,
+        observationLevel: env.RANKING_OBSERVATION_LEVEL,
+        weightScale: env.RANKING_WEIGHT_SCALE,
+        maxIterations: env.RANKING_MAX_ITERATIONS,
+      },
+      snapshot: {
+        minGames: env.RANKING_MIN_GAMES,
+        maxUncertaintyElo: env.RANKING_MAX_UNCERTAINTY_ELO,
+        minComponentSize: env.RANKING_MIN_COMPONENT_SIZE,
+        maxComponentLadders: env.RANKING_MAX_COMPONENT_LADDERS,
+        minSetMatches: env.RANKING_MIN_SET_MATCHES,
+      },
+    });
+
+    console.log('ranking summary:', summary);
+    await completeScrapeRun(runId, {
+      eventsFound: summary.eventsWithResults,
+      eventsCreated: summary.writes?.profiles ?? 0,
+      eventsUpdated: summary.writes?.rankingRows ?? 0,
+    });
+
+    await publishMetrics({
+      found: summary.matches,
+      created: summary.ratedPlayers,
+      updated: summary.playersWithMatches,
+      skipped: summary.playersWithMatches - summary.ratedPlayers,
+      skipRate: summary.playersWithMatches > 0
+        ? Math.round(((summary.playersWithMatches - summary.ratedPlayers) / summary.playersWithMatches) * 100)
+        : 0,
+      durationMs: summary.durationMs,
+    }, 'ranking');
+
+    return { statusCode: summary.partial ? 202 : 200, body: JSON.stringify(summary) };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error('ranking pass failed:', message);
     await failScrapeRun(runId, message);
     return { statusCode: 500, body: JSON.stringify({ error: message }) };
   }

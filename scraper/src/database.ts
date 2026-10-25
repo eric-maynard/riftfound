@@ -1,7 +1,16 @@
 import { Pool } from 'pg';
 import Database from 'better-sqlite3';
+import { createHash } from 'node:crypto';
 import { env } from './config.js';
-import { sanitizeScrapedEvent, sanitizeStoreInfo } from './sanitize.js';
+import {
+  sanitizeEventResults,
+  sanitizeEventRoster,
+  sanitizeRankingSnapshot,
+  sanitizeScrapedEvent,
+  sanitizeStoreInfo,
+} from './sanitize.js';
+// Value import, but the chain back here is type-only, so there is no cycle.
+import { PLAYRIFTBOUND_ID_PREFIX } from './sources/playriftbound.js';
 import {
   startScrapeRunDynamoDB,
   completeScrapeRunDynamoDB,
@@ -22,8 +31,29 @@ import {
   loadShopsByGeohash4DynamoDB,
   repointEventsToShopDynamoDB,
   deleteShopsDynamoDB,
+  loadEventFactCandidatesDynamoDB,
+  putEventResultsDynamoDB,
+  putEventRosterDynamoDB,
+  getEventResultsDynamoDB,
+  loadEventFactsByDateDynamoDB,
+  loadEventNamesDynamoDB,
+  loadMatchLogMarkersDynamoDB,
+  loadShopLabelsDynamoDB,
+  saveRankingSnapshotDynamoDB,
+  getLastRankingRefitDynamoDB,
+  setLastRankingRefitDynamoDB,
+  getPlayerProfileDynamoDB,
+  getRankingRowsDynamoDB,
+  type RankingWriteSummary,
   type StoredEventSummary,
 } from './dynamodb.js';
+import type {
+  PlayerMatchLogEntry,
+  PlayerProfile,
+  PlayerRatingPoint,
+  RankingRow,
+  RankingSnapshot,
+} from './ranking/items.js';
 import type { MergeOwnedFields } from './merge.js';
 import type { ScrapeCycle } from './cancellations.js';
 import type { ShopCandidate } from './shopMatch.js';
@@ -56,6 +86,186 @@ export interface ScrapedEvent {
    * and is stored so the origin of a row stays inspectable.
    */
   sources?: string[] | null;
+  /**
+   * Riot's `RiftboundTournamentConfig.format` enum, verbatim (`CONSTRUCTED`,
+   * `SEALED`, …). SQL column `play_format`.
+   *
+   * **Not called `format`, deliberately.** The frontend already ships a
+   * user-facing "Format" filter that actually filters `eventType` (All /
+   * Constructed / Sealed / Draft / Multiplayer), so a bare `format` in this
+   * schema would collide with an established label that means something else
+   * and invite a real bug. `playFormat` is Riot's field and nothing else.
+   *
+   * Stored raw rather than normalised to title case: it is an enum, and Riot's
+   * enums in this feed demonstrably change (see the `tournamentType`
+   * correction in scraper/CLAUDE.md), so readers map it, we do not.
+   *
+   * **Prospective only, and permanently so.** The playriftbound search API is
+   * the only surface that exposes it and that API is upcoming-only; the event
+   * detail page the results pass reads has no format field at all. So every
+   * event that was already stored without it - and every event that happens
+   * before this field shipped - will never have one. Null is normal, forever.
+   *
+   * Only the playriftbound source sets it. No UVS record carries one: the UVS
+   * response does have an unused `event_format` string (see ApiEvent in
+   * api.ts), but nothing reads it and nothing here is derived from it.
+   */
+  playFormat?: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// Tournament facts: who registered for an event, and what happened in it
+// (sources/playriftboundResults.ts)
+// ---------------------------------------------------------------------------
+
+/**
+ * How finished a stored results capture is.
+ *
+ * `final` - every round FINALIZED. Immutable, never fetched again.
+ * `partial` - a round was still live when we looked. Gets one re-check, then is
+ *           accepted as-is. (Match status is deliberately not part of this:
+ *           Riot leaves matches IN_PROGRESS inside FINALIZED rounds.)
+ * `none`  - the event happened but no pairings were ever run through Riot's
+ *           software. ~29% of finished events; a fact, not an error.
+ */
+export type EventResultsStatus = 'final' | 'partial' | 'none';
+
+/** Where a roster came from: dated signups, or who actually played. */
+export type RosterSource = 'registrants' | 'participants';
+
+/**
+ * Event context copied onto every fact.
+ *
+ * Deliberately denormalised: a rating pass replaying the whole history needs
+ * each match's date, event type and venue, and the event rows themselves are
+ * aged out (deleteOldEvents, plus a TTL) long before the facts are.
+ */
+export interface EventFactContext {
+  /** Our event id, e.g. `prb-117209411862156256`. */
+  externalId: string;
+  /** Riot's tournament id (the external id without the `prb-` prefix). */
+  tournamentId: string;
+  eventStartDate: Date;
+  eventType: string | null;
+  /**
+   * Riot's event `format` enum as stored on the event row (see
+   * `ScrapedEvent.playFormat`). Carried onto every fact because the facts
+   * outlive the event rows, and because this is the *only* route by which a
+   * rating pass could ever see format: facts are written from the detail page,
+   * which has no format field of its own.
+   *
+   * Null on every fact captured for an event discovered before this field
+   * shipped, and on every UVS-only event. That is permanent and normal.
+   */
+  playFormat: string | null;
+  shopExternalId: number | null;
+  latitude: number | null;
+  longitude: number | null;
+}
+
+/** One player in an event's field. `playerId` is Riot's stable account UUID. */
+export interface RosterEntry {
+  /** Stable Riot UUID - the identity key for everything downstream. */
+  playerId: string;
+  /** Mutable presentation data: display names are user-editable and churn. */
+  name: string | null;
+  tagLine: string | null;
+  /** `esportsTeamId`, when known - the join key into standings and pairings. */
+  teamId: string | null;
+  status: string | null;
+  checkedIn: boolean | null;
+  waitlistPosition: number | null;
+  /** When this player signed up (Riot's `acceptedTermsAt`). */
+  registeredAt: string | null;
+}
+
+export interface EventRoster extends EventFactContext {
+  source: RosterSource;
+  playerCount: number;
+  entries: RosterEntry[];
+  capturedAt: string;
+}
+
+/** `esportsTeamId` -> the player behind it. In 1v1 Constructed a team is one player. */
+export interface ResultPlayer {
+  teamId: string;
+  playerId: string | null;
+  name: string | null;
+  tagLine: string | null;
+}
+
+export interface ResultStanding {
+  rank: number;
+  teamId: string;
+  matchPoints: number | null;
+  matchWins: number | null;
+  matchLosses: number | null;
+  matchDraws: number | null;
+  /** Riot's Swiss tiebreakers, as fractions rounded to 4 places. */
+  opponentMatchWinPct: number | null;
+  gameWinPct: number | null;
+  opponentGameWinPct: number | null;
+}
+
+export interface ResultMatchSide {
+  teamId: string;
+  outcome: string | null;
+  gameWins: number;
+}
+
+export interface ResultGame {
+  number: number;
+  winnerTeamId: string | null;
+}
+
+export interface ResultMatch {
+  matchId: string;
+  tableNumber: number | null;
+  status: string | null;
+  /** A bye, not a played match: it must never count towards a rating. */
+  bye: boolean;
+  sides: ResultMatchSide[];
+  games: ResultGame[];
+}
+
+export interface ResultRound {
+  /** Index of the stage section this round belongs to (swiss, top cut, …). */
+  section: number;
+  roundNumber: number;
+  status: string | null;
+  byeTeamIds: string[];
+  matches: ResultMatch[];
+}
+
+export interface EventResults extends EventFactContext {
+  status: EventResultsStatus;
+  roundCount: number;
+  playerCount: number;
+  /** Matches not yet COMPLETED - why a capture can be `partial`. */
+  openMatches: number;
+  players: ResultPlayer[];
+  /** Final standings only; the per-round tables are reconstructible. */
+  standings: ResultStanding[];
+  rounds: ResultRound[];
+  /** Riot's own `updatedAt` on the tournament. */
+  sourceUpdatedAt: string | null;
+  capturedAt: string;
+  /** True when the pairings were dropped to keep the row inside DynamoDB's item limit. */
+  trimmed?: boolean;
+}
+
+/** Stored bookkeeping for one event's results capture. */
+export interface StoredResultsMeta {
+  status: EventResultsStatus;
+  /** Successful fetches so far. Capped at MAX_ATTEMPTS. */
+  attempts: number;
+  lastCheckedAt: Date | null;
+}
+
+/** A stored `prb-` event, with what we have already captured for it. */
+export interface EventFactCandidate extends EventFactContext {
+  results: StoredResultsMeta | null;
+  hasRoster: boolean;
 }
 
 // SQLite implementation
@@ -114,6 +324,10 @@ function initSqliteSchema(db: Database.Database) {
       url TEXT,
       image_url TEXT,
       sources TEXT,
+      -- Riot's RiftboundTournamentConfig.format, verbatim. Named play_format
+      -- rather than format because the UI's "Format" filter means event_type;
+      -- see ScrapedEvent.playFormat.
+      play_format TEXT,
       shop_id INTEGER REFERENCES shops(id),
       created_at TEXT DEFAULT (datetime('now')),
       updated_at TEXT DEFAULT (datetime('now')),
@@ -162,6 +376,121 @@ function initSqliteSchema(db: Database.Database) {
     );
 
     CREATE INDEX IF NOT EXISTS idx_photon_queue_created_at ON photon_queue(created_at);
+
+    -- Tournament facts (sources/playriftboundResults.ts). One row per event:
+    -- the common read is "the results for this event", and a capture is written
+    -- once rather than row by row, so there is nothing to gain from splitting
+    -- matches or standings out into their own tables.
+    CREATE TABLE IF NOT EXISTS event_results (
+      external_id TEXT PRIMARY KEY,
+      tournament_id TEXT NOT NULL,
+      event_start_date TEXT NOT NULL,
+      event_type TEXT,
+      play_format TEXT,
+      shop_external_id INTEGER,
+      latitude REAL,
+      longitude REAL,
+      status TEXT NOT NULL,
+      round_count INTEGER NOT NULL DEFAULT 0,
+      player_count INTEGER NOT NULL DEFAULT 0,
+      open_matches INTEGER NOT NULL DEFAULT 0,
+      trimmed INTEGER NOT NULL DEFAULT 0,
+      source_updated_at TEXT,
+      digest TEXT NOT NULL,
+      payload TEXT NOT NULL,
+      attempts INTEGER NOT NULL DEFAULT 0,
+      first_captured_at TEXT NOT NULL,
+      last_checked_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_event_results_start ON event_results(event_start_date);
+
+    CREATE TABLE IF NOT EXISTS event_rosters (
+      external_id TEXT PRIMARY KEY,
+      tournament_id TEXT NOT NULL,
+      event_start_date TEXT NOT NULL,
+      event_type TEXT,
+      play_format TEXT,
+      shop_external_id INTEGER,
+      latitude REAL,
+      longitude REAL,
+      source TEXT NOT NULL,
+      player_count INTEGER NOT NULL DEFAULT 0,
+      payload TEXT NOT NULL,
+      captured_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_event_rosters_start ON event_rosters(event_start_date);
+
+    -- Derived player ratings (ranking/). Mirrors the DynamoDB key shapes so the
+    -- two backends answer the same questions: a player's partition is one
+    -- player_id, a ladder page is one (scope, page).
+    CREATE TABLE IF NOT EXISTS player_profiles (
+      player_id TEXT PRIMARY KEY,
+      display_name TEXT,
+      rating REAL,
+      rated INTEGER NOT NULL DEFAULT 0,
+      component_id TEXT,
+      payload TEXT NOT NULL,
+      generated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS player_rating_history (
+      player_id TEXT NOT NULL,
+      scope TEXT NOT NULL,
+      date TEXT NOT NULL,
+      payload TEXT NOT NULL,
+      PRIMARY KEY (player_id, scope, date)
+    );
+
+    CREATE TABLE IF NOT EXISTS player_matches (
+      player_id TEXT NOT NULL,
+      played_at TEXT NOT NULL,
+      match_id TEXT NOT NULL,
+      event_external_id TEXT NOT NULL,
+      payload TEXT NOT NULL,
+      PRIMARY KEY (player_id, played_at, match_id)
+    );
+
+    -- One row per player per leaderboard, keyed by rank: the SQLite mirror of
+    -- the RANKING#<scope> / RANK#<nnnnnn>#<playerId> items.
+    CREATE TABLE IF NOT EXISTS ranking_rows (
+      scope TEXT NOT NULL,
+      rank INTEGER NOT NULL,
+      player_id TEXT NOT NULL,
+      payload TEXT NOT NULL,
+      PRIMARY KEY (scope, player_id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_ranking_rows_rank ON ranking_rows(scope, rank);
+
+    CREATE TABLE IF NOT EXISTS ranking_meta (
+      scope TEXT PRIMARY KEY,
+      payload TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS ranking_components (
+      component_id TEXT PRIMARY KEY,
+      payload TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS ranking_sets (
+      set_id TEXT PRIMARY KEY,
+      payload TEXT NOT NULL
+    );
+
+    -- Write-once bookkeeping for the per-player match log, so a refit does not
+    -- re-emit entries it already wrote.
+    CREATE TABLE IF NOT EXISTS ranking_log_markers (
+      event_external_id TEXT PRIMARY KEY,
+      version INTEGER NOT NULL,
+      written_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS ranking_state (
+      key TEXT PRIMARY KEY,
+      completed_at TEXT NOT NULL
+    );
   `);
 
   // Add new columns if they don't exist (migrations for existing DBs)
@@ -179,6 +508,18 @@ function initSqliteSchema(db: Database.Database) {
   } catch { /* column exists */ }
   try {
     db.exec(`ALTER TABLE events ADD COLUMN sources TEXT`);
+  } catch { /* column exists */ }
+  // Riot's event format (see ScrapedEvent.playFormat). Additive: existing rows
+  // keep NULL, which is the permanent and correct value for them - the field
+  // cannot be backfilled.
+  try {
+    db.exec(`ALTER TABLE events ADD COLUMN play_format TEXT`);
+  } catch { /* column exists */ }
+  try {
+    db.exec(`ALTER TABLE event_results ADD COLUMN play_format TEXT`);
+  } catch { /* column exists */ }
+  try {
+    db.exec(`ALTER TABLE event_rosters ADD COLUMN play_format TEXT`);
   } catch { /* column exists */ }
   try {
     db.exec(`ALTER TABLE events ADD COLUMN shop_id INTEGER REFERENCES shops(id)`);
@@ -512,7 +853,8 @@ async function upsertEventInternal(event: ScrapedEvent, shopId: number | null): 
           name = ?, description = ?, location = ?, address = ?, city = ?, state = ?,
           country = ?, latitude = ?, longitude = ?, start_date = ?, start_time = ?,
           end_date = ?, event_type = ?, organizer = ?, player_count = ?, capacity = ?,
-          price = ?, url = ?, image_url = ?, sources = ?, shop_id = ?, scraped_at = datetime('now'), updated_at = datetime('now')
+          price = ?, url = ?, image_url = ?, sources = ?, play_format = ?, shop_id = ?,
+          scraped_at = datetime('now'), updated_at = datetime('now')
         WHERE external_id = ?
       `).run(
         event.name, event.description ?? null, event.location ?? null,
@@ -522,7 +864,7 @@ async function upsertEventInternal(event: ScrapedEvent, shopId: number | null): 
         event.endDate?.toISOString() ?? null, event.eventType ?? null,
         event.organizer ?? null, event.playerCount ?? null, event.capacity ?? null,
         event.price ?? null, event.url ?? null, event.imageUrl ?? null,
-        serializeSources(event.sources), shopId, event.externalId
+        serializeSources(event.sources), event.playFormat ?? null, shopId, event.externalId
       );
       return { created: false };
     } else {
@@ -530,8 +872,8 @@ async function upsertEventInternal(event: ScrapedEvent, shopId: number | null): 
         INSERT INTO events (
           external_id, name, description, location, address, city, state, country,
           latitude, longitude, start_date, start_time, end_date, event_type, organizer,
-          player_count, capacity, price, url, image_url, sources, shop_id, scraped_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+          player_count, capacity, price, url, image_url, sources, play_format, shop_id, scraped_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
       `).run(
         event.externalId, event.name, event.description ?? null, event.location ?? null,
         event.address ?? null, event.city ?? null, event.state ?? null,
@@ -540,13 +882,14 @@ async function upsertEventInternal(event: ScrapedEvent, shopId: number | null): 
         event.endDate?.toISOString() ?? null, event.eventType ?? null,
         event.organizer ?? null, event.playerCount ?? null, event.capacity ?? null,
         event.price ?? null, event.url ?? null, event.imageUrl ?? null,
-        serializeSources(event.sources), shopId
+        serializeSources(event.sources), event.playFormat ?? null, shopId
       );
       return { created: true };
     }
   } else {
-    // Note: the PostgreSQL dev schema (infrastructure/init.sql) has no `sources`
-    // column, so origin tracking is persisted on SQLite and DynamoDB only.
+    // Note: the PostgreSQL dev schema (infrastructure/init.sql) has neither a
+    // `sources` nor a `play_format` column, so origin tracking and Riot's event
+    // format are persisted on SQLite and DynamoDB only.
     const pool = getPgPool();
     const result = await pool.query(
       `INSERT INTO events (
@@ -779,6 +1122,7 @@ export async function closePool(): Promise<void> {
 // ---------------------------------------------------------------------------
 
 export type { StoredEventSummary } from './dynamodb.js';
+export type { RankingWriteSummary } from './dynamodb.js';
 
 /** Whether the table-backed playriftbound pass (lambda.ts) can run on this backend. */
 export function supportsStoredEventReads(): boolean {
@@ -848,4 +1192,607 @@ export async function repointEventsToShop(
 export async function deleteShopsByExternalId(externalIds: number[]): Promise<number> {
   if (!useDynamoDB()) throw new Error('deleteShopsByExternalId is only implemented for DynamoDB');
   return deleteShopsDynamoDB(externalIds);
+}
+
+// ---------------------------------------------------------------------------
+// Tournament facts (sources/playriftboundResults.ts)
+// ---------------------------------------------------------------------------
+
+/**
+ * Whether this backend can store tournament facts.
+ *
+ * PostgreSQL is the dev-only backend and its schema (infrastructure/init.sql) is
+ * not managed from here, so it is left out rather than half-supported.
+ */
+export function supportsEventFacts(): boolean {
+  return useDynamoDB() || useSqlite();
+}
+
+/**
+ * Fingerprint of a capture's actual content, metadata excluded.
+ *
+ * Results are immutable once an organizer finalises them, so a re-check almost
+ * always reads back exactly what we already stored. Comparing digests lets the
+ * re-check write only its bookkeeping (attempt counter, timestamp) instead of
+ * rewriting the whole row - the same skip-unchanged discipline the event upsert
+ * uses, and the reason a re-check costs almost nothing.
+ */
+export function eventResultsDigest(results: EventResults): string {
+  return createHash('sha256')
+    .update(
+      JSON.stringify([
+        results.status,
+        results.openMatches,
+        results.sourceUpdatedAt,
+        results.trimmed ?? false,
+        results.players,
+        results.standings,
+        results.rounds,
+      ])
+    )
+    .digest('hex');
+}
+
+/** The content half of a results row, stored as one JSON blob on SQLite. */
+function resultsPayload(results: EventResults): string {
+  return JSON.stringify({
+    players: results.players,
+    standings: results.standings,
+    rounds: results.rounds,
+  });
+}
+
+/**
+ * Stored `prb-` events in the window, with whatever we have already captured.
+ *
+ * `daysBack` covers finished events awaiting a results capture, `daysForward`
+ * the ones close enough to their start to be worth a roster snapshot.
+ */
+export async function loadEventFactCandidates(
+  window: { daysBack: number; daysForward: number }
+): Promise<EventFactCandidate[]> {
+  if (useDynamoDB()) return loadEventFactCandidatesDynamoDB(window);
+  if (!useSqlite()) throw new Error('loadEventFactCandidates is not implemented for PostgreSQL');
+
+  const db = getSqliteDb();
+  const since = new Date(Date.now() - window.daysBack * 86_400_000).toISOString();
+  const until = new Date(Date.now() + window.daysForward * 86_400_000).toISOString();
+
+  const rows = db.prepare(`
+    SELECT
+      e.external_id, e.start_date, e.event_type, e.play_format, e.latitude, e.longitude,
+      s.external_id AS shop_external_id,
+      r.status AS results_status, r.attempts AS results_attempts, r.last_checked_at,
+      ro.external_id AS roster_external_id
+    FROM events e
+    LEFT JOIN shops s ON s.id = e.shop_id
+    LEFT JOIN event_results r ON r.external_id = e.external_id
+    LEFT JOIN event_rosters ro ON ro.external_id = e.external_id
+    WHERE e.external_id LIKE ? AND e.start_date >= ? AND e.start_date <= ?
+  `).all(`${PLAYRIFTBOUND_ID_PREFIX}%`, since, until) as Array<{
+    external_id: string;
+    start_date: string;
+    event_type: string | null;
+    play_format: string | null;
+    latitude: number | null;
+    longitude: number | null;
+    shop_external_id: number | null;
+    results_status: EventResultsStatus | null;
+    results_attempts: number | null;
+    last_checked_at: string | null;
+    roster_external_id: string | null;
+  }>;
+
+  return rows.map(row => ({
+    externalId: row.external_id,
+    tournamentId: row.external_id.slice(PLAYRIFTBOUND_ID_PREFIX.length),
+    eventStartDate: new Date(row.start_date),
+    eventType: row.event_type,
+    // Null for every event stored before this column existed - permanent, and
+    // never an error (see EventFactContext.playFormat).
+    playFormat: row.play_format ?? null,
+    shopExternalId: row.shop_external_id,
+    latitude: row.latitude,
+    longitude: row.longitude,
+    results: row.results_status
+      ? {
+          status: row.results_status,
+          attempts: row.results_attempts ?? 0,
+          lastCheckedAt: row.last_checked_at ? new Date(row.last_checked_at) : null,
+        }
+      : null,
+    hasRoster: row.roster_external_id !== null,
+  }));
+}
+
+/**
+ * Store one event's results capture.
+ *
+ * Player display names and tag lines are cleaned here as well as at the
+ * converter, so no code path can write raw text to a table (see sanitize.ts).
+ */
+export async function saveEventResults(rawResults: EventResults): Promise<{ skipped: boolean }> {
+  const results = sanitizeEventResults(rawResults);
+  const digest = eventResultsDigest(results);
+
+  if (useDynamoDB()) return putEventResultsDynamoDB(results, digest);
+  if (!useSqlite()) throw new Error('saveEventResults is not implemented for PostgreSQL');
+
+  const db = getSqliteDb();
+  const now = new Date().toISOString();
+  const existing = db.prepare(
+    'SELECT digest, attempts, first_captured_at FROM event_results WHERE external_id = ?'
+  ).get(results.externalId) as { digest: string; attempts: number; first_captured_at: string } | undefined;
+
+  const attempts = (existing?.attempts ?? 0) + 1;
+
+  if (existing && existing.digest === digest) {
+    // Nothing new on the page: only the bookkeeping moves.
+    db.prepare(
+      'UPDATE event_results SET attempts = ?, last_checked_at = ? WHERE external_id = ?'
+    ).run(attempts, now, results.externalId);
+    return { skipped: true };
+  }
+
+  db.prepare(`
+    INSERT INTO event_results (
+      external_id, tournament_id, event_start_date, event_type, play_format, shop_external_id,
+      latitude, longitude, status, round_count, player_count, open_matches, trimmed,
+      source_updated_at, digest, payload, attempts, first_captured_at, last_checked_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(external_id) DO UPDATE SET
+      status = excluded.status, round_count = excluded.round_count,
+      player_count = excluded.player_count, open_matches = excluded.open_matches,
+      trimmed = excluded.trimmed, source_updated_at = excluded.source_updated_at,
+      digest = excluded.digest, payload = excluded.payload,
+      attempts = excluded.attempts, last_checked_at = excluded.last_checked_at
+  `).run(
+    results.externalId, results.tournamentId, results.eventStartDate.toISOString(),
+    results.eventType, results.playFormat ?? null, results.shopExternalId,
+    results.latitude, results.longitude,
+    results.status, results.roundCount, results.playerCount, results.openMatches,
+    results.trimmed ? 1 : 0, results.sourceUpdatedAt, digest, resultsPayload(results),
+    attempts, existing?.first_captured_at ?? results.capturedAt, now
+  );
+  return { skipped: false };
+}
+
+/**
+ * Store one event's roster.
+ *
+ * Rosters are write-once facts: a dated registrant list cannot be reconstructed
+ * later, so an existing row is never replaced by a thinner one.
+ */
+export async function saveEventRoster(rawRoster: EventRoster): Promise<{ skipped: boolean }> {
+  const roster = sanitizeEventRoster(rawRoster);
+
+  if (useDynamoDB()) return putEventRosterDynamoDB(roster);
+  if (!useSqlite()) throw new Error('saveEventRoster is not implemented for PostgreSQL');
+
+  const db = getSqliteDb();
+  const result = db.prepare(`
+    INSERT INTO event_rosters (
+      external_id, tournament_id, event_start_date, event_type, play_format, shop_external_id,
+      latitude, longitude, source, player_count, payload, captured_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(external_id) DO NOTHING
+  `).run(
+    roster.externalId, roster.tournamentId, roster.eventStartDate.toISOString(),
+    roster.eventType, roster.playFormat ?? null, roster.shopExternalId,
+    roster.latitude, roster.longitude,
+    roster.source, roster.playerCount, JSON.stringify({ entries: roster.entries }),
+    roster.capturedAt
+  );
+  return { skipped: result.changes === 0 };
+}
+
+/**
+ * The results for one event, in a single lookup.
+ *
+ * This is the read everything downstream does, and the reason a capture is one
+ * row rather than a row per match or per standing.
+ */
+export async function getEventResults(externalId: string): Promise<EventResults | null> {
+  if (useDynamoDB()) return getEventResultsDynamoDB(externalId);
+  if (!useSqlite()) throw new Error('getEventResults is not implemented for PostgreSQL');
+
+  const row = getSqliteDb()
+    .prepare('SELECT * FROM event_results WHERE external_id = ?')
+    .get(externalId) as SqliteResultsRow | undefined;
+  return row ? resultsFromSqliteRow(row) : null;
+}
+
+/**
+ * Every fact recorded for events that started on one UTC day.
+ *
+ * A rating pass replays history by walking these day by day: on DynamoDB each
+ * call is two Queries against GSI1's `RESULTS#<date>` / `ROSTER#<date>`
+ * partitions, so the whole history is readable in order without ever scanning
+ * the table.
+ */
+export async function loadEventFactsByDate(
+  date: string
+): Promise<{ results: EventResults[]; rosters: EventRoster[] }> {
+  if (useDynamoDB()) return loadEventFactsByDateDynamoDB(date);
+  if (!useSqlite()) throw new Error('loadEventFactsByDate is not implemented for PostgreSQL');
+
+  const db = getSqliteDb();
+  const from = `${date}T00:00:00.000Z`;
+  const to = `${date}T23:59:59.999Z`;
+  const results = (db.prepare(
+    'SELECT * FROM event_results WHERE event_start_date BETWEEN ? AND ? ORDER BY event_start_date'
+  ).all(from, to) as SqliteResultsRow[]).map(resultsFromSqliteRow);
+  const rosters = (db.prepare(
+    'SELECT * FROM event_rosters WHERE event_start_date BETWEEN ? AND ? ORDER BY event_start_date'
+  ).all(from, to) as SqliteRosterRow[]).map(rosterFromSqliteRow);
+  return { results, rosters };
+}
+
+interface SqliteResultsRow {
+  external_id: string;
+  tournament_id: string;
+  event_start_date: string;
+  event_type: string | null;
+  play_format: string | null;
+  shop_external_id: number | null;
+  latitude: number | null;
+  longitude: number | null;
+  status: EventResultsStatus;
+  round_count: number;
+  player_count: number;
+  open_matches: number;
+  trimmed: number;
+  source_updated_at: string | null;
+  payload: string;
+  first_captured_at: string;
+  last_checked_at: string;
+}
+
+interface SqliteRosterRow {
+  external_id: string;
+  tournament_id: string;
+  event_start_date: string;
+  event_type: string | null;
+  play_format: string | null;
+  shop_external_id: number | null;
+  latitude: number | null;
+  longitude: number | null;
+  source: RosterSource;
+  player_count: number;
+  payload: string;
+  captured_at: string;
+}
+
+function resultsFromSqliteRow(row: SqliteResultsRow): EventResults {
+  const payload = JSON.parse(row.payload) as Pick<EventResults, 'players' | 'standings' | 'rounds'>;
+  return {
+    externalId: row.external_id,
+    tournamentId: row.tournament_id,
+    eventStartDate: new Date(row.event_start_date),
+    eventType: row.event_type,
+    playFormat: row.play_format ?? null,
+    shopExternalId: row.shop_external_id,
+    latitude: row.latitude,
+    longitude: row.longitude,
+    status: row.status,
+    roundCount: row.round_count,
+    playerCount: row.player_count,
+    openMatches: row.open_matches,
+    players: payload.players ?? [],
+    standings: payload.standings ?? [],
+    rounds: payload.rounds ?? [],
+    sourceUpdatedAt: row.source_updated_at,
+    capturedAt: row.first_captured_at,
+    trimmed: row.trimmed === 1,
+  };
+}
+
+function rosterFromSqliteRow(row: SqliteRosterRow): EventRoster {
+  const payload = JSON.parse(row.payload) as { entries?: RosterEntry[] };
+  return {
+    externalId: row.external_id,
+    tournamentId: row.tournament_id,
+    eventStartDate: new Date(row.event_start_date),
+    eventType: row.event_type,
+    playFormat: row.play_format ?? null,
+    shopExternalId: row.shop_external_id,
+    latitude: row.latitude,
+    longitude: row.longitude,
+    source: row.source,
+    playerCount: row.player_count,
+    entries: payload.entries ?? [],
+    capturedAt: row.captured_at,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Derived player ratings (ranking/)
+// ---------------------------------------------------------------------------
+
+/**
+ * Whether this backend can store derived ratings.
+ *
+ * Same rule as supportsEventFacts: DynamoDB is production and SQLite is dev,
+ * while PostgreSQL's schema (infrastructure/init.sql) is not managed from here
+ * and is left out rather than half-supported. Keeping SQLite in means
+ * `./dev.sh` can run a real refit, and the storage-shape tests run against a
+ * real throwaway database rather than a mock.
+ */
+export function supportsRankingWrites(): boolean {
+  return useDynamoDB() || useSqlite();
+}
+
+/** Events whose per-player match log is already written at `version`. */
+export async function loadMatchLogMarkers(
+  eventExternalIds: string[],
+  version: number
+): Promise<Set<string>> {
+  if (eventExternalIds.length === 0) return new Set();
+  if (useDynamoDB()) return loadMatchLogMarkersDynamoDB(eventExternalIds, version);
+  if (!useSqlite()) throw new Error('loadMatchLogMarkers is not implemented for PostgreSQL');
+
+  const db = getSqliteDb();
+  const done = new Set<string>();
+  const statement = db.prepare(
+    'SELECT event_external_id FROM ranking_log_markers WHERE event_external_id = ? AND version = ?'
+  );
+  for (const externalId of eventExternalIds) {
+    if (statement.get(externalId, version)) done.add(externalId);
+  }
+  return done;
+}
+
+/** Human-readable region labels for shop venues. */
+export async function loadShopLabels(externalIds: number[]): Promise<Map<number, string>> {
+  if (externalIds.length === 0) return new Map();
+  if (useDynamoDB()) return loadShopLabelsDynamoDB(externalIds);
+  if (!useSqlite()) throw new Error('loadShopLabels is not implemented for PostgreSQL');
+
+  const db = getSqliteDb();
+  const labels = new Map<number, string>();
+  // Same preference as the DynamoDB path: the reverse-geocoded "City, ST" the
+  // frontend already shows, falling back to the raw address text.
+  const statement = db.prepare(
+    'SELECT external_id, display_city, location_text FROM shops WHERE external_id = ?'
+  );
+  for (const externalId of externalIds) {
+    const row = statement.get(externalId) as
+      { external_id: number; display_city: string | null; location_text: string | null } | undefined;
+    if (!row) continue;
+    const label = row.display_city ?? row.location_text;
+    if (label) labels.set(row.external_id, label);
+  }
+  return labels;
+}
+
+/**
+ * Store one refit's derived items.
+ *
+ * Sanitised here as well as in the converter: see sanitizeRankingSnapshot.
+ */
+export async function saveRankingSnapshot(
+  raw: RankingSnapshot,
+  matchLogVersion: number
+): Promise<RankingWriteSummary> {
+  const snapshot = sanitizeRankingSnapshot(raw);
+  if (useDynamoDB()) return saveRankingSnapshotDynamoDB(snapshot, matchLogVersion);
+  if (!useSqlite()) throw new Error('saveRankingSnapshot is not implemented for PostgreSQL');
+
+  const db = getSqliteDb();
+  const now = new Date().toISOString();
+
+  const upsertProfile = db.prepare(`
+    INSERT INTO player_profiles (player_id, display_name, rating, rated, component_id, payload, generated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(player_id) DO UPDATE SET
+      display_name = excluded.display_name,
+      rating = excluded.rating,
+      rated = excluded.rated,
+      component_id = excluded.component_id,
+      payload = excluded.payload,
+      generated_at = excluded.generated_at
+  `);
+  const upsertPoint = db.prepare(`
+    INSERT INTO player_rating_history (player_id, scope, date, payload) VALUES (?, ?, ?, ?)
+    ON CONFLICT(player_id, scope, date) DO UPDATE SET payload = excluded.payload
+  `);
+  const upsertMatch = db.prepare(`
+    INSERT INTO player_matches (player_id, played_at, match_id, event_external_id, payload)
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(player_id, played_at, match_id) DO UPDATE SET payload = excluded.payload
+  `);
+  const upsertRow = db.prepare(`
+    INSERT INTO ranking_rows (scope, rank, player_id, payload) VALUES (?, ?, ?, ?)
+    ON CONFLICT(scope, player_id) DO UPDATE SET rank = excluded.rank, payload = excluded.payload
+  `);
+  const upsertMeta = db.prepare(`
+    INSERT INTO ranking_meta (scope, payload) VALUES (?, ?)
+    ON CONFLICT(scope) DO UPDATE SET payload = excluded.payload
+  `);
+  const upsertComponent = db.prepare(`
+    INSERT INTO ranking_components (component_id, payload) VALUES (?, ?)
+    ON CONFLICT(component_id) DO UPDATE SET payload = excluded.payload
+  `);
+  const upsertSet = db.prepare(`
+    INSERT INTO ranking_sets (set_id, payload) VALUES (?, ?)
+    ON CONFLICT(set_id) DO UPDATE SET payload = excluded.payload
+  `);
+  const upsertMarker = db.prepare(`
+    INSERT INTO ranking_log_markers (event_external_id, version, written_at) VALUES (?, ?, ?)
+    ON CONFLICT(event_external_id) DO UPDATE SET version = excluded.version, written_at = excluded.written_at
+  `);
+
+  const summary: RankingWriteSummary = {
+    profiles: snapshot.profiles.length,
+    historyPoints: snapshot.history.length,
+    matchLogEntries: snapshot.matchLog.length,
+    rankingRows: snapshot.rankings.length,
+    metas: snapshot.metas.length,
+    components: snapshot.components.length,
+    sets: snapshot.sets.length,
+    markers: snapshot.matchLogEvents.length,
+    deletedRows: 0,
+    deletedScopes: 0,
+  };
+
+  db.transaction(() => {
+    // Prune exactly like the DynamoDB path: a rank lives in the key, so a
+    // player who dropped off a board (or off the ladder entirely) would
+    // otherwise linger, and a component that merged away would leave a scope
+    // nothing points at.
+    const scopes = new Set(snapshot.metas.map(meta => meta.scope));
+    const keep = new Map<string, Set<string>>();
+    for (const row of snapshot.rankings) {
+      let members = keep.get(row.scope);
+      if (!members) keep.set(row.scope, (members = new Set()));
+      members.add(row.playerId);
+    }
+    const storedScopes = db.prepare('SELECT scope FROM ranking_meta').all() as { scope: string }[];
+    const storedRowScopes = db.prepare('SELECT DISTINCT scope FROM ranking_rows').all() as { scope: string }[];
+    const deleteRow = db.prepare('DELETE FROM ranking_rows WHERE scope = ? AND player_id = ?');
+    const deleteScopeRows = db.prepare('DELETE FROM ranking_rows WHERE scope = ?');
+    const deleteMeta = db.prepare('DELETE FROM ranking_meta WHERE scope = ?');
+
+    for (const { scope } of [...storedScopes, ...storedRowScopes]) {
+      if (!scopes.has(scope)) {
+        summary.deletedRows += deleteScopeRows.run(scope).changes;
+        if (deleteMeta.run(scope).changes > 0) summary.deletedScopes++;
+        continue;
+      }
+      const members = keep.get(scope) ?? new Set<string>();
+      const stored = db.prepare('SELECT player_id FROM ranking_rows WHERE scope = ?').all(scope) as
+        { player_id: string }[];
+      for (const row of stored) {
+        if (!members.has(row.player_id)) summary.deletedRows += deleteRow.run(scope, row.player_id).changes;
+      }
+    }
+
+    const componentIds = new Set(snapshot.components.map(component => component.componentId));
+    for (const row of db.prepare('SELECT component_id FROM ranking_components').all() as { component_id: string }[]) {
+      if (!componentIds.has(row.component_id)) {
+        db.prepare('DELETE FROM ranking_components WHERE component_id = ?').run(row.component_id);
+      }
+    }
+    const setIds = new Set(snapshot.sets.map(set => set.setId));
+    for (const row of db.prepare('SELECT set_id FROM ranking_sets').all() as { set_id: string }[]) {
+      if (!setIds.has(row.set_id)) db.prepare('DELETE FROM ranking_sets WHERE set_id = ?').run(row.set_id);
+    }
+
+    for (const profile of snapshot.profiles) {
+      upsertProfile.run(
+        profile.playerId,
+        profile.displayName,
+        profile.rating,
+        profile.rated ? 1 : 0,
+        profile.componentId,
+        JSON.stringify(profile),
+        profile.generatedAt
+      );
+    }
+    for (const point of snapshot.history) {
+      upsertPoint.run(point.playerId, point.scope, point.date, JSON.stringify(point));
+    }
+    for (const entry of snapshot.matchLog) {
+      upsertMatch.run(entry.playerId, entry.playedAt, entry.matchId, entry.eventExternalId, JSON.stringify(entry));
+    }
+    for (const row of snapshot.rankings) {
+      upsertRow.run(row.scope, row.rank, row.playerId, JSON.stringify(row));
+    }
+    for (const meta of snapshot.metas) {
+      upsertMeta.run(meta.scope, JSON.stringify(meta));
+    }
+    for (const component of snapshot.components) {
+      upsertComponent.run(component.componentId, JSON.stringify(component));
+    }
+    for (const set of snapshot.sets) {
+      upsertSet.run(set.setId, JSON.stringify(set));
+    }
+    for (const eventExternalId of snapshot.matchLogEvents) {
+      upsertMarker.run(eventExternalId, matchLogVersion, now);
+    }
+  })();
+
+  return summary;
+}
+
+/** When the rating pass last completed. Gates the refit interval. */
+export async function getLastRankingRefit(): Promise<string | null> {
+  if (useDynamoDB()) return getLastRankingRefitDynamoDB();
+  if (!useSqlite()) return null;
+  const row = getSqliteDb()
+    .prepare("SELECT completed_at FROM ranking_state WHERE key = 'refit'")
+    .get() as { completed_at: string } | undefined;
+  return row?.completed_at ?? null;
+}
+
+export async function setLastRankingRefit(timestamp: string): Promise<void> {
+  if (useDynamoDB()) return setLastRankingRefitDynamoDB(timestamp);
+  if (!useSqlite()) return;
+  getSqliteDb()
+    .prepare(`
+      INSERT INTO ranking_state (key, completed_at) VALUES ('refit', ?)
+      ON CONFLICT(key) DO UPDATE SET completed_at = excluded.completed_at
+    `)
+    .run(timestamp);
+}
+
+/** One player's stored profile. Used by tests and the metrics CLI. */
+export async function getPlayerProfile(playerId: string): Promise<PlayerProfile | null> {
+  if (useDynamoDB()) return getPlayerProfileDynamoDB(playerId);
+  if (!useSqlite()) throw new Error('getPlayerProfile is not implemented for PostgreSQL');
+  const row = getSqliteDb()
+    .prepare('SELECT payload FROM player_profiles WHERE player_id = ?')
+    .get(playerId) as { payload: string } | undefined;
+  return row ? (JSON.parse(row.payload) as PlayerProfile) : null;
+}
+
+/** One leaderboard, in rank order. */
+export async function getRankingRows(scope: string, limit = 100): Promise<RankingRow[]> {
+  if (useDynamoDB()) return getRankingRowsDynamoDB(scope, limit);
+  if (!useSqlite()) throw new Error('getRankingRows is not implemented for PostgreSQL');
+  return (getSqliteDb()
+    .prepare('SELECT payload FROM ranking_rows WHERE scope = ? ORDER BY rank LIMIT ?')
+    .all(scope, limit) as { payload: string }[]
+  ).map(row => JSON.parse(row.payload) as RankingRow);
+}
+
+/** One player's rating history for a scope, oldest first. SQLite/dev and tests. */
+export async function getPlayerRatingHistory(
+  playerId: string,
+  scope: string
+): Promise<PlayerRatingPoint[]> {
+  if (!useSqlite()) throw new Error('getPlayerRatingHistory is only implemented for SQLite');
+  return (getSqliteDb()
+    .prepare('SELECT payload FROM player_rating_history WHERE player_id = ? AND scope = ? ORDER BY date')
+    .all(playerId, scope) as { payload: string }[]
+  ).map(row => JSON.parse(row.payload) as PlayerRatingPoint);
+}
+
+/** One player's match log, oldest first. SQLite/dev and tests. */
+export async function getPlayerMatchLog(playerId: string): Promise<PlayerMatchLogEntry[]> {
+  if (!useSqlite()) throw new Error('getPlayerMatchLog is only implemented for SQLite');
+  return (getSqliteDb()
+    .prepare('SELECT payload FROM player_matches WHERE player_id = ? ORDER BY played_at, match_id')
+    .all(playerId) as { payload: string }[]
+  ).map(row => JSON.parse(row.payload) as PlayerMatchLogEntry);
+}
+
+/**
+ * Event names for a date window, for the per-player match log.
+ *
+ * Returns an empty map rather than throwing when the backend cannot answer: an
+ * unnamed match log entry is a cosmetic loss, not a reason to fail a refit.
+ */
+export async function loadEventNames(daysBack: number, daysForward = 2): Promise<Map<string, string>> {
+  if (useDynamoDB()) return loadEventNamesDynamoDB(daysBack, daysForward);
+  if (!useSqlite()) return new Map();
+
+  const from = new Date(Date.now() - daysBack * 86_400_000).toISOString();
+  const to = new Date(Date.now() + daysForward * 86_400_000).toISOString();
+  const rows = getSqliteDb()
+    .prepare('SELECT external_id, name FROM events WHERE start_date BETWEEN ? AND ?')
+    .all(from, to) as { external_id: string; name: string | null }[];
+  const names = new Map<string, string>();
+  for (const row of rows) if (row.name) names.set(row.external_id, row.name);
+  return names;
 }

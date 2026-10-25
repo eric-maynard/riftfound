@@ -1,4 +1,13 @@
-import type { ScrapedEvent, StoreInfo } from './database.js';
+import type { EventResults, EventRoster, ScrapedEvent, StoreInfo } from './database.js';
+import type {
+  ComponentProfile,
+  PlayerMatchLogEntry,
+  PlayerProfile,
+  RankingMeta,
+  RankingRow,
+  RankingSnapshot,
+  SetProfile,
+} from './ranking/items.js';
 
 /**
  * Free-text sanitisation for everything that reaches the database.
@@ -105,6 +114,125 @@ export function sanitizeScrapedEvent<T extends ScrapedEvent>(event: T): T {
     city: sanitizeText(event.city),
     state: sanitizeText(event.state),
     country: sanitizeText(event.country),
+    // An enum, but one that comes out of a user-editable system like every
+    // other field here, so it gets the same treatment. Null stays null.
+    playFormat: sanitizeText(event.playFormat),
+  };
+}
+
+/**
+ * Player-identifying free text from Riot's tournament pages.
+ *
+ * `displayName` and `tagLine` come from a user-editable account system - a
+ * player chooses both - so they are exactly the kind of field the organizer-name
+ * payload above turned up in, and they get the same treatment. Ids are left
+ * alone: they are opaque UUIDs, not free text, and they are the identity key the
+ * stored facts depend on.
+ */
+function sanitizePlayerText<T extends { name: string | null; tagLine: string | null }>(player: T): T {
+  return { ...player, name: sanitizeText(player.name), tagLine: sanitizeText(player.tagLine) };
+}
+
+/** Player names written into an event's results row. */
+export function sanitizeEventResults<T extends EventResults>(results: T): T {
+  return {
+    ...results,
+    players: results.players.map(sanitizePlayerText),
+    playFormat: sanitizeText(results.playFormat),
+  };
+}
+
+/** Player names written into an event's roster row. */
+export function sanitizeEventRoster<T extends EventRoster>(roster: T): T {
+  return {
+    ...roster,
+    entries: roster.entries.map(sanitizePlayerText),
+    playFormat: sanitizeText(roster.playFormat),
+  };
+}
+
+/**
+ * Free text on the derived ranking items.
+ *
+ * These items carry player names, event names, shop-derived region labels and
+ * set labels - every one of them either user-editable upstream or built from a
+ * field that is. They are re-sanitised here even though the facts they were
+ * derived from were already cleaned: the rule in this codebase is that
+ * sanitisation happens at the converter *and* at the storage boundary, so that
+ * no code path can put raw text in a table, and a derived writer is exactly the
+ * kind of new code path that rule exists for.
+ */
+export function sanitizePlayerProfile<T extends PlayerProfile>(profile: T): T {
+  const setRatings: PlayerProfile['setRatings'] = {};
+  for (const [setId, rating] of Object.entries(profile.setRatings)) {
+    setRatings[setId] = { ...rating, label: sanitizeRequiredText(rating.label, setId) };
+  }
+  return {
+    ...profile,
+    displayName: sanitizeText(profile.displayName),
+    tagLine: sanitizeText(profile.tagLine),
+    regionLabel: sanitizeText(profile.regionLabel),
+    setRatings,
+  };
+}
+
+export function sanitizeMatchLogEntry<T extends PlayerMatchLogEntry>(entry: T): T {
+  return {
+    ...entry,
+    opponentDisplayName: sanitizeText(entry.opponentDisplayName),
+    opponentTagLine: sanitizeText(entry.opponentTagLine),
+    eventName: sanitizeText(entry.eventName),
+    tournamentType: sanitizeText(entry.tournamentType),
+  };
+}
+
+export function sanitizeRankingRow<T extends RankingRow>(row: T): T {
+  return {
+    ...row,
+    displayName: sanitizeText(row.displayName),
+    tagLine: sanitizeText(row.tagLine),
+    regionLabel: sanitizeText(row.regionLabel),
+  };
+}
+
+export function sanitizeRankingMeta<T extends RankingMeta>(meta: T): T {
+  return {
+    ...meta,
+    label: sanitizeRequiredText(meta.label, meta.scope),
+    regionLabel: sanitizeText(meta.regionLabel),
+  };
+}
+
+export function sanitizeComponentProfile<T extends ComponentProfile>(component: T): T {
+  return { ...component, regionLabel: sanitizeText(component.regionLabel) };
+}
+
+export function sanitizeSetProfile<T extends SetProfile>(set: T): T {
+  return {
+    ...set,
+    name: sanitizeRequiredText(set.name, set.setId),
+    source: sanitizeRequiredText(set.source),
+  };
+}
+
+/**
+ * The whole snapshot, at the storage boundary.
+ *
+ * The converter in ranking/snapshot.ts already cleans every item it builds.
+ * This is the second application the house rule requires, and it is not
+ * ceremony: it is what stops a future code path that assembles items some other
+ * way - a backfill script, a repair tool - from putting markup in a table.
+ */
+export function sanitizeRankingSnapshot(snapshot: RankingSnapshot): RankingSnapshot {
+  return {
+    profiles: snapshot.profiles.map(sanitizePlayerProfile),
+    history: snapshot.history,
+    matchLog: snapshot.matchLog.map(sanitizeMatchLogEntry),
+    matchLogEvents: snapshot.matchLogEvents,
+    rankings: snapshot.rankings.map(sanitizeRankingRow),
+    metas: snapshot.metas.map(sanitizeRankingMeta),
+    components: snapshot.components.map(sanitizeComponentProfile),
+    sets: snapshot.sets.map(sanitizeSetProfile),
   };
 }
 

@@ -11,6 +11,7 @@ const mergedRow = {
   playerCount: 12,
   capacity: 16,
   price: '$40.00',
+  playFormat: 'SEALED',
   sources: ['uvs', 'playriftbound'],
 };
 
@@ -22,6 +23,8 @@ const uvsWrite = {
   playerCount: 12,
   capacity: 16,
   price: '$40.00',
+  // A UVS worker has no format field, so its write always carries null.
+  playFormat: null,
   sources: ['uvs'],
 };
 
@@ -31,6 +34,9 @@ describe('preserveMergedFields', () => {
     expect(result.eventType).toBe('Pre-Rift');
     expect(result.url).toBe(mergedRow.url);
     expect(result.sources).toEqual(['uvs', 'playriftbound']);
+    // Riot owns playFormat and only ever learns it at discovery time, so a UVS
+    // re-write dropping it would lose it permanently for that event.
+    expect(result.playFormat).toBe('SEALED');
     expect(mergedFieldChanges(mergedRow, result)).toBeNull();
   });
 
@@ -57,6 +63,7 @@ describe('mergedFieldChanges', () => {
     expect(mergedFieldChanges(uvsWrite, mergedRow)).toEqual({
       eventType: 'Pre-Rift',
       url: mergedRow.url,
+      playFormat: 'SEALED',
       sources: ['uvs', 'playriftbound'],
     });
   });

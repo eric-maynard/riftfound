@@ -6,6 +6,7 @@ import {
   QueryCommand,
   DeleteCommand,
   BatchWriteCommand,
+  BatchGetCommand,
   ScanCommand,
   UpdateCommand,
 } from '@aws-sdk/lib-dynamodb';
@@ -14,8 +15,26 @@ import { gzipSync, gunzipSync } from 'node:zlib';
 import { env } from './config.js';
 import type { ScrapeCycle } from './cancellations.js';
 import type { ShopCandidate } from './shopMatch.js';
-import type { ScrapedEvent, StoreInfo, UpsertEventResult, UpsertShopResult } from './database.js';
+import type {
+  EventFactCandidate,
+  EventFactContext,
+  EventResults,
+  EventResultsStatus,
+  EventRoster,
+  ResultPlayer,
+  ResultRound,
+  ResultStanding,
+  RosterEntry,
+  RosterSource,
+  ScrapedEvent,
+  StoreInfo,
+  UpsertEventResult,
+  UpsertShopResult,
+} from './database.js';
+import type { PlayerProfile, RankingRow, RankingSnapshot } from './ranking/items.js';
 import { preserveMergedFields, type MergeOwnedFields } from './merge.js';
+// Value import; everything on the way back here is type-only, so no cycle.
+import { PLAYRIFTBOUND_ID_PREFIX } from './sources/playriftbound.js';
 
 // DynamoDB client singleton
 let docClient: DynamoDBDocumentClient | null = null;
@@ -92,7 +111,7 @@ function scrapeRunKeys(timestamp: string) {
 }
 
 // DynamoDB Event item structure
-interface DynamoEventItem {
+export interface DynamoEventItem {
   PK: string;
   SK: string;
   GSI1PK: string;
@@ -123,6 +142,13 @@ interface DynamoEventItem {
   imageUrl: string | null;
   /** Contributing source(s): ['uvs'], ['playriftbound'] or both when field-merged. */
   sources: string[] | null;
+  /**
+   * Riot's `RiftboundTournamentConfig.format`, verbatim (see
+   * ScrapedEvent.playFormat). Null on every row stored before this field
+   * shipped and on every UVS-only row - permanently, because it cannot be
+   * backfilled.
+   */
+  playFormat: string | null;
   shopId: number | null;
   shopExternalId: number | null;
   shopName: string | null;
@@ -167,7 +193,14 @@ function hasShopChanged(existing: DynamoShopItem, newItem: DynamoShopItem): bool
   );
 }
 
-function hasEventChanged(existing: DynamoEventItem, newItem: DynamoEventItem): boolean {
+/**
+ * Whether a stored event row differs from the one we are about to write.
+ *
+ * Exported for tests: every field this misses is a field that silently never
+ * reaches rows that are otherwise unchanged, which is a failure mode with no
+ * other symptom.
+ */
+export function hasEventChanged(existing: DynamoEventItem, newItem: DynamoEventItem): boolean {
   // Excluded fields:
   // - imageUrl: CDN URLs include tokens/versions that change on every API call
   return (
@@ -191,6 +224,12 @@ function hasEventChanged(existing: DynamoEventItem, newItem: DynamoEventItem): b
     existing.price !== newItem.price ||
     existing.url !== newItem.url ||
     (existing.sources ?? []).join(',') !== (newItem.sources ?? []).join(',') ||
+    // Load-bearing: without this, a row that is otherwise identical would be
+    // skipped and would never acquire a playFormat, so the field would stay
+    // empty for every currently-stored event instead of filling in on the next
+    // sweep. (existing has no attribute at all on pre-migration rows, hence the
+    // ?? null on both sides.)
+    (existing.playFormat ?? null) !== (newItem.playFormat ?? null) ||
     existing.shopId !== newItem.shopId ||
     existing.shopName !== newItem.shopName ||
     existing.shopLatitude !== newItem.shopLatitude ||
@@ -455,6 +494,7 @@ export async function upsertEventWithStoreDynamoDB(
     url: event.url ?? null,
     imageUrl: event.imageUrl ?? null,
     sources: event.sources?.length ? event.sources : null,
+    playFormat: event.playFormat ?? null,
     shopId: storeInfo?.id ?? null,
     shopExternalId: storeInfo?.id ?? null,
     shopName: storeInfo?.name ?? null,
@@ -672,16 +712,27 @@ export interface StoredEventSummary extends MergeOwnedFields {
  * instead of collecting them in memory.
  */
 export async function loadUpcomingEventsDynamoDB(daysForward: number): Promise<StoredEventSummary[]> {
-  const client = getDynamoClient();
-  const tableName = getTableName();
+  // Yesterday through daysForward+1: a day either side of the window, because
+  // an event's UTC date and its local date are not the same day.
+  return loadEventSummariesForDates(eventDatePartitions(-1, daysForward + 1));
+}
 
+/** UTC `YYYY-MM-DD` partition keys from `fromOffset` to `toOffset` days from today. */
+function eventDatePartitions(fromOffset: number, toOffset: number): string[] {
   const dates: string[] = [];
   const day = new Date();
-  day.setUTCDate(day.getUTCDate() - 1);
-  for (let i = 0; i <= daysForward + 2; i++) {
+  day.setUTCDate(day.getUTCDate() + fromOffset);
+  for (let i = fromOffset; i <= toOffset; i++) {
     dates.push(day.toISOString().split('T')[0]);
     day.setUTCDate(day.getUTCDate() + 1);
   }
+  return dates;
+}
+
+/** Stored events in the given GSI1 date partitions (one Query per day, a few in parallel). */
+async function loadEventSummariesForDates(dates: string[]): Promise<StoredEventSummary[]> {
+  const client = getDynamoClient();
+  const tableName = getTableName();
 
   const results: StoredEventSummary[] = [];
   const CONCURRENCY = 8;
@@ -696,6 +747,7 @@ export async function loadUpcomingEventsDynamoDB(daysForward: number): Promise<S
         ExpressionAttributeValues: { ':pk': `DATE#${date}` },
         ProjectionExpression:
           'externalId, #name, latitude, longitude, startDate, eventType, #url, playerCount, #capacity, price, sources, ' +
+          'playFormat, ' +
           'createdAt, shopExternalId, shopName, shopLatitude, shopLongitude',
         // name, url and capacity are DynamoDB reserved words
         ExpressionAttributeNames: { '#url': 'url', '#name': 'name', '#capacity': 'capacity' },
@@ -715,6 +767,7 @@ export async function loadUpcomingEventsDynamoDB(daysForward: number): Promise<S
           capacity: (item.capacity as number | null) ?? null,
           price: (item.price as string | null) ?? null,
           sources: (item.sources as string[] | null) ?? null,
+          playFormat: (item.playFormat as string | null) ?? null,
           createdAt: typeof item.createdAt === 'string' ? new Date(item.createdAt) : null,
           shopExternalId: (item.shopExternalId as number | null) ?? null,
           shopName: (item.shopName as string | null) ?? null,
@@ -731,6 +784,25 @@ export async function loadUpcomingEventsDynamoDB(daysForward: number): Promise<S
   }
 
   return results;
+}
+
+/**
+ * Event names for a date window, as `externalId -> name`.
+ *
+ * The fact rows deliberately carry no event name - they denormalise only what a
+ * rating *fit* needs, and a name is presentation. The per-player match log does
+ * want one, so it is resolved from the event rows that still exist. Events
+ * older than `deleteOldEvents(60)` simply have no name, and the log entry
+ * records null rather than a fabricated one.
+ */
+export async function loadEventNamesDynamoDB(
+  daysBack: number,
+  daysForward: number
+): Promise<Map<string, string>> {
+  const rows = await loadEventSummariesForDates(eventDatePartitions(-daysBack, daysForward));
+  const names = new Map<string, string>();
+  for (const row of rows) if (row.name) names.set(row.externalId, row.name);
+  return names;
 }
 
 /**
@@ -991,4 +1063,820 @@ export async function deleteShopsDynamoDB(externalIds: number[]): Promise<number
     deleted += batch.length;
   }
   return deleted;
+}
+
+// ---------------------------------------------------------------------------
+// Tournament facts: rosters and results (sources/playriftboundResults.ts)
+// ---------------------------------------------------------------------------
+
+/**
+ * One item per event per fact, not one per match or per standing.
+ *
+ * The access patterns decide this:
+ *
+ * - "the results for this event" is a single GetItem on `RESULTS#<externalId>`.
+ *   Split per match it would be a Query plus client-side reassembly, and the
+ *   standings would have to be stitched back together from their own rows.
+ * - "every match in chronological order", which a rating pass replaying history
+ *   needs, is one Query per day against GSI1's `RESULTS#<date>` partition. No
+ *   scan, and each day comes back in whole events rather than thousands of
+ *   fragments: a 16-player event's results normalise to ~10KB, so a busy day's
+ *   ~350 events are ~350 items instead of ~8,000.
+ * - A capture is written once and never edited (results are immutable once the
+ *   organizer finalises them), so the usual argument for row-level items -
+ *   updating one match without rewriting the event - never applies.
+ *
+ * The 400KB item limit is the one risk, which trimToItemLimit in the source
+ * module handles by dropping the pairings from an outsized tournament.
+ *
+ * These items carry **no TTL**: event rows age out after 60-90 days, but the
+ * facts are the input to a rating history and have to outlive them.
+ */
+const RESULTS_PREFIX = 'RESULTS#';
+const ROSTER_PREFIX = 'ROSTER#';
+
+function resultsKeys(externalId: string) {
+  return { PK: `${RESULTS_PREFIX}${externalId}`, SK: `${RESULTS_PREFIX}${externalId}` };
+}
+
+function rosterKeys(externalId: string) {
+  return { PK: `${ROSTER_PREFIX}${externalId}`, SK: `${ROSTER_PREFIX}${externalId}` };
+}
+
+/** Chronological index: one GSI1 partition per UTC day the events started on. */
+function factGSI1Keys(prefix: string, eventStartDate: Date, externalId: string) {
+  return {
+    GSI1PK: `${prefix}${eventStartDate.toISOString().split('T')[0]}`,
+    GSI1SK: `${prefix}${externalId}`,
+  };
+}
+
+interface DynamoFactContext {
+  externalId: string;
+  tournamentId: string;
+  eventStartDate: string;
+  eventType: string | null;
+  /** Riot's event format, copied off the event row (see EventFactContext). */
+  playFormat: string | null;
+  shopExternalId: number | null;
+  latitude: number | null;
+  longitude: number | null;
+}
+
+interface DynamoEventResultsItem extends DynamoFactContext {
+  PK: string;
+  SK: string;
+  GSI1PK: string;
+  GSI1SK: string;
+  entityType: 'EVENT_RESULTS';
+  status: EventResultsStatus;
+  roundCount: number;
+  playerCount: number;
+  openMatches: number;
+  trimmed: boolean;
+  sourceUpdatedAt: string | null;
+  /** Fingerprint of the content, so a re-check can skip rewriting the row. */
+  digest: string;
+  players: ResultPlayer[];
+  standings: ResultStanding[];
+  rounds: ResultRound[];
+  attempts: number;
+  capturedAt: string;
+  lastCheckedAt: string;
+}
+
+interface DynamoEventRosterItem extends DynamoFactContext {
+  PK: string;
+  SK: string;
+  GSI1PK: string;
+  GSI1SK: string;
+  entityType: 'EVENT_ROSTER';
+  source: RosterSource;
+  playerCount: number;
+  entries: RosterEntry[];
+  capturedAt: string;
+}
+
+function factContext(fact: EventFactContext): DynamoFactContext {
+  return {
+    externalId: fact.externalId,
+    tournamentId: fact.tournamentId,
+    eventStartDate: fact.eventStartDate.toISOString(),
+    eventType: fact.eventType,
+    playFormat: fact.playFormat ?? null,
+    shopExternalId: fact.shopExternalId,
+    latitude: fact.latitude,
+    longitude: fact.longitude,
+  };
+}
+
+/**
+ * Stored `prb-` events in the window, with the bookkeeping for what has already
+ * been captured for each.
+ *
+ * Only the *metadata* of the fact rows is read (BatchGetItem with a projection),
+ * never their payloads - so deciding that 8,000 events need nothing costs a few
+ * dozen RCUs rather than megabytes of transfer.
+ */
+export async function loadEventFactCandidatesDynamoDB(
+  window: { daysBack: number; daysForward: number }
+): Promise<EventFactCandidate[]> {
+  const rows = await loadEventSummariesForDates(
+    eventDatePartitions(-window.daysBack, window.daysForward)
+  );
+  const events = rows.filter(row => row.externalId.startsWith(PLAYRIFTBOUND_ID_PREFIX));
+  if (events.length === 0) return [];
+
+  const keys = events.flatMap(row => [resultsKeys(row.externalId), rosterKeys(row.externalId)]);
+  const meta = await batchGetFactMeta(keys);
+
+  return events.map(row => {
+    const results = meta.get(`${RESULTS_PREFIX}${row.externalId}`);
+    return {
+      externalId: row.externalId,
+      tournamentId: row.externalId.slice(PLAYRIFTBOUND_ID_PREFIX.length),
+      eventStartDate: row.startDate,
+      eventType: row.eventType ?? null,
+      playFormat: row.playFormat ?? null,
+      shopExternalId: row.shopExternalId ?? null,
+      latitude: row.latitude,
+      longitude: row.longitude,
+      results: results
+        ? {
+            status: (results.status as EventResultsStatus) ?? 'none',
+            attempts: (results.attempts as number) ?? 0,
+            lastCheckedAt: typeof results.lastCheckedAt === 'string' ? new Date(results.lastCheckedAt) : null,
+          }
+        : null,
+      hasRoster: meta.has(`${ROSTER_PREFIX}${row.externalId}`),
+    };
+  });
+}
+
+/** Fact-row metadata by PK, 100 keys per request. */
+async function batchGetFactMeta(
+  keys: { PK: string; SK: string }[]
+): Promise<Map<string, Record<string, unknown>>> {
+  const client = getDynamoClient();
+  const tableName = getTableName();
+  const found = new Map<string, Record<string, unknown>>();
+
+  for (let i = 0; i < keys.length; i += 100) {
+    let pending: Record<string, unknown>[] = keys.slice(i, i + 100);
+    // DynamoDB may hand back UnprocessedKeys under load; retry them.
+    for (let attempt = 0; pending.length > 0 && attempt < 4; attempt++) {
+      const response = await client.send(new BatchGetCommand({
+        RequestItems: {
+          [tableName]: {
+            Keys: pending,
+            // status is a DynamoDB reserved word
+            ProjectionExpression: 'PK, #status, attempts, lastCheckedAt',
+            ExpressionAttributeNames: { '#status': 'status' },
+          },
+        },
+      }));
+      for (const item of response.Responses?.[tableName] ?? []) {
+        if (typeof item.PK === 'string') found.set(item.PK, item);
+      }
+      pending = response.UnprocessedKeys?.[tableName]?.Keys ?? [];
+    }
+  }
+
+  return found;
+}
+
+/**
+ * Store one event's results capture.
+ *
+ * A re-check that reads back the same content writes only the attempt counter
+ * and the timestamp (UpdateItem), never the whole row - the same
+ * skip-unchanged discipline as hasEventChanged above.
+ */
+export async function putEventResultsDynamoDB(
+  results: EventResults,
+  digest: string
+): Promise<{ skipped: boolean }> {
+  const client = getDynamoClient();
+  const tableName = getTableName();
+  const keys = resultsKeys(results.externalId);
+  const now = new Date().toISOString();
+
+  const existing = await client.send(new GetCommand({
+    TableName: tableName,
+    Key: keys,
+    ProjectionExpression: 'digest, attempts, capturedAt',
+  }));
+  const attempts = ((existing.Item?.attempts as number) ?? 0) + 1;
+
+  if (existing.Item && existing.Item.digest === digest) {
+    await client.send(new UpdateCommand({
+      TableName: tableName,
+      Key: keys,
+      UpdateExpression: 'SET attempts = :a, lastCheckedAt = :now',
+      ExpressionAttributeValues: { ':a': attempts, ':now': now },
+    }));
+    return { skipped: true };
+  }
+
+  const item: DynamoEventResultsItem = {
+    ...keys,
+    ...factGSI1Keys(RESULTS_PREFIX, results.eventStartDate, results.externalId),
+    ...factContext(results),
+    entityType: 'EVENT_RESULTS',
+    status: results.status,
+    roundCount: results.roundCount,
+    playerCount: results.playerCount,
+    openMatches: results.openMatches,
+    trimmed: results.trimmed ?? false,
+    sourceUpdatedAt: results.sourceUpdatedAt,
+    digest,
+    players: results.players,
+    standings: results.standings,
+    rounds: results.rounds,
+    attempts,
+    capturedAt: (existing.Item?.capturedAt as string) ?? results.capturedAt,
+    lastCheckedAt: now,
+  };
+
+  await client.send(new PutCommand({ TableName: tableName, Item: item }));
+  return { skipped: false };
+}
+
+/**
+ * Store one event's roster, write-once.
+ *
+ * The condition is the point: a dated registrant list cannot be reconstructed
+ * after the event, so a roster already on file is never replaced by the thinner
+ * participants list a post-event fetch would produce.
+ */
+export async function putEventRosterDynamoDB(roster: EventRoster): Promise<{ skipped: boolean }> {
+  const item: DynamoEventRosterItem = {
+    ...rosterKeys(roster.externalId),
+    ...factGSI1Keys(ROSTER_PREFIX, roster.eventStartDate, roster.externalId),
+    ...factContext(roster),
+    entityType: 'EVENT_ROSTER',
+    source: roster.source,
+    playerCount: roster.playerCount,
+    entries: roster.entries,
+    capturedAt: roster.capturedAt,
+  };
+
+  try {
+    await getDynamoClient().send(new PutCommand({
+      TableName: getTableName(),
+      Item: item,
+      ConditionExpression: 'attribute_not_exists(PK)',
+    }));
+    return { skipped: false };
+  } catch (error) {
+    if ((error as { name?: string }).name === 'ConditionalCheckFailedException') return { skipped: true };
+    throw error;
+  }
+}
+
+/** The results for one event, in a single GetItem. */
+export async function getEventResultsDynamoDB(externalId: string): Promise<EventResults | null> {
+  const response = await getDynamoClient().send(new GetCommand({
+    TableName: getTableName(),
+    Key: resultsKeys(externalId),
+  }));
+  return response.Item ? resultsFromItem(response.Item as DynamoEventResultsItem) : null;
+}
+
+/** Every fact for events that started on one UTC day: two GSI1 Queries, no scan. */
+export async function loadEventFactsByDateDynamoDB(
+  date: string
+): Promise<{ results: EventResults[]; rosters: EventRoster[] }> {
+  const [results, rosters] = await Promise.all([
+    queryFactPartition(`${RESULTS_PREFIX}${date}`),
+    queryFactPartition(`${ROSTER_PREFIX}${date}`),
+  ]);
+  return {
+    results: results.map(item => resultsFromItem(item as unknown as DynamoEventResultsItem)),
+    rosters: rosters.map(item => rosterFromItem(item as unknown as DynamoEventRosterItem)),
+  };
+}
+
+async function queryFactPartition(partition: string): Promise<Record<string, unknown>[]> {
+  const client = getDynamoClient();
+  const items: Record<string, unknown>[] = [];
+  let lastEvaluatedKey: Record<string, unknown> | undefined;
+  do {
+    const response = await client.send(new QueryCommand({
+      TableName: getTableName(),
+      IndexName: 'GSI1',
+      KeyConditionExpression: 'GSI1PK = :pk',
+      ExpressionAttributeValues: { ':pk': partition },
+      ExclusiveStartKey: lastEvaluatedKey,
+    }));
+    items.push(...((response.Items ?? []) as Record<string, unknown>[]));
+    lastEvaluatedKey = response.LastEvaluatedKey as Record<string, unknown> | undefined;
+  } while (lastEvaluatedKey);
+  return items;
+}
+
+function resultsFromItem(item: DynamoEventResultsItem): EventResults {
+  return {
+    externalId: item.externalId,
+    tournamentId: item.tournamentId,
+    eventStartDate: new Date(item.eventStartDate),
+    eventType: item.eventType ?? null,
+    playFormat: item.playFormat ?? null,
+    shopExternalId: item.shopExternalId ?? null,
+    latitude: item.latitude ?? null,
+    longitude: item.longitude ?? null,
+    status: item.status,
+    roundCount: item.roundCount ?? 0,
+    playerCount: item.playerCount ?? 0,
+    openMatches: item.openMatches ?? 0,
+    players: item.players ?? [],
+    standings: item.standings ?? [],
+    rounds: item.rounds ?? [],
+    sourceUpdatedAt: item.sourceUpdatedAt ?? null,
+    capturedAt: item.capturedAt,
+    trimmed: item.trimmed ?? false,
+  };
+}
+
+function rosterFromItem(item: DynamoEventRosterItem): EventRoster {
+  return {
+    externalId: item.externalId,
+    tournamentId: item.tournamentId,
+    eventStartDate: new Date(item.eventStartDate),
+    eventType: item.eventType ?? null,
+    playFormat: item.playFormat ?? null,
+    shopExternalId: item.shopExternalId ?? null,
+    latitude: item.latitude ?? null,
+    longitude: item.longitude ?? null,
+    source: item.source,
+    playerCount: item.playerCount ?? 0,
+    entries: item.entries ?? [],
+    capturedAt: item.capturedAt,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Derived player ratings (ranking/)
+// ---------------------------------------------------------------------------
+
+/**
+ * The rating pass's output, as items a reader can fetch without a scan.
+ *
+ * Key shapes (the output contract - see ranking/items.ts):
+ *
+ * | item | PK | SK |
+ * |---|---|---|
+ * | player profile | `PLAYER#<uuid>` | `PROFILE` |
+ * | rating history point | `PLAYER#<uuid>` | `RATING#<scope>#<YYYY-MM-DD>` |
+ * | match log entry | `PLAYER#<uuid>` | `MATCH#<iso>#<matchId>` |
+ * | leaderboard row | `RANKING#<scope>` | `RANK#<rank, 6 digits>#<playerId>` |
+ * | leaderboard header | `RANKING_META#<scope>` | `PROFILE` |
+ * | component profile | `COMPONENT#<id>` | `PROFILE` |
+ * | set profile | `SET#<id>` | `PROFILE` |
+ * | scope directory | `RANKING_INDEX` | `RANKING_INDEX` |
+ * | match-log marker | `RANKING_LOG#<eventId>` | `RANKING_LOG#<eventId>` |
+ *
+ * Everything a reader needs is one Query on a single partition: a player page
+ * is `PLAYER#<uuid>` (profile, chart and match log arrive together, and the SK
+ * prefixes separate them), and a leaderboard is `RANKING#<scope>` read
+ * SK-ascending, which comes back in rank order because the rank is zero-padded
+ * into the sort key. The board's header is deliberately in its *own* partition
+ * rather than a `META` row inside the board, so a reader Querying a board never
+ * has to filter a non-player item out of its results.
+ *
+ * No GSI entries are added. These items would otherwise multiply GSI1's size
+ * for no read that needs it, and display-name search is a capped Scan on the
+ * API side until a GSI is batched with other infrastructure work.
+ *
+ * Write volume is the real cost here. A refit rewrites every profile and every
+ * rating point because WHR revises the whole past curve, and a rank change
+ * moves a leaderboard row's sort key, so the pass is on a multi-hour cadence
+ * rather than every cycle, rating history is emitted only for players who clear
+ * the publishing bar, and the per-player match log - the one deliberately
+ * duplicated item, two per match - is written once per event and then guarded by
+ * a marker so a refit does not re-emit it.
+ */
+const RANKING_LOG_PREFIX = 'RANKING_LOG#';
+const RANKING_PREFIX = 'RANKING#';
+const RANKING_META_PREFIX = 'RANKING_META#';
+const RANK_SK_PREFIX = 'RANK#';
+const RANKING_INDEX_KEY = 'RANKING_INDEX';
+const RANKING_STATE_KEY = 'CONFIG#RANKING_REFIT';
+
+function playerKeys(playerId: string) {
+  return { PK: `PLAYER#${playerId}`, SK: 'PROFILE' };
+}
+
+function ratingPointKeys(playerId: string, scope: string, date: string) {
+  return { PK: `PLAYER#${playerId}`, SK: `RATING#${scope}#${date}` };
+}
+
+function matchLogKeys(playerId: string, playedAt: string, matchId: string) {
+  return { PK: `PLAYER#${playerId}`, SK: `MATCH#${playedAt}#${matchId}` };
+}
+
+/** Rank is zero-padded to 6 digits so an SK-ascending Query is rank order. */
+function rankingRowKeys(scope: string, rank: number, playerId: string) {
+  return {
+    PK: `${RANKING_PREFIX}${scope}`,
+    SK: `${RANK_SK_PREFIX}${String(rank).padStart(6, '0')}#${playerId}`,
+  };
+}
+
+function rankingMetaKeys(scope: string) {
+  return { PK: `${RANKING_META_PREFIX}${scope}`, SK: 'PROFILE' };
+}
+
+function componentKeys(componentId: string) {
+  return { PK: `COMPONENT#${componentId}`, SK: 'PROFILE' };
+}
+
+function setKeys(setId: string) {
+  return { PK: `SET#${setId}`, SK: 'PROFILE' };
+}
+
+/** GSI1 partitions the catalogue items are enumerable in. */
+export const SET_CATALOGUE_PARTITION = 'SET';
+export const COMPONENT_CATALOGUE_PARTITION = 'COMPONENT';
+
+/**
+ * Enumeration index for the catalogue items (`SET#<id>`, `COMPONENT#<id>`).
+ *
+ * Without these keys those items can only be fetched by an id the reader
+ * already has, which is not a list: `/api/sets` could not enumerate the set
+ * catalogue and fell back to inferring set ids from player profiles (serving
+ * them with no name, and missing any set nobody is rated in yet).
+ *
+ * One shared partition per catalogue is the right shape here - there are a
+ * handful of sets, ever, and components are counted in dozens - so the whole
+ * catalogue is a single Query against GSI1, which already exists and projects
+ * ALL. No scan, no new index.
+ *
+ * Deliberately *not* folded into componentKeys/setKeys: those same objects are
+ * handed to BatchWriteItem as delete keys, where a key may carry nothing but
+ * PK and SK.
+ */
+function catalogueGSI1Keys(partition: string, id: string) {
+  return { GSI1PK: partition, GSI1SK: `${partition}#${id}` };
+}
+
+function matchLogMarkerKeys(eventExternalId: string) {
+  return {
+    PK: `${RANKING_LOG_PREFIX}${eventExternalId}`,
+    SK: `${RANKING_LOG_PREFIX}${eventExternalId}`,
+  };
+}
+
+/** Write items in parallel BatchWrite batches, retrying what DynamoDB defers. */
+async function batchPut(items: Record<string, unknown>[], concurrency = 6): Promise<number> {
+  const client = getDynamoClient();
+  const tableName = getTableName();
+  const batches: Record<string, unknown>[][] = [];
+  for (let i = 0; i < items.length; i += 25) batches.push(items.slice(i, i + 25));
+
+  let written = 0;
+  let next = 0;
+  const workers = Array.from({ length: Math.min(concurrency, batches.length) }, async () => {
+    while (next < batches.length) {
+      const batch = batches[next++];
+      let pending = batch.map(Item => ({ PutRequest: { Item } }));
+      for (let attempt = 0; pending.length > 0 && attempt < 6; attempt++) {
+        if (attempt > 0) await new Promise(resolve => setTimeout(resolve, 50 * 2 ** attempt));
+        const response = await client.send(new BatchWriteCommand({ RequestItems: { [tableName]: pending } }));
+        const unprocessed = (response.UnprocessedItems?.[tableName] ?? []) as typeof pending;
+        written += pending.length - unprocessed.length;
+        pending = unprocessed;
+      }
+    }
+  });
+  await Promise.all(workers);
+  return written;
+}
+
+async function batchDelete(keys: { PK: string; SK: string }[], concurrency = 6): Promise<number> {
+  const client = getDynamoClient();
+  const tableName = getTableName();
+  const batches: { PK: string; SK: string }[][] = [];
+  for (let i = 0; i < keys.length; i += 25) batches.push(keys.slice(i, i + 25));
+
+  let deleted = 0;
+  let next = 0;
+  const workers = Array.from({ length: Math.min(concurrency, batches.length) }, async () => {
+    while (next < batches.length) {
+      const batch = batches[next++];
+      let pending = batch.map(Key => ({ DeleteRequest: { Key } }));
+      for (let attempt = 0; pending.length > 0 && attempt < 6; attempt++) {
+        if (attempt > 0) await new Promise(resolve => setTimeout(resolve, 50 * 2 ** attempt));
+        const response = await client.send(new BatchWriteCommand({ RequestItems: { [tableName]: pending } }));
+        const unprocessed = (response.UnprocessedItems?.[tableName] ?? []) as typeof pending;
+        deleted += pending.length - unprocessed.length;
+        pending = unprocessed;
+      }
+    }
+  });
+  await Promise.all(workers);
+  return deleted;
+}
+
+/**
+ * Which of these events already have their match log written at the current
+ * version.
+ *
+ * One BatchGet per 100 events, projection-limited to the version - so deciding
+ * that 20,000 events need nothing costs a few hundred RCUs rather than
+ * re-emitting over a million log items.
+ */
+export async function loadMatchLogMarkersDynamoDB(
+  eventExternalIds: string[],
+  version: number
+): Promise<Set<string>> {
+  const client = getDynamoClient();
+  const tableName = getTableName();
+  const done = new Set<string>();
+  const keys = eventExternalIds.map(matchLogMarkerKeys);
+
+  for (let i = 0; i < keys.length; i += 100) {
+    let pending: Record<string, unknown>[] = keys.slice(i, i + 100);
+    for (let attempt = 0; pending.length > 0 && attempt < 4; attempt++) {
+      const response = await client.send(new BatchGetCommand({
+        RequestItems: {
+          [tableName]: {
+            Keys: pending,
+            ProjectionExpression: 'PK, #v',
+            ExpressionAttributeNames: { '#v': 'version' },
+          },
+        },
+      }));
+      for (const item of response.Responses?.[tableName] ?? []) {
+        if (typeof item.PK !== 'string') continue;
+        if ((item.version as number) === version) {
+          done.add(item.PK.slice(RANKING_LOG_PREFIX.length));
+        }
+      }
+      pending = response.UnprocessedKeys?.[tableName]?.Keys ?? [];
+    }
+  }
+  return done;
+}
+
+/** Human-readable labels for shop venues, for a player's region. */
+export async function loadShopLabelsDynamoDB(externalIds: number[]): Promise<Map<number, string>> {
+  const client = getDynamoClient();
+  const tableName = getTableName();
+  const labels = new Map<number, string>();
+  const keys = externalIds.map(shopKeys);
+
+  for (let i = 0; i < keys.length; i += 100) {
+    let pending: Record<string, unknown>[] = keys.slice(i, i + 100);
+    for (let attempt = 0; pending.length > 0 && attempt < 4; attempt++) {
+      const response = await client.send(new BatchGetCommand({
+        RequestItems: {
+          [tableName]: {
+            Keys: pending,
+            ProjectionExpression: 'externalId, displayCity, locationText',
+          },
+        },
+      }));
+      for (const item of response.Responses?.[tableName] ?? []) {
+        const externalId = item.externalId as number | undefined;
+        if (typeof externalId !== 'number') continue;
+        // displayCity is the reverse-geocoded "City, ST" the frontend already
+        // shows; locationText is the raw address and only a fallback.
+        const label = (item.displayCity as string | null) ?? (item.locationText as string | null);
+        if (label) labels.set(externalId, label);
+      }
+      pending = response.UnprocessedKeys?.[tableName]?.Keys ?? [];
+    }
+  }
+  return labels;
+}
+
+/** What the previous refit published, so this one can prune what it replaces. */
+export interface RankingScopeIndex {
+  scopes: string[];
+  componentIds: string[];
+  setIds: string[];
+}
+
+export async function loadRankingScopeIndexDynamoDB(): Promise<RankingScopeIndex> {
+  const response = await getDynamoClient().send(new GetCommand({
+    TableName: getTableName(),
+    Key: { PK: RANKING_INDEX_KEY, SK: RANKING_INDEX_KEY },
+  }));
+  const item = response.Item ?? {};
+  const list = (value: unknown): string[] =>
+    Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === 'string') : [];
+  return {
+    scopes: list(item.scopes),
+    componentIds: list(item.componentIds),
+    setIds: list(item.setIds),
+  };
+}
+
+/** Every stored leaderboard row key for one scope (keys only, so it stays cheap). */
+async function loadRankingRowKeys(scope: string): Promise<{ PK: string; SK: string }[]> {
+  const client = getDynamoClient();
+  const keys: { PK: string; SK: string }[] = [];
+  let lastEvaluatedKey: Record<string, unknown> | undefined;
+  do {
+    const response = await client.send(new QueryCommand({
+      TableName: getTableName(),
+      KeyConditionExpression: 'PK = :pk AND begins_with(SK, :sk)',
+      ExpressionAttributeValues: { ':pk': `${RANKING_PREFIX}${scope}`, ':sk': RANK_SK_PREFIX },
+      ProjectionExpression: 'PK, SK',
+      ExclusiveStartKey: lastEvaluatedKey,
+    }));
+    for (const item of response.Items ?? []) {
+      if (typeof item.PK === 'string' && typeof item.SK === 'string') keys.push({ PK: item.PK, SK: item.SK });
+    }
+    lastEvaluatedKey = response.LastEvaluatedKey as Record<string, unknown> | undefined;
+  } while (lastEvaluatedKey);
+  return keys;
+}
+
+export interface RankingWriteSummary {
+  profiles: number;
+  historyPoints: number;
+  matchLogEntries: number;
+  rankingRows: number;
+  metas: number;
+  components: number;
+  sets: number;
+  markers: number;
+  deletedRows: number;
+  deletedScopes: number;
+}
+
+/**
+ * Store one refit.
+ *
+ * Idempotent by construction: every key is a deterministic function of the
+ * snapshot's content, so re-running the pass over the same facts overwrites the
+ * same items with the same values.
+ *
+ * The destructive part is pruning, and it has to happen because a rank lives in
+ * the sort key: a player who moves from rank 7 to rank 5 writes a *new* item and
+ * the old one would otherwise linger as a duplicate. So each scope's existing
+ * `RANK#` keys are read (keys only) and whatever this snapshot did not write is
+ * deleted - along with any whole scope, component or set the previous refit
+ * published and this one did not, tracked in the scope directory.
+ */
+export async function saveRankingSnapshotDynamoDB(
+  snapshot: RankingSnapshot,
+  matchLogVersion: number
+): Promise<RankingWriteSummary> {
+  const now = new Date().toISOString();
+
+  const profileItems = snapshot.profiles.map(profile => ({
+    ...playerKeys(profile.playerId),
+    entityType: 'PLAYER_PROFILE' as const,
+    ...profile,
+  }));
+  const historyItems = snapshot.history.map(point => ({
+    ...ratingPointKeys(point.playerId, point.scope, point.date),
+    entityType: 'PLAYER_RATING' as const,
+    ...point,
+  }));
+  const matchItems = snapshot.matchLog.map(entry => ({
+    ...matchLogKeys(entry.playerId, entry.playedAt, entry.matchId),
+    entityType: 'PLAYER_MATCH' as const,
+    ...entry,
+  }));
+  const rankingItems = snapshot.rankings.map(row => ({
+    ...rankingRowKeys(row.scope, row.rank, row.playerId),
+    entityType: 'RANKING_ROW' as const,
+    ...row,
+  }));
+  const metaItems = snapshot.metas.map(meta => ({
+    ...rankingMetaKeys(meta.scope),
+    entityType: 'RANKING_META' as const,
+    ...meta,
+  }));
+  const componentItems = snapshot.components.map(component => ({
+    ...componentKeys(component.componentId),
+    ...catalogueGSI1Keys(COMPONENT_CATALOGUE_PARTITION, component.componentId),
+    entityType: 'COMPONENT_PROFILE' as const,
+    ...component,
+  }));
+  const setItems = snapshot.sets.map(set => ({
+    ...setKeys(set.setId),
+    ...catalogueGSI1Keys(SET_CATALOGUE_PARTITION, set.setId),
+    entityType: 'SET_PROFILE' as const,
+    ...set,
+  }));
+
+  // Prune before writing markers, so a crash mid-run leaves the log un-marked
+  // (and therefore retried) rather than marked but unwritten.
+  const previous = await loadRankingScopeIndexDynamoDB();
+  const currentScopes = new Set(snapshot.metas.map(meta => meta.scope));
+  const written = new Set(rankingItems.map(item => `${item.PK}|${item.SK}`));
+  const staleKeys: { PK: string; SK: string }[] = [];
+  let deletedScopes = 0;
+
+  for (const scope of new Set([...previous.scopes, ...currentScopes])) {
+    for (const key of await loadRankingRowKeys(scope)) {
+      if (!written.has(`${key.PK}|${key.SK}`)) staleKeys.push(key);
+    }
+    if (!currentScopes.has(scope)) {
+      deletedScopes++;
+      staleKeys.push(rankingMetaKeys(scope));
+    }
+  }
+
+  const currentComponents = new Set(snapshot.components.map(component => component.componentId));
+  for (const componentId of previous.componentIds) {
+    if (!currentComponents.has(componentId)) staleKeys.push(componentKeys(componentId));
+  }
+  const currentSets = new Set(snapshot.sets.map(set => set.setId));
+  for (const setId of previous.setIds) {
+    if (!currentSets.has(setId)) staleKeys.push(setKeys(setId));
+  }
+
+  const deletedRows = staleKeys.length > 0 ? await batchDelete(staleKeys) : 0;
+
+  await batchPut([
+    ...profileItems,
+    ...historyItems,
+    ...matchItems,
+    ...rankingItems,
+    ...metaItems,
+    ...componentItems,
+    ...setItems,
+  ]);
+
+  const markerItems = snapshot.matchLogEvents.map(eventExternalId => ({
+    ...matchLogMarkerKeys(eventExternalId),
+    entityType: 'RANKING_LOG' as const,
+    eventExternalId,
+    version: matchLogVersion,
+    writtenAt: now,
+  }));
+  if (markerItems.length > 0) await batchPut(markerItems);
+
+  await getDynamoClient().send(new PutCommand({
+    TableName: getTableName(),
+    Item: {
+      PK: RANKING_INDEX_KEY,
+      SK: RANKING_INDEX_KEY,
+      entityType: 'RANKING_INDEX',
+      scopes: [...currentScopes],
+      componentIds: [...currentComponents],
+      setIds: [...currentSets],
+      generatedAt: now,
+    },
+  }));
+
+  return {
+    profiles: profileItems.length,
+    historyPoints: historyItems.length,
+    matchLogEntries: matchItems.length,
+    rankingRows: rankingItems.length,
+    metas: metaItems.length,
+    components: componentItems.length,
+    sets: setItems.length,
+    markers: markerItems.length,
+    deletedRows,
+    deletedScopes,
+  };
+}
+
+/** When the rating pass last completed, for the refit-interval gate. */
+export async function getLastRankingRefitDynamoDB(): Promise<string | null> {
+  const response = await getDynamoClient().send(new GetCommand({
+    TableName: getTableName(),
+    Key: { PK: RANKING_STATE_KEY, SK: RANKING_STATE_KEY },
+  }));
+  return (response.Item?.completedAt as string) ?? null;
+}
+
+export async function setLastRankingRefitDynamoDB(timestamp: string): Promise<void> {
+  await getDynamoClient().send(new PutCommand({
+    TableName: getTableName(),
+    Item: {
+      PK: RANKING_STATE_KEY,
+      SK: RANKING_STATE_KEY,
+      entityType: 'CONFIG',
+      completedAt: timestamp,
+    },
+  }));
+}
+
+/** One player's stored profile. Used by tests and the metrics CLI. */
+export async function getPlayerProfileDynamoDB(playerId: string): Promise<PlayerProfile | null> {
+  const response = await getDynamoClient().send(new GetCommand({
+    TableName: getTableName(),
+    Key: playerKeys(playerId),
+  }));
+  return response.Item ? (response.Item as unknown as PlayerProfile) : null;
+}
+
+/** One leaderboard, in rank order: a single SK-ascending Query. */
+export async function getRankingRowsDynamoDB(scope: string, limit = 100): Promise<RankingRow[]> {
+  const response = await getDynamoClient().send(new QueryCommand({
+    TableName: getTableName(),
+    KeyConditionExpression: 'PK = :pk AND begins_with(SK, :sk)',
+    ExpressionAttributeValues: { ':pk': `${RANKING_PREFIX}${scope}`, ':sk': RANK_SK_PREFIX },
+    Limit: limit,
+  }));
+  return (response.Items ?? []) as unknown as RankingRow[];
 }

@@ -15,6 +15,10 @@ import { SOURCE_PLAYRIFTBOUND } from '../merge.js';
  *    with PERSISTED_QUERY_ID_REQUIRED, so we send a sha256 hash that Riot's own
  *    web client uses. That hash rotates on every Riot deploy, so we self-heal by
  *    re-reading the public persisted-query manifest (see rediscoverQueryHash).
+ *    The manifest's *chunk filename* rotates too, so it is crawled for rather
+ *    than hardcoded - and because the persisted document itself changes shape
+ *    between builds, the node parser accepts both address shapes Riot has
+ *    shipped (see convertTournamentNode).
  * 2. Every search is anchored on a coordinate and the distance filter is enforced
  *    server side - there is no "give me everything" query. Worse, the server
  *    silently clamps `distanceMeters` to roughly 161km (100 miles): asking for a
@@ -35,14 +39,45 @@ const GQL_ENDPOINT = 'https://events.playriftbound.com/api/gql';
 const EVENTS_PAGE_URL = 'https://events.playriftbound.com/en-US/events';
 const EVENT_URL_BASE = 'https://playriftbound.com/en-us/events';
 
-/** Chunk that currently holds the persisted-query manifest. Verified 2026-09-15. */
-const MANIFEST_CHUNK_URL = 'https://events.playriftbound.com/_next/static/chunks/00kyxx5y6b23i.js';
 const CHUNK_URL_BASE = 'https://events.playriftbound.com/_next/static/chunks/';
+
+/**
+ * Last chunk *measured* to hold the persisted-query manifest (2026-10-25,
+ * 149,859 bytes, 165 operations).
+ *
+ * This is only a long shot, never the primary path. Turbopack names chunks after
+ * a content hash, so the filename rotates on every Riot deploy: the previous
+ * value here (`00kyxx5y6b23i.js`, verified 2026-09-15) was serving HTTP 404 with
+ * a 9-byte body by 2026-10-25, which silently killed the whole self-heal. Any
+ * hardcoded name in this class will rot the same way, so discovery crawls for
+ * the manifest instead (see crawlForQueryHash) and this name is tried only when
+ * the crawl cannot even start.
+ */
+const LAST_MEASURED_MANIFEST_CHUNK = '3ljhtmeypccge.js';
+
+/**
+ * Marker Apollo stamps on the manifest payload, whatever chunk it lands in:
+ * `{"format":"apollo-persisted-query-manifest","version":1,"operations":[…]}`.
+ * Unlike a filename this does not rotate, so it is how a probed chunk is
+ * recognised as the manifest.
+ */
+const MANIFEST_FORMAT_MARKER = '"format":"apollo-persisted-query-manifest"';
 
 const OPERATION_NAME = 'CompeteTournamentSearch';
 
-/** Known-good persisted query hash. Rotates on Riot deploys; see rediscoverQueryHash. */
-const DEFAULT_QUERY_HASH = 'acbcbba681a9c9a8063f792f7d665ba1eda81b19528b6af19e523f0c2061bec2';
+/**
+ * Known-good persisted query hash: the id Riot's own web client was sending on
+ * 2026-10-25, read out of the manifest chunk above and verified with a live
+ * query (HTTP 200, 100 edges).
+ *
+ * Rotates on Riot deploys; see rediscoverQueryHash. Riot keeps retired ids in
+ * the allow-list for a while - the previous value here
+ * (`acbcbba681a9…`, shipped 2026-09-15) still answered HTTP 200 on 2026-10-25 -
+ * so a stale hash degrades late and quietly rather than failing fast. That is
+ * exactly why the self-heal has to keep working: by the time the API starts
+ * rejecting the hash, the discovery path has usually been dead for weeks.
+ */
+const DEFAULT_QUERY_HASH = '868030f676276bec926c740aada7129713d4097f6e2dd7c3a0451c4fb43852eb';
 
 const PAGE_SIZE = 100;
 
@@ -80,7 +115,7 @@ const DEFAULT_ANCHOR_DELAY_MS = 2000; // extra breather between anchors
 const DEFAULT_MAX_ANCHORS_PER_RUN = 150; // ~6-9 minutes of requests per cycle
 const ROTATION_PERIOD_MS = 24 * 60 * 60 * 1000; // one full pass over all anchors per day
 const MAX_PAGES_PER_ANCHOR = 12; // safety valve (1,200 events within one cell)
-const MAX_CHUNKS_TO_PROBE = 60; // safety valve for manifest rediscovery
+const MAX_CHUNKS_TO_PROBE = 60; // safety valve: the 2026-10 build needs 12 of these
 const DAYS_FORWARD = 90; // match the UVS source / calendar display range
 
 /** Prefix on externalId so Riot events never collide with UVS numeric event ids. */
@@ -240,7 +275,8 @@ export interface PrbLocation {
 export interface PrbOrganizer {
   id: string;
   name: string;
-  physicalAddress: PrbLocation | null;
+  /** Present in builds up to 2026-09; replaced by PrbTournament.tournamentLocation. */
+  physicalAddress?: PrbLocation | null;
 }
 
 export interface PrbTournamentConfig {
@@ -258,6 +294,13 @@ export interface PrbTournament {
   entryFee: { currency: string | null; minorUnits: number | null } | null;
   registrantCounts: { count: number; status: string }[] | null;
   config: PrbTournamentConfig | null;
+  /**
+   * Where the event is held. The 2026-10 persisted document selects this; the
+   * 2026-09 one selected organizer.physicalAddress instead. Measured over 25
+   * events returned by both documents the two agreed to <1m on every one, and
+   * tournamentLocation was non-null on 100/100 events, so either is usable.
+   */
+  tournamentLocation?: PrbLocation | null;
 }
 
 export interface PrbTournamentNode {
@@ -330,9 +373,18 @@ function sleep(ms: number): Promise<void> {
 
 let cachedQueryHash: string | null = null;
 
+/**
+ * Chunk filename this *process* found the manifest in. Unlike
+ * LAST_MEASURED_MANIFEST_CHUNK this is a name we have just seen serve the
+ * manifest, so a second rediscovery in the same Lambda costs one request
+ * instead of a crawl.
+ */
+let learnedManifestChunk: string | null = null;
+
 /** Exported for tests - resets the module level hash cache. */
 export function resetQueryHashCache(): void {
   cachedQueryHash = null;
+  learnedManifestChunk = null;
 }
 
 /**
@@ -368,50 +420,80 @@ async function fetchText(url: string): Promise<string | null> {
   }
 }
 
-/**
- * Re-discover the current persisted query hash.
- *
- * 1. Read the known manifest chunk.
- * 2. If that 404s (the chunk filename rotates too), read the events page HTML,
- *    collect the chunk URLs it references, and probe them. The webpack runtime
- *    chunk names the lazily-loaded manifest chunk, so nested chunk references
- *    are harvested and probed as well.
- */
-async function rediscoverQueryHash(requestDelayMs: number, deadline?: number): Promise<string | null> {
-  const direct = await fetchText(MANIFEST_CHUNK_URL);
-  if (direct) {
-    const hash = extractQueryHashFromChunk(direct);
-    if (hash) return hash;
-    console.warn(`[playriftbound] manifest chunk fetched but ${OPERATION_NAME} not found in it`);
-  } else {
-    console.warn(`[playriftbound] manifest chunk ${MANIFEST_CHUNK_URL} unavailable, crawling events page for chunks`);
-  }
-
-  const html = await fetchText(EVENTS_PAGE_URL);
-  if (!html) {
-    console.error('[playriftbound] could not fetch events page to rediscover persisted query manifest');
-    return null;
-  }
-
-  const queue: string[] = [];
+/** Chunk filenames referenced from a page or from inside another chunk. */
+export function chunkNamesIn(source: string): string[] {
+  const names: string[] = [];
   const seen = new Set<string>();
-  const enqueue = (name: string) => {
-    if (!seen.has(name) && queue.length + seen.size < MAX_CHUNKS_TO_PROBE) {
-      seen.add(name);
-      queue.push(name);
+  for (const match of source.matchAll(/static\/chunks\/([A-Za-z0-9_.-]+\.js)/g)) {
+    if (!seen.has(match[1])) {
+      seen.add(match[1]);
+      names.push(match[1]);
     }
-  };
-
-  for (const match of html.matchAll(/static\/chunks\/([A-Za-z0-9_.-]+\.js)/g)) {
-    enqueue(match[1]);
   }
+  return names;
+}
+
+/** Fetch one chunk and return the persisted query id if it is the manifest. */
+async function probeChunkForHash(name: string): Promise<string | null> {
+  const body = await fetchText(`${CHUNK_URL_BASE}${name}`);
+  return body ? extractQueryHashFromChunk(body) : null;
+}
+
+type CrawlOutcome =
+  /** Found it. `chunk` is remembered so the next rediscovery is one request. */
+  | { kind: 'found'; hash: string; chunk: string; probed: number }
+  /** The events page itself could not be read - nothing to crawl from. */
+  | { kind: 'unavailable' }
+  /** Ran out of chunks (or of the probe budget) without finding the manifest. */
+  | { kind: 'exhausted'; probed: number }
+  /** The caller's time budget ran out mid-crawl. */
+  | { kind: 'deadline'; probed: number };
+
+/**
+ * Crawl Riot's own events page for the persisted-query manifest.
+ *
+ * This is the live path, because every *name* in the chain rotates and only the
+ * shape does not. Measured against the 2026-10-25 build:
+ *
+ * - The events page HTML references **36** `_next/static/chunks/*.js` files and
+ *   contains no 64-hex id, no `persistedQuery` and not even the operation name,
+ *   so the hash is never in the HTML itself.
+ * - **None** of those 36 chunks is the manifest. The manifest lives in
+ *   `3ljhtmeypccge.js`, which the HTML never mentions: it is lazily loaded, and
+ *   the only reference to it anywhere is a Turbopack loader call inside
+ *   `1x7ey3ub0c35t.js` (`e.v(t=>Promise.all(["static/chunks/3ljhtmeypccge.js"]
+ *   .map(t=>e.l(t)))…)`), the 11th chunk in HTML document order.
+ * - Across all 36 chunks there are exactly **2** chunk names that the HTML does
+ *   not already list (the manifest, and one other lazy chunk).
+ *
+ * That last number is what makes this cheap: a chunk name discovered *inside*
+ * another chunk but absent from the page is a lazily-loaded chunk, and the
+ * manifest is one of a mere handful of those. So lazy names jump the queue
+ * ahead of the page's own chunks, which finds the manifest on probe **12** of a
+ * possible 60 rather than on probe 31 (what plain FIFO order cost).
+ */
+async function crawlForQueryHash(requestDelayMs: number, deadline?: number): Promise<CrawlOutcome> {
+  const html = await fetchText(EVENTS_PAGE_URL);
+  if (!html) return { kind: 'unavailable' };
+
+  const fromPage = chunkNamesIn(html);
+  const pageChunks = new Set(fromPage);
+
+  // Page chunks keep document order; lazily-referenced chunks are unshifted in
+  // front of them as they are discovered.
+  const queue = [...fromPage];
+  const discovered = new Set(fromPage);
+
+  console.warn(
+    `[playriftbound] crawling ${EVENTS_PAGE_URL} for the persisted query manifest ` +
+      `(${fromPage.length} chunks referenced, lazily-loaded chunks probed first, ` +
+      `${MAX_CHUNKS_TO_PROBE} probe budget)`
+  );
 
   let probed = 0;
   while (queue.length > 0 && probed < MAX_CHUNKS_TO_PROBE) {
-    if (deadline !== undefined && Date.now() >= deadline) {
-      console.error(`[playriftbound] time budget reached after probing ${probed} chunks for the persisted query manifest`);
-      return null;
-    }
+    if (deadline !== undefined && Date.now() >= deadline) return { kind: 'deadline', probed };
+
     const name = queue.shift() as string;
     await sleep(requestDelayMs);
     probed++;
@@ -419,18 +501,92 @@ async function rediscoverQueryHash(requestDelayMs: number, deadline?: number): P
     if (!body) continue;
 
     const hash = extractQueryHashFromChunk(body);
-    if (hash) {
-      console.warn(`[playriftbound] found persisted query manifest in rotated chunk ${name}`);
-      return hash;
+    if (hash) return { kind: 'found', hash, chunk: name, probed };
+
+    if (body.includes(MANIFEST_FORMAT_MARKER)) {
+      // The manifest moved but no longer lists this operation - worth saying out
+      // loud, because it means Riot renamed the query rather than rotated its id.
+      console.error(
+        `[playriftbound] chunk ${name} is an Apollo persisted-query manifest but has no ${OPERATION_NAME} entry`
+      );
     }
 
-    // Harvest chunk names referenced from inside this chunk (webpack runtime map).
-    for (const match of body.matchAll(/static\/chunks\/([A-Za-z0-9_.-]+\.js)/g)) {
-      enqueue(match[1]);
+    // A nested name the page does not list is a lazily-loaded chunk: the
+    // manifest is one of those, so jump the queue.
+    for (const nested of chunkNamesIn(body)) {
+      if (discovered.has(nested) || discovered.size >= MAX_CHUNKS_TO_PROBE) continue;
+      discovered.add(nested);
+      if (pageChunks.has(nested)) queue.push(nested);
+      else queue.unshift(nested);
     }
   }
 
-  console.error(`[playriftbound] exhausted ${probed} chunks without finding the ${OPERATION_NAME} persisted query id`);
+  return { kind: 'exhausted', probed };
+}
+
+/**
+ * Re-discover the current persisted query hash.
+ *
+ * 1. A manifest chunk name this process already learned (one request, and a name
+ *    we have actually seen live - unlike a hardcoded one).
+ * 2. Crawl the live events page for the manifest (see crawlForQueryHash).
+ * 3. Long shot: the chunk name measured when this file was last updated. Only
+ *    reached when the crawl could not run at all, since that name rotates.
+ *
+ * Every failure is non-fatal and loud; the caller retries once and then skips
+ * the source for the run.
+ */
+export async function rediscoverQueryHash(requestDelayMs: number, deadline?: number): Promise<string | null> {
+  if (learnedManifestChunk) {
+    const hash = await probeChunkForHash(learnedManifestChunk);
+    if (hash) return hash;
+    console.warn(
+      `[playriftbound] chunk ${learnedManifestChunk} no longer serves the manifest (Riot redeployed), re-crawling`
+    );
+    learnedManifestChunk = null;
+  }
+
+  const crawl = await crawlForQueryHash(requestDelayMs, deadline);
+  if (crawl.kind === 'found') {
+    learnedManifestChunk = crawl.chunk;
+    console.warn(
+      `[playriftbound] found the persisted query manifest in chunk ${crawl.chunk} after ${crawl.probed} probes`
+    );
+    return crawl.hash;
+  }
+
+  if (crawl.kind === 'deadline') {
+    console.error(
+      `[playriftbound] time budget reached after probing ${crawl.probed} chunks for the persisted query manifest`
+    );
+    return null;
+  }
+
+  if (crawl.kind === 'exhausted') {
+    console.error(
+      `[playriftbound] crawled ${crawl.probed} chunks from ${EVENTS_PAGE_URL} without finding the ` +
+        `${OPERATION_NAME} persisted query id`
+    );
+  } else {
+    console.error(`[playriftbound] could not fetch ${EVENTS_PAGE_URL} to crawl for the persisted query manifest`);
+  }
+
+  if (deadline !== undefined && Date.now() >= deadline) return null;
+
+  await sleep(requestDelayMs);
+  const fallback = await probeChunkForHash(LAST_MEASURED_MANIFEST_CHUNK);
+  if (fallback) {
+    console.warn(
+      `[playriftbound] crawl failed but the last measured manifest chunk ${LAST_MEASURED_MANIFEST_CHUNK} is still live`
+    );
+    learnedManifestChunk = LAST_MEASURED_MANIFEST_CHUNK;
+    return fallback;
+  }
+
+  console.error(
+    `[playriftbound] no persisted query hash could be resolved (last measured chunk ` +
+      `${LAST_MEASURED_MANIFEST_CHUNK} is gone too). Set PLAYRIFTBOUND_QUERY_HASH to unblock.`
+  );
   return null;
 }
 
@@ -550,7 +706,12 @@ export function convertTournamentNode(node: PrbTournamentNode): (ScrapedEvent & 
   if (Number.isNaN(startDate.getTime())) return null;
 
   const organizer = node.organizer;
-  const address = organizer?.physicalAddress ?? null;
+  // Which field carries the address depends on which persisted document the
+  // current hash resolves to: Riot's 2026-10 build moved it from
+  // organizer.physicalAddress to tournament.tournamentLocation. Accept either,
+  // or a rediscovered hash would "work" and then silently convert zero events
+  // because every node lost its coordinates.
+  const address = tournament.tournamentLocation ?? organizer?.physicalAddress ?? null;
   const latitude = address?.latitude ?? null;
   const longitude = address?.longitude ?? null;
 
@@ -593,6 +754,12 @@ export function convertTournamentNode(node: PrbTournamentNode): (ScrapedEvent & 
     startTime: null, // frontend converts from the UTC startDate, same as the UVS source
     endDate: null, // Riot's search API does not expose an end time
     eventType: mapEventType(tournament.config?.tournamentType),
+    // Riot's RiftboundTournamentConfig.format, verbatim and un-normalised (see
+    // ScrapedEvent.playFormat). Captured here because this is the only place it
+    // is ever available: the search API is upcoming-only and the event detail
+    // page carries no format field, so an event that passes without it can never
+    // be backfilled.
+    playFormat: sanitizeText(tournament.config?.format),
     organizer: organizerName,
     playerCount: registeredPlayerCount(tournament.registrantCounts),
     capacity: tournament.config?.participantCapacity ?? null,

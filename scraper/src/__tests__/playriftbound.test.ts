@@ -168,6 +168,34 @@ describe('convertTournamentNode', () => {
     expect(convertTournamentNode(node)!.price).toBe('Free');
   });
 
+  // Riot's `format` is the only field in this feed that can never be
+  // recovered later: the search API is upcoming-only and the event detail page
+  // has no format at all, so an event converted without it is unanalysable for
+  // format forever. The converter emitting it is the whole capture mechanism.
+  it("emits Riot's event format verbatim as playFormat", () => {
+    expect(convertTournamentNode(edges[0].node)!.playFormat).toBe('CONSTRUCTED');
+
+    // Not normalised, not mapped: an unrecognised enum value passes straight
+    // through, because Riot's enums in this feed demonstrably change.
+    const node = structuredClone(edges[1].node);
+    node.tournament.config!.format = 'SEALED';
+    expect(convertTournamentNode(node)!.playFormat).toBe('SEALED');
+    node.tournament.config!.format = 'SOMETHING_RIOT_ADDS_LATER';
+    expect(convertTournamentNode(node)!.playFormat).toBe('SOMETHING_RIOT_ADDS_LATER');
+  });
+
+  it('keeps the event when there is no format, rather than dropping it', () => {
+    const noFormat = structuredClone(edges[1].node);
+    noFormat.tournament.config!.format = null;
+    expect(convertTournamentNode(noFormat)!.playFormat).toBeNull();
+
+    const noConfig = structuredClone(edges[1].node);
+    noConfig.tournament.config = null;
+    const event = convertTournamentNode(noConfig);
+    expect(event).not.toBeNull();
+    expect(event!.playFormat).toBeNull();
+  });
+
   it('maps the other tournament types', () => {
     const node = structuredClone(edges[1].node);
     node.tournament.config!.tournamentType = 'PRE_RIFT';
@@ -176,10 +204,54 @@ describe('convertTournamentNode', () => {
     expect(convertTournamentNode(node)!.eventType).toBe('Summoner Skirmish');
   });
 
+  // Riot's persisted document changed shape between the 2026-09 and 2026-10
+  // builds: the address moved from organizer.physicalAddress to
+  // tournament.tournamentLocation. Both have to parse, or rediscovering the hash
+  // would "succeed" and then silently yield zero events, every node having lost
+  // its coordinates. Measured over 25 events returned by both documents the two
+  // fields agreed to within 1m on all 25, and tournamentLocation was non-null on
+  // 100/100 events.
+  it('reads the address from tournament.tournamentLocation (2026-10 document)', () => {
+    const node = structuredClone(edges[0].node);
+    node.tournament.tournamentLocation = node.organizer!.physicalAddress;
+    delete node.organizer!.physicalAddress;
+
+    const event = convertTournamentNode(node);
+    expect(event).toMatchObject({
+      address: '8300 Arroyo Cir #240, Gilroy, CA 95020, USA',
+      city: 'Gilroy',
+      state: 'CA',
+      country: 'US',
+      latitude: 37.020373,
+    });
+    expect(event!.storeInfo.latitude).toBe(37.020373);
+  });
+
+  it('prefers tournamentLocation over the organizer address when both are present', () => {
+    const node = structuredClone(edges[0].node);
+    node.tournament.tournamentLocation = {
+      adminArea1: 'NV',
+      city: 'Reno',
+      formattedAddress: '1 Venue St, Reno, NV 89501, USA',
+      latitude: 39.5296,
+      longitude: -119.8138,
+    };
+
+    const event = convertTournamentNode(node);
+    expect(event!.city).toBe('Reno');
+    expect(event!.latitude).toBe(39.5296);
+  });
+
   it('skips nodes without usable coordinates or dates', () => {
     const noCoords = structuredClone(edges[1].node);
     noCoords.organizer!.physicalAddress = null;
     expect(convertTournamentNode(noCoords)).toBeNull();
+
+    // Same, under the 2026-10 document shape.
+    const noLocation = structuredClone(edges[1].node);
+    delete noLocation.organizer!.physicalAddress;
+    noLocation.tournament.tournamentLocation = null;
+    expect(convertTournamentNode(noLocation)).toBeNull();
 
     const noDate = structuredClone(edges[1].node);
     noDate.tournament.startsAt = 'not-a-date';
@@ -365,6 +437,12 @@ describe('convertTournamentNode sanitisation', () => {
     expect(event!.location).toBe('Forever After Antiques and Collectibles Inc');
     expect(event!.storeInfo.name).toBe('Forever After Antiques and Collectibles Inc');
     expect(event!.name).toBe('Pre-Rift');
+  });
+
+  it('sanitises the format enum too - it comes from a user-editable system', () => {
+    const node = structuredClone(poisonedNode) as unknown as PrbTournamentNode;
+    node.tournament.config!.format = 'CONSTRUCTED<script>alert(1)</script>';
+    expect(convertTournamentNode(node)!.playFormat).toBe('CONSTRUCTED');
   });
 
   it('keeps the event rather than dropping the whole record', () => {

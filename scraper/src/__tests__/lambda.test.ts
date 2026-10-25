@@ -12,7 +12,30 @@ vi.mock('@aws-sdk/client-cloudwatch', () => ({
   PutMetricDataCommand: class { constructor(public input: unknown) {} },
 }));
 vi.mock('../config.js', () => ({
-  env: { PLAYRIFTBOUND_ENABLED: true, PLAYRIFTBOUND_REQUEST_DELAY_MS: 0, PLAYRIFTBOUND_MAX_ANCHORS_PER_RUN: 150 },
+  env: {
+    PLAYRIFTBOUND_ENABLED: true,
+    PLAYRIFTBOUND_REQUEST_DELAY_MS: 0,
+    PLAYRIFTBOUND_MAX_ANCHORS_PER_RUN: 150,
+    PLAYRIFTBOUND_RESULTS_ENABLED: true,
+    PLAYRIFTBOUND_RESULTS_MAX_EVENTS_PER_RUN: 250,
+    PLAYRIFTBOUND_RESULTS_LOOKBACK_DAYS: 21,
+    RANKING_ENABLED: true,
+    RANKING_REFIT_INTERVAL_HOURS: 24,
+    RANKING_HISTORY_DAYS: 400,
+    RANKING_MAX_MATCHES: 2_000_000,
+    RANKING_PRIOR_SIGMA_ELO: 150,
+    RANKING_DRIFT_ELO_PER_SQRT_DAY: 4,
+    RANKING_OBSERVATION_LEVEL: 'game-shared',
+    RANKING_WEIGHT_SCALE: 1,
+    RANKING_MAX_ITERATIONS: 60,
+    RANKING_MIN_GAMES: 8,
+    RANKING_MAX_UNCERTAINTY_ELO: 120,
+    RANKING_MIN_COMPONENT_SIZE: 8,
+    RANKING_MAX_COMPONENT_LADDERS: 50,
+    RANKING_MIN_SET_MATCHES: 50,
+    RANKING_PRERELEASE_TYPES: 'Pre-Rift',
+    RANKING_PRERELEASE_LEAD_DAYS: 14,
+  },
 }));
 vi.mock('../api.js', () => ({
   fetchEventTemplates: vi.fn(async () => {}),
@@ -39,8 +62,17 @@ const db = vi.hoisted(() => ({
   loadShopsByGeohash4: vi.fn(async () => [] as unknown[]),
   repointEventsToShop: vi.fn(async (rows: unknown[]) => rows.length),
   deleteShopsByExternalId: vi.fn(async (ids: number[]) => ids.length),
+  supportsEventFacts: vi.fn(() => true),
+  supportsRankingWrites: vi.fn(() => true),
+  getLastRankingRefit: vi.fn(async () => null as string | null),
 }));
 vi.mock('../database.js', () => db);
+
+const ranking = vi.hoisted(() => ({ runRankingPass: vi.fn(), refitDue: vi.fn(() => true) }));
+vi.mock('../ranking/pass.js', () => ranking);
+
+const prbResults = vi.hoisted(() => ({ runPlayriftboundResultsPass: vi.fn() }));
+vi.mock('../sources/playriftboundResults.js', () => prbResults);
 
 const prb = vi.hoisted(() => ({ fetchPlayriftboundEvents: vi.fn() }));
 vi.mock('../sources/playriftbound.js', () => ({
@@ -64,7 +96,8 @@ const uvsRow = {
 const prbTwin = {
   externalId: 'prb-aaa', name: 'Nexus Night', latitude: 38.01941, longitude: -122.13412, startDate: start,
   eventType: 'Nexus Night', url: 'https://playriftbound.com/en-us/events/aaa', playerCount: null, capacity: 16,
-  price: '$15.00', sources: ['playriftbound'], storeInfo: { id: 2_000_000_001, name: 'Games of Martinez', latitude: 38.01941, longitude: -122.13412 },
+  price: '$15.00', sources: ['playriftbound'], playFormat: 'CONSTRUCTED',
+  storeInfo: { id: 2_000_000_001, name: 'Games of Martinez', latitude: 38.01941, longitude: -122.13412 },
 };
 const prbOnly = {
   ...prbTwin, externalId: 'prb-bbb', latitude: 40.0, longitude: -120.0,
@@ -77,17 +110,42 @@ beforeEach(() => {
 });
 
 describe('coordinator', () => {
-  it('dispatches UVS shard workers plus one playriftbound invocation', async () => {
+  it('dispatches UVS shard workers plus the two playriftbound invocations', async () => {
     const res = await handler({} as never, context());
     expect(res.statusCode).toBe(202);
     const modes = sent.map(i => JSON.parse(Buffer.from(i.Payload as Uint8Array).toString()).mode);
     expect(modes.filter(m => m === 'worker').length).toBeGreaterThan(0);
     expect(modes.filter(m => m === 'playriftbound')).toHaveLength(1);
+    expect(modes.filter(m => m === 'playriftboundResults')).toHaveLength(1);
+    expect(modes.filter(m => m === 'ranking')).toHaveLength(1);
     // Workers carry the cycle id they record their seen event ids under.
     const cycleIds = sent.map(i => JSON.parse(Buffer.from(i.Payload as Uint8Array).toString()))
       .filter(p => p.mode === 'worker').map(p => p.cycleId);
     expect(new Set(cycleIds).size).toBe(1);
     expect(db.recordScrapeCycle).toHaveBeenCalledWith(expect.objectContaining({ cycleId: cycleIds[0] }));
+  });
+
+  it('skips the rating refit until its interval has elapsed', async () => {
+    // The refit rewrites every profile and every rating point, so most cycles
+    // must dispatch nothing at all.
+    ranking.refitDue.mockReturnValue(false);
+    db.getLastRankingRefit.mockResolvedValue('2026-10-25T00:00:00.000Z');
+    const res = await handler({} as never, context());
+    ranking.refitDue.mockReturnValue(true);
+    expect(JSON.parse(res.body).rankingDispatched).toBe(false);
+    expect(JSON.parse(res.body).rankingSkippedReason).toContain('interval');
+    const modes = sent.map(i => JSON.parse(Buffer.from(i.Payload as Uint8Array).toString()).mode);
+    expect(modes).not.toContain('ranking');
+  });
+
+  it('still dispatches the scrape passes when the refit check itself fails', async () => {
+    // A rating problem must never cost a scrape cycle.
+    db.getLastRankingRefit.mockRejectedValueOnce(new Error('dynamo unavailable'));
+    const res = await handler({} as never, context());
+    expect(res.statusCode).toBe(202);
+    expect(JSON.parse(res.body).rankingSkippedReason).toBe('dynamo unavailable');
+    const modes = sent.map(i => JSON.parse(Buffer.from(i.Payload as Uint8Array).toString()).mode);
+    expect(modes.filter(m => m === 'worker').length).toBeGreaterThan(0);
   });
 
   it('does not dispatch playriftbound when stored reads are unsupported', async () => {
@@ -96,6 +154,35 @@ describe('coordinator', () => {
     db.supportsStoredEventReads.mockReturnValue(true);
     const modes = sent.map(i => JSON.parse(Buffer.from(i.Payload as Uint8Array).toString()).mode);
     expect(modes).not.toContain('playriftbound');
+  });
+
+  it('does not dispatch the results pass when facts cannot be stored', async () => {
+    db.supportsEventFacts.mockReturnValue(false);
+    await handler({} as never, context());
+    db.supportsEventFacts.mockReturnValue(true);
+    const modes = sent.map(i => JSON.parse(Buffer.from(i.Payload as Uint8Array).toString()).mode);
+    expect(modes).not.toContain('playriftboundResults');
+    expect(modes).toContain('playriftbound');
+  });
+});
+
+describe('playriftbound results invocation', () => {
+  it('runs the pass with a deadline inside the invocation budget', async () => {
+    prbResults.runPlayriftboundResultsPass.mockResolvedValue({
+      candidates: 10, due: 2, rosterDue: 1, resultsDue: 1, fetched: 2, withResults: 1, withoutResults: 0,
+      rostersWritten: 2, resultsWritten: 1, unchanged: 0, failed: 0, notFetched: 0, requests: 2,
+      partial: false, durationMs: 5,
+    });
+
+    const res = await handler({ mode: 'playriftboundResults' } as never, context());
+
+    expect(res.statusCode).toBe(200);
+    const [options] = prbResults.runPlayriftboundResultsPass.mock.calls[0] as [{ deadline: number }];
+    // 15 minutes of budget minus the reserve, so the pass stops before the
+    // invocation is killed and the remainder rolls over.
+    expect(options.deadline).toBeLessThan(Date.now() + 900_000);
+    expect(options.deadline).toBeGreaterThan(Date.now() + 700_000);
+    expect(db.completeScrapeRun).toHaveBeenCalled();
   });
 });
 
@@ -121,6 +208,9 @@ describe('playriftbound invocation', () => {
 
     expect(db.applyMergedEventFields).toHaveBeenCalledWith('1039321', {
       url: prbTwin.url,
+      // Riot owns the event format and UVS has none, so the merge is the only
+      // way it ever reaches the UVS row of record.
+      playFormat: 'CONSTRUCTED',
       sources: ['uvs', 'playriftbound'],
     });
     expect(db.deleteEventsByExternalId).toHaveBeenCalledWith(['prb-aaa']);
@@ -196,6 +286,38 @@ describe('worker', () => {
       context()
     );
     expect(db.recordShardSeenIds).toHaveBeenCalledWith('c1', 0, new Set(['1', '2']), true);
+  });
+});
+
+describe('ranking invocation', () => {
+  it('runs the refit with the configured model and bar', async () => {
+    ranking.runRankingPass.mockResolvedValue({
+      matches: 10, games: 12, ratedPlayers: 2, playersWithMatches: 4, eventsWithResults: 3,
+      durationMs: 5, partial: false, writes: { profiles: 4, rankingRows: 2 },
+    });
+    const res = await handler({ mode: 'ranking' } as never, context());
+    expect(res.statusCode).toBe(200);
+    expect(ranking.runRankingPass).toHaveBeenCalledWith(expect.objectContaining({
+      historyDays: 400,
+      whr: expect.objectContaining({ priorSigmaElo: 150, observationLevel: 'game-shared', weightScale: 1 }),
+      snapshot: expect.objectContaining({ minGames: 8, maxUncertaintyElo: 120, minComponentSize: 8 }),
+    }));
+  });
+
+  it('reports 202 when the refit ran out of time and wrote nothing', async () => {
+    ranking.runRankingPass.mockResolvedValue({
+      matches: 0, games: 0, ratedPlayers: 0, playersWithMatches: 0, eventsWithResults: 0,
+      durationMs: 5, partial: true, writes: null,
+    });
+    const res = await handler({ mode: 'ranking' } as never, context());
+    expect(res.statusCode).toBe(202);
+  });
+
+  it('fails the run rather than silently succeeding', async () => {
+    ranking.runRankingPass.mockRejectedValue(new Error('fit blew up'));
+    const res = await handler({ mode: 'ranking' } as never, context());
+    expect(res.statusCode).toBe(500);
+    expect(db.failScrapeRun).toHaveBeenCalledWith('run', 'fit blew up');
   });
 });
 

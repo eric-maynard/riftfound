@@ -26,6 +26,8 @@ function uvsEvent(overrides: Partial<ScrapedEvent> = {}): ScrapedEvent {
     url: null,
     imageUrl: 'https://cdn.uvsgames.test/header.png',
     sources: [SOURCE_UVS],
+    // UVS has no format field at all, so a UVS record never carries one.
+    playFormat: null,
     ...overrides,
   };
 }
@@ -54,6 +56,7 @@ function playriftboundEvent(overrides: Partial<ScrapedEvent> = {}): ScrapedEvent
     url: 'https://playriftbound.com/en-us/events/117096731805661097',
     imageUrl: null,
     sources: [SOURCE_PLAYRIFTBOUND],
+    playFormat: 'SEALED',
     ...overrides,
   };
 }
@@ -103,6 +106,27 @@ describe('mergeEventRecords', () => {
     );
     expect(gapFilled.capacity).toBe(24);
     expect(gapFilled.price).toBe('$40.00');
+  });
+
+  it("takes Riot's event format, which UVS has no equivalent for", () => {
+    expect(mergeEventRecords(uvsEvent(), playriftboundEvent()).playFormat).toBe('SEALED');
+    // Riot's value is stored verbatim, not normalised: it is an enum and Riot's
+    // enums in this feed change.
+    expect(
+      mergeEventRecords(uvsEvent(), playriftboundEvent({ playFormat: 'CONSTRUCTED' })).playFormat
+    ).toBe('CONSTRUCTED');
+  });
+
+  it('never lets a missing Riot format wipe one already on the row', () => {
+    // The incumbent value came from an earlier sweep; it cannot be recaptured
+    // once the event is in the past, so a null must not overwrite it.
+    expect(
+      mergeEventRecords(uvsEvent({ playFormat: 'CONSTRUCTED' }), playriftboundEvent({ playFormat: null })).playFormat
+    ).toBe('CONSTRUCTED');
+    // And a pair that has never seen a format is simply null - not an error.
+    expect(
+      mergeEventRecords(uvsEvent(), playriftboundEvent({ playFormat: null })).playFormat
+    ).toBeNull();
   });
 
   it('records both contributing sources', () => {
