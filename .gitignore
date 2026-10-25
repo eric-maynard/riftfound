@@ -66,3 +66,6 @@ tmp/
 temp/
 .cache/
 .venv/
+
+# Playwright MCP scratch output (page snapshots, console logs, screenshots)
+.playwright-mcp/

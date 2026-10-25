@@ -307,6 +307,13 @@ resource "aws_lambda_function" "scraper" {
       # Kill switch for the Riot playriftbound source (no code deploy needed)
       PLAYRIFTBOUND_ENABLED             = "true"
       PLAYRIFTBOUND_MAX_ANCHORS_PER_RUN = "150"
+      # Results/roster pass batch size. Raised from the code default of 250:
+      # a measured 250-item run used 376s of the 900s Lambda budget, so 500
+      # fits with headroom and roughly halves the time to drain the ~20,661
+      # event backlog (~7-8 days at 250, ~4 at 500). The instantaneous request
+      # rate is unchanged - still one per second, set by
+      # PLAYRIFTBOUND_REQUEST_DELAY_MS - so this is no less polite to Riot.
+      PLAYRIFTBOUND_RESULTS_MAX_EVENTS_PER_RUN = "500"
     }
   }
 
