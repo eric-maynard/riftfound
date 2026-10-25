@@ -9,8 +9,8 @@ src/
 ├── App.tsx               # Routes: / (calendar), /events/:id, /ranking, /ranking/players/:id
 ├── index.css             # Dracula theme + FullCalendar overrides + ranking/chart styles
 ├── components/
-│   ├── Layout.tsx        # Section tabs + persistent calendar mount
-│   ├── SectionTabs.tsx   # Events / Ranking selector
+│   ├── Layout.tsx        # Mode switch + persistent calendar mount
+│   ├── ModeSwitch.tsx    # The mark itself, switching Events / Ranking
 │   ├── EventFilters.tsx  # Format dropdown, distance dropdown, location search
 │   ├── EventTooltip.tsx  # Hover card for events
 │   └── RatingChart.tsx   # Inline-SVG rating-over-time chart
@@ -30,9 +30,18 @@ src/
 
 ## Sections
 
-`Layout` renders the Events/Ranking tab bar and mounts `CalendarPage` itself,
-hiding it with `hidden` on the Ranking tab instead of unmounting it - so the
-calendar's events, caches, filters and geolocation survive a tab switch.
+`Layout` renders the mode switch and mounts `CalendarPage` itself, hiding it
+with `hidden` on the Ranking section instead of unmounting it - so the
+calendar's events, caches, filters and geolocation survive a switch.
+
+The switch *is* the site mark: the looking glass for Events, the trophy for
+Ranking, on one track with a thumb sliding under the active side and the other
+desaturated. It replaces the earlier text tab bar. While Ranking is unlisted
+(`SHOW_SECTION_TABS` false in `Layout.tsx`) the plain logo stands in instead, so
+a deploy cannot reveal the section by accident; set
+`localStorage.riftfoundRankingTabs = 'on'` to preview the switch. On phones it
+leaves the fixed corner and sits in the page flow, because unlike the bare logo
+it is navigation and must not be hidden.
 `CalendarPage` takes an `active` prop and calls FullCalendar's `updateSize()`
 when it comes back into view. Each tab remembers its own query string, so a
 shared calendar URL and the ranking page's set/scene selection both survive the

@@ -196,10 +196,102 @@ a:hover {
   z-index: 100;
 }
 
+/* --- Mode switch: the mark itself selects the section ------------------- */
+
+.mode-switch {
+  position: fixed;
+  top: 12px;
+  left: 12px;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px;
+  border-radius: 999px;
+  background: rgba(68, 71, 90, 0.55);
+  border: 1px solid rgba(98, 114, 164, 0.45);
+  backdrop-filter: blur(6px);
+}
+
+/* The sliding thumb. Sized to one option and moved by the active side, so the
+   travel stays correct if the option size changes. */
+.mode-switch::before {
+  content: '';
+  position: absolute;
+  top: 4px;
+  left: 4px;
+  width: 44px;
+  height: 44px;
+  border-radius: 999px;
+  background: rgba(189, 147, 249, 0.22);
+  box-shadow: inset 0 0 0 1px rgba(189, 147, 249, 0.55);
+  transition: transform 180ms ease;
+}
+
+.mode-switch[data-active='ranking']::before {
+  transform: translateX(46px);
+}
+
+.mode-switch-option {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 999px;
+}
+
+.mode-switch-option img {
+  width: 36px;
+  height: 36px;
+  display: block;
+  /* The unselected section reads as available but inactive. */
+  filter: grayscale(1);
+  opacity: 0.45;
+  transition: filter 180ms ease, opacity 180ms ease;
+}
+
+.mode-switch-option:hover img {
+  filter: grayscale(0.4);
+  opacity: 0.8;
+}
+
+.mode-switch-option.active img,
+.mode-switch-option[aria-current='page'] img {
+  filter: none;
+  opacity: 1;
+}
+
+.mode-switch-option:focus-visible {
+  outline: 2px solid #8be9fd;
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mode-switch::before,
+  .mode-switch-option img {
+    transition: none;
+  }
+}
+
+/* Screen-reader-only text for the two marks. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 /* Calendar Page */
 .calendar-page {
   padding-top: 0.5rem;
-  padding-left: 80px; /* Space for fixed logo */
+  padding-left: 104px; /* Space for the fixed mode switch */
 }
 
 .error-banner {
@@ -950,13 +1042,23 @@ select:disabled {
     font-size: 0.9rem;
   }
 
-  /* Hide logo on mobile */
+  /* Hide the bare logo on mobile */
   .site-logo {
     display: none;
   }
 
-  /* Remove left padding since logo is hidden */
-  .calendar-page {
+  /* The mode switch is navigation, so it stays - but it leaves the fixed
+     corner and sits in the page flow, where it costs no horizontal room. */
+  .mode-switch {
+    position: static;
+    margin: 6px auto 2px;
+    width: max-content;
+  }
+
+  /* No fixed element to clear any more */
+  .calendar-page,
+  .ranking-page,
+  .player-page {
     padding-left: 0;
   }
 
@@ -1083,7 +1185,7 @@ select:disabled {
 /* Section tabs (Events / Ranking) */
 .section-tabs-bar {
   padding-top: 0.5rem;
-  padding-left: 80px; /* Clear the fixed logo, as .calendar-page does */
+  padding-left: 104px; /* Clear the fixed mode switch, as .calendar-page does */
   margin-bottom: 0.5rem;
 }
 
@@ -1121,11 +1223,11 @@ select:disabled {
   outline-offset: 2px;
 }
 
-/* Ranking + player pages share the calendar's logo gutter */
+/* Ranking + player pages share the calendar's mode-switch gutter */
 .ranking-page,
 .player-page {
   padding-top: 0.25rem;
-  padding-left: 80px;
+  padding-left: 104px;
 }
 
 .ranking-head h1,

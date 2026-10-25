@@ -1,7 +1,7 @@
 import { useRef } from 'react';
 import { Link, Outlet, useLocation } from 'react-router-dom';
 import CalendarPage from '../pages/CalendarPage';
-import SectionTabs from './SectionTabs';
+import ModeSwitch from './ModeSwitch';
 
 /**
  * The calendar is mounted *here*, not by its route, so switching to the
@@ -45,18 +45,23 @@ function Layout() {
 
   return (
     <div className="layout">
-      {/* Always a way back to the calendar, including from the unlisted ranking pages. */}
-      <Link to="/" aria-label="Riftfound home">
-        <img src="/logo.png" alt="Riftfound" className="site-logo" />
-      </Link>
+      {/* The mark is the section switch once Ranking is public. While it is
+          unlisted the plain logo stands in, so a deploy cannot reveal the
+          section by accident - but it still links home, which is the only way
+          back from the unlisted ranking pages. */}
+      {showTabs ? (
+        <ModeSwitch
+          eventsSearch={eventsSearch.current}
+          rankingSearch={rankingSearch.current}
+          active={isRanking ? 'ranking' : 'events'}
+        />
+      ) : (
+        <Link to="/" aria-label="Riftfound home">
+          <img src="/logo.png" alt="Riftfound" className="site-logo" />
+        </Link>
+      )}
       <main>
         <div className="container">
-          {!isEventDetail && showTabs && (
-            <div className="section-tabs-bar">
-              <SectionTabs eventsSearch={eventsSearch.current} rankingSearch={rankingSearch.current} />
-            </div>
-          )}
-
           {!isEventDetail && (
             <div hidden={!isCalendar}>
               <CalendarPage active={isCalendar} />
