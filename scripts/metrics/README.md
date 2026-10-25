@@ -64,6 +64,36 @@ python analyze-logs.py -o report.json --format json
 ./db-metrics.sh --remote --days 14
 ```
 
+### Player Rating Metrics (Co-play Graph & Accuracy)
+
+Measures the structure the ratings are built on, and how well they predict. Run
+`connectivity` before trusting any number the ranking UI shows: in a
+paired-comparison model, ratings are only identified up to a constant *per
+connected component*, so if play is clustered a global ladder is not meaningful.
+
+```bash
+./ranking-metrics.sh connectivity --remote   # measure the co-play graph
+./ranking-metrics.sh validate --remote       # held-out accuracy vs Riot's tiebreakers
+./ranking-metrics.sh bar --remote            # how many players clear each publishing bar
+./ranking-metrics.sh fit --remote            # dry-run refit summary (writes nothing)
+./ranking-metrics.sh all --remote            # everything
+
+./ranking-metrics.sh connectivity            # local SQLite (dev)
+./ranking-metrics.sh all --file sample.ndjson  # a captured regional sample
+./ranking-metrics.sh validate --holdout-days 10
+```
+
+All read-only; `fit` is a dry run and never writes derived items. The `--file`
+form reads NDJSON of `{externalId, results, roster}` objects, which is how a
+complete region can be measured before the production results backfill reaches
+it - partial coverage systematically *understates* connectivity, because a
+missing event is a missing set of edges.
+
+Shares its graph, model and validation code with the production rating pass
+(`scraper/src/ranking/`), so the numbers in a report are the numbers the ladder
+was actually built from. Design notes and the current measured values are in
+[scraper/CLAUDE.md](../../scraper/CLAUDE.md).
+
 ### Geocoding Metrics (Google API Usage)
 
 Analyzes geocoding cache effectiveness and Google API usage from Lambda CloudWatch logs.
@@ -118,6 +148,28 @@ Output includes:
 | Events by type | Breakdown by event category |
 | Shops by state | Geographic distribution |
 | Recent scrape runs | Last 10 scraper executions |
+
+### Player Rating Metrics
+
+| Metric | Description |
+|--------|-------------|
+| Giant component share | Fraction of rated players who are mutually reachable through play. The number that decides whether a global ladder means anything. |
+| Component size distribution | How the rest of the player pool fragments |
+| Multi-venue players | Players who played at more than one venue, and at how many |
+| Venue graph components | Venues linked when a player played at both |
+| Cross-venue matches by `tournamentType` | Which kinds of event supply the bridging edges |
+| Leave-one-type-out | Giant-component share after deleting a whole event tier - the falsifiable form of "the tier ladder connects the scenes" |
+| Matches per player | Percentiles, and how many players clear each game count |
+| Held-out accuracy / log loss / Brier | The model against Riot's own tiebreakers, an experience baseline and a coin flip, on a temporal split |
+| Prior SD sweep | Held-out log loss by prior strength - how the prior was chosen |
+| Observation level sweep | Match vs per-game weighting, compared out of sample |
+| Games per match by type | How much per-game Bo3 detail organizers actually record. Strongly type-dependent, so any pooled figure is an artefact of the window's event mix. |
+| Pooled vs per-type fit | Whether one rating across sealed (Pre-Rift) and constructed (Nexus Night / Summoner Skirmish) events costs accuracy - i.e. whether `format` is worth a rating dimension |
+| Publishing bar | Players admitted at each (min games, max uncertainty) pair |
+
+Every type-keyed number from this feed depends on its window: `tournamentType`
+composition swings hard between prerelease fortnights and normal months, so pass
+an explicit `--days` and say which window a figure came from.
 
 ### Geocoding Metrics
 
