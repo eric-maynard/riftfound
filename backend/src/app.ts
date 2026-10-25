@@ -5,6 +5,9 @@ import { errorHandler, notFoundHandler } from './middleware/errorHandler.js';
 import { generalLimiter } from './middleware/rateLimit.js';
 import eventsRouter from './routes/events.js';
 import healthRouter from './routes/health.js';
+import rankingsRouter from './routes/rankings.js';
+import playersRouter from './routes/players.js';
+import setsRouter from './routes/sets.js';
 
 const app = express();
 
@@ -29,6 +32,9 @@ if (!isLambda) {
 // Routes
 app.use('/api/events', eventsRouter);
 app.use('/api/health', healthRouter);
+app.use('/api/rankings', rankingsRouter);
+app.use('/api/players', playersRouter);
+app.use('/api/sets', setsRouter);
 
 // Error handling
 app.use(notFoundHandler);

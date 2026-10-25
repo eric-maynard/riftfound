@@ -264,7 +264,16 @@ function buildShareableURL(filters: Filters): string {
   return `${window.location.origin}${window.location.pathname}${queryString ? `?${queryString}` : ''}`;
 }
 
-function CalendarPage() {
+interface CalendarPageProps {
+  /**
+   * False while the Ranking tab is showing. The calendar stays mounted so its
+   * state and caches survive the tab switch; FullCalendar just has to
+   * re-measure when it becomes visible again.
+   */
+  active?: boolean;
+}
+
+function CalendarPage({ active = true }: CalendarPageProps) {
   const [searchParams] = useSearchParams();
   // Load cached events on initial render for instant display
   const [initialCache] = useState(() => loadCachedEvents());
@@ -735,6 +744,14 @@ function CalendarPage() {
     setTooltipEvent(null);
   };
 
+  // A hidden container has no measurable size, so FullCalendar needs to
+  // re-measure when the Events tab comes back into view.
+  useEffect(() => {
+    if (active) {
+      calendarRef.current?.getApi().updateSize();
+    }
+  }, [active]);
+
   // Track visible date range for incremental fetching
   // Called on initial load and when navigating months
   const handleDatesSet = useCallback((dateInfo: DatesSetArg) => {
@@ -757,7 +774,6 @@ function CalendarPage() {
 
   return (
     <div className="calendar-page">
-      <img src="/logo.png" alt="Riftfound" className="site-logo" />
       <div className="page-header">
         <EventFilters
           filters={stagedFilters}

@@ -1,0 +1,471 @@
+import { assessConfidence } from '../models/ranking.js';
+import type { PlayerMatch, RatingPoint, Scope } from '../models/ranking.js';
+import type {
+  LeaderboardPage,
+  LeaderboardRecord,
+  Page,
+  PlayerRecord,
+  RankingStore,
+  SetRatingRecord,
+} from './rankingStore.js';
+
+/**
+ * In-memory ranking store.
+ *
+ * The rating engine is being written in parallel and the production backfill is
+ * still running, so this adapter stands in for it in dev and in tests. It
+ * implements `RankingStore` exactly as the DynamoDB adapter does, and its data
+ * deliberately models the *launch* state rather than a healthy ladder:
+ * Radiance shipped 2026-10-23, the backfill reaches ~21 days, so most players
+ * have one to three matches and only a handful clear any confidence gate. That
+ * sparse case is the one the UI has to look right in.
+ *
+ * The dataset is generated from the match log outwards, so a player's
+ * `gamesPlayed`, `matchesPlayed` and per-set numbers always agree with the
+ * matches the API serves for them - the same invariant the real engine has to
+ * hold.
+ */
+
+export interface FixtureData {
+  players: PlayerRecord[];
+  matches: Record<string, PlayerMatch[]>;
+  ratings: Record<string, Record<string, RatingPoint[]>>;
+  /** playerId order per scope, as the engine's leaderboard pages would hold it. */
+  boards: Record<string, string[]>;
+}
+
+export const EMPTY_FIXTURE_DATA: FixtureData = { players: [], matches: {}, ratings: {}, boards: { all: [] } };
+
+// --- the sparse launch dataset ---------------------------------------------
+
+const BAY = { componentId: 'c-bay', componentSize: 23, regionLabel: 'San Francisco Bay Area' };
+const SEA = { componentId: 'c-sea', componentSize: 5, regionLabel: 'Puget Sound' };
+
+interface Seed {
+  id: string;
+  name: string;
+  tag: string;
+  /** All-sets rating; null for a player the engine has seen but not rated. */
+  rating: number | null;
+  uncertainty: number | null;
+  /** Matches to generate. Four or more clears the eight-game confidence gate. */
+  matches: number;
+  component: typeof BAY | typeof SEA;
+  /** Played before Radiance shipped, so they have an Origins slice too. */
+  playedOrigins?: boolean;
+}
+
+const SEEDS: Seed[] = [
+  // Rated: four or more matches inside the backfill window.
+  { id: 'p-kira', name: 'Kirabosc', tag: 'NA1', rating: 1588, uncertainty: 86, matches: 6, component: BAY, playedOrigins: true },
+  { id: 'p-volto', name: 'Voltomancer', tag: 'EUW', rating: 1542, uncertainty: 94, matches: 5, component: BAY, playedOrigins: true },
+  { id: 'p-mari', name: 'Marigold', tag: 'NA1', rating: 1515, uncertainty: 101, matches: 5, component: BAY },
+  { id: 'p-tess', name: 'Tessellate', tag: 'NA1', rating: 1498, uncertainty: 112, matches: 4, component: BAY },
+  { id: 'p-ruan', name: 'Ruan', tag: 'NA2', rating: 1471, uncertainty: 118, matches: 4, component: BAY },
+  { id: 'p-pell', name: 'Pellingard', tag: 'NA1', rating: 1442, uncertainty: 119, matches: 4, component: BAY },
+  // Enough games, but sigma is still too wide to publish a number from.
+  { id: 'p-sable', name: 'Sablewing', tag: 'NA1', rating: 1604, uncertainty: 168, matches: 5, component: BAY },
+  // Provisional: one to three matches, which is most of the player base at launch.
+  { id: 'p-juno', name: 'Junobell', tag: 'NA1', rating: 1561, uncertainty: 203, matches: 3, component: BAY },
+  { id: 'p-oriel', name: 'Oriel', tag: 'NA1', rating: 1527, uncertainty: 214, matches: 3, component: BAY },
+  { id: 'p-haruk', name: 'Haruko', tag: 'NA1', rating: 1503, uncertainty: 228, matches: 2, component: BAY },
+  { id: 'p-breva', name: 'Brevan', tag: 'NA1', rating: 1489, uncertainty: 241, matches: 2, component: BAY },
+  { id: 'p-cyn', name: 'Cynosure', tag: 'NA1', rating: 1476, uncertainty: 259, matches: 1, component: BAY },
+  { id: 'p-lark', name: 'Larkspur', tag: 'NA1', rating: 1460, uncertainty: 262, matches: 1, component: BAY },
+  { id: 'p-mott', name: 'Mottle', tag: 'NA1', rating: 1444, uncertainty: 274, matches: 1, component: BAY },
+  { id: 'p-ovra', name: 'Ovranne', tag: 'NA1', rating: 1431, uncertainty: 276, matches: 1, component: BAY },
+  // A player the engine has seen but has no rating for at all.
+  { id: 'p-quill', name: 'Quillon', tag: 'NA1', rating: null, uncertainty: null, matches: 0, component: BAY },
+  // A second, much smaller component: too small for its order to mean anything.
+  { id: 'p-adria', name: 'Adrian', tag: 'NA1', rating: 1533, uncertainty: 221, matches: 2, component: SEA },
+  { id: 'p-wyl', name: 'Wylden', tag: 'NA1', rating: 1498, uncertainty: 248, matches: 2, component: SEA },
+  { id: 'p-nori', name: 'Norinori', tag: 'NA1', rating: 1472, uncertainty: 266, matches: 2, component: SEA },
+];
+
+const VENUES = [
+  { shopId: '1041', lat: 37.8716, lng: -122.2727 },
+  { shopId: '1088', lat: 37.7749, lng: -122.4394 },
+  { shopId: '1132', lat: 37.3688, lng: -122.0363 },
+  { shopId: '2210', lat: 47.6101, lng: -122.2015 },
+];
+
+interface FixtureEvent {
+  externalId: string;
+  name: string;
+  date: string;
+  type: string;
+  setId: string;
+  venue: number;
+}
+
+const RADIANCE_EVENTS: FixtureEvent[] = [
+  { externalId: 'prb-rad-prerift-berkeley-1', name: 'Radiance Pre-Rift Event', date: '2026-10-17', type: 'Pre-Rift', setId: 'radiance', venue: 0 },
+  { externalId: 'prb-rad-prerift-sf-1', name: 'Radiance Pre-Rift Event', date: '2026-10-18', type: 'Pre-Rift', setId: 'radiance', venue: 1 },
+  { externalId: '48812', name: 'Thursday Nexus Nights', date: '2026-10-22', type: 'Nexus Night', setId: 'radiance', venue: 2 },
+  { externalId: '48907', name: 'Summoner Skirmish', date: '2026-10-24', type: 'Summoner Skirmish', setId: 'radiance', venue: 0 },
+];
+
+const SEATTLE_EVENTS: FixtureEvent[] = [
+  { externalId: '48666', name: 'Bellevue Nexus Night', date: '2026-10-21', type: 'Nexus Night', setId: 'radiance', venue: 3 },
+  { externalId: '48701', name: 'Bellevue Summoner Skirmish', date: '2026-10-24', type: 'Summoner Skirmish', setId: 'radiance', venue: 3 },
+];
+
+const ORIGINS_EVENTS: FixtureEvent[] = [
+  { externalId: '48511', name: 'Origins Nexus Night', date: '2026-10-08', type: 'Nexus Night', setId: 'ogn', venue: 1 },
+  { externalId: '48540', name: 'Origins Nexus Night', date: '2026-10-15', type: 'Nexus Night', setId: 'ogn', venue: 0 },
+];
+
+/** Small deterministic PRNG so the fixture is byte-stable across runs. */
+function mulberry32(seed: number) {
+  return () => {
+    seed = (seed + 0x6d2b79f5) | 0;
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/** Four matches is where a player first clears the eight-game gate. */
+const RATED_MATCH_FLOOR = 4;
+
+function buildLaunchFixture(): FixtureData {
+  const random = mulberry32(20261025);
+  const matches: Record<string, PlayerMatch[]> = {};
+  let matchCounter = 0;
+
+  const components = new Map<string, Seed[]>();
+  for (const seed of SEEDS) {
+    const list = components.get(seed.component.componentId) ?? [];
+    list.push(seed);
+    components.set(seed.component.componentId, list);
+  }
+
+  for (const [componentId, group] of components) {
+    // Pair players off against the quota each one is seeded with, always
+    // inside their own component - which is what keeps the co-play graph
+    // disconnected in the first place.
+    const quota = new Map(group.map((seed) => [seed.id, seed.matches]));
+    const originsQuota = new Map(group.map((seed) => [seed.id, seed.playedOrigins ? 2 : 0]));
+    const seedById = new Map(group.map((seed) => [seed.id, seed]));
+
+    for (;;) {
+      const available = [...quota.entries()]
+        .filter(([, left]) => left > 0)
+        .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+      if (available.length < 2) break;
+
+      const [aId] = available[0];
+      const [bId] = available[1];
+      const a = seedById.get(aId)!;
+      const b = seedById.get(bId)!;
+      quota.set(aId, quota.get(aId)! - 1);
+      quota.set(bId, quota.get(bId)! - 1);
+
+      const bothOrigins = (originsQuota.get(aId) ?? 0) > 0 && (originsQuota.get(bId) ?? 0) > 0;
+      if (bothOrigins) {
+        originsQuota.set(aId, originsQuota.get(aId)! - 1);
+        originsQuota.set(bId, originsQuota.get(bId)! - 1);
+      }
+
+      const pool = bothOrigins
+        ? ORIGINS_EVENTS
+        : componentId === SEA.componentId
+          ? SEATTLE_EVENTS
+          : RADIANCE_EVENTS;
+      const event = pool[matchCounter % pool.length];
+      const venue = VENUES[event.venue];
+
+      matchCounter += 1;
+      const matchId = `m-${String(matchCounter).padStart(4, '0')}`;
+      const playedAt = `${event.date}T${String(18 + (matchCounter % 3)).padStart(2, '0')}:${String((matchCounter * 11) % 60).padStart(2, '0')}:00.000Z`;
+
+      // A player with fewer than four matches must stay under the eight-game
+      // gate, so their matches never go to three games.
+      const canGoThree = a.matches >= RATED_MATCH_FLOOR && b.matches >= RATED_MATCH_FLOOR;
+      const aWins = random() < 0.5;
+      const threeGames = canGoThree && random() < 0.45;
+      const aGames = threeGames
+        ? ([aWins ? 'win' : 'loss', aWins ? 'loss' : 'win', aWins ? 'win' : 'loss'] as const)
+        : ([aWins ? 'win' : 'loss', aWins ? 'win' : 'loss'] as const);
+
+      const flip = (outcome: 'win' | 'loss') => (outcome === 'win' ? ('loss' as const) : ('win' as const));
+      const shared = {
+        matchId,
+        playedAt,
+        eventExternalId: event.externalId,
+        eventName: event.name,
+        shopId: venue.shopId,
+        latitude: venue.lat,
+        longitude: venue.lng,
+        eventDate: event.date,
+        tournamentType: event.type,
+        setId: event.setId,
+      };
+
+      (matches[aId] ??= []).push({
+        ...shared,
+        opponentId: bId,
+        opponentDisplayName: b.name,
+        outcome: aWins ? 'win' : 'loss',
+        games: aGames.map((outcome, index) => ({ gameNumber: index + 1, outcome })),
+      });
+      (matches[bId] ??= []).push({
+        ...shared,
+        opponentId: aId,
+        opponentDisplayName: a.name,
+        outcome: aWins ? 'loss' : 'win',
+        games: aGames.map((outcome, index) => ({ gameNumber: index + 1, outcome: flip(outcome) })),
+      });
+    }
+  }
+
+  for (const list of Object.values(matches)) {
+    list.sort((a, b) => b.playedAt.localeCompare(a.playedAt));
+  }
+
+  // Profiles, with every count derived from the match log above.
+  const players: PlayerRecord[] = SEEDS.map((seed) => {
+    const own = matches[seed.id] ?? [];
+    const gamesPlayed = own.reduce((sum, match) => sum + match.games.length, 0);
+
+    const setIds = [...new Set(own.map((match) => match.setId).filter((id): id is string => id !== null))];
+    const setRatings: SetRatingRecord[] = setIds
+      .map((setId): SetRatingRecord | null => {
+        const inSet = own.filter((match) => match.setId === setId);
+        const setGames = inSet.reduce((sum, match) => sum + match.games.length, 0);
+        if (seed.rating === null) return null;
+        // Fewer games in a slice means a wider sigma for that slice.
+        const widening = gamesPlayed > 0 ? Math.sqrt(gamesPlayed / Math.max(1, setGames)) : 1;
+        return {
+          setId,
+          rating: seed.rating + ((setId.charCodeAt(0) + seed.id.length) % 31) - 15,
+          uncertainty: Math.round((seed.uncertainty ?? 250) * widening),
+          gamesPlayed: setGames,
+          matchesPlayed: inSet.length,
+        };
+      })
+      .filter((entry): entry is SetRatingRecord => entry !== null)
+      // Radiance first, then older sets.
+      .sort((a, b) => (a.setId === 'radiance' ? -1 : b.setId === 'radiance' ? 1 : a.setId.localeCompare(b.setId)));
+
+    const dates = own.map((match) => match.playedAt).sort();
+
+    return {
+      playerId: seed.id,
+      displayName: seed.name,
+      tagLine: seed.tag,
+      rating: seed.rating,
+      uncertainty: seed.uncertainty,
+      gamesPlayed,
+      matchesPlayed: own.length,
+      firstSeen: dates[0]?.slice(0, 10) ?? null,
+      lastSeen: dates[dates.length - 1]?.slice(0, 10) ?? null,
+      componentId: seed.component.componentId,
+      componentSize: seed.component.componentSize,
+      regionLabel: seed.component.regionLabel,
+      setRatings,
+      updatedAt: '2026-10-25T06:00:00.000Z',
+    };
+  });
+
+  // Rating history: one point per day the player actually played in that
+  // scope, so a player with one match has a single-point series and a player
+  // with two has a two-point one - the cases the chart has to survive.
+  const ratings: Record<string, Record<string, RatingPoint[]>> = {};
+  for (const player of players) {
+    if (player.rating === null) continue;
+    const own = matches[player.playerId] ?? [];
+    if (own.length === 0) continue;
+
+    const series = (
+      finalRating: number,
+      finalUncertainty: number,
+      finalGames: number,
+      setId?: string
+    ): RatingPoint[] => {
+      const relevant = own.filter((match) => !setId || match.setId === setId);
+      const days = [...new Set(relevant.map((match) => match.playedAt.slice(0, 10)))].sort();
+      if (days.length === 0) return [];
+      return days.map((date, index) => {
+        const progress = days.length === 1 ? 1 : index / (days.length - 1);
+        // Earlier points sit off the final rating and carry a wider sigma.
+        const drift = (1 - progress) * (random() * 70 - 35);
+        return {
+          date,
+          rating: Math.round(finalRating - drift),
+          uncertainty: Math.round(finalUncertainty + (1 - progress) * 130),
+          gamesPlayed: Math.max(1, Math.round(finalGames * ((index + 1) / days.length))),
+        };
+      });
+    };
+
+    const scopes: Record<string, RatingPoint[]> = {
+      all: series(player.rating, player.uncertainty ?? 250, player.gamesPlayed ?? 0),
+    };
+    for (const setRating of player.setRatings) {
+      scopes[`set:${setRating.setId}`] = series(
+        setRating.rating ?? player.rating,
+        setRating.uncertainty ?? 250,
+        setRating.gamesPlayed ?? 0,
+        setRating.setId
+      );
+    }
+    ratings[player.playerId] = scopes;
+  }
+
+  // Boards, in the order the engine would have written them: best rating
+  // first, players with no rating last.
+  const order = (candidates: PlayerRecord[], setId?: string) =>
+    [...candidates]
+      .sort((a, b) => {
+        const ratingOf = (player: PlayerRecord) =>
+          setId
+            ? player.setRatings.find((entry) => entry.setId === setId)?.rating ?? -Infinity
+            : player.rating ?? -Infinity;
+        return ratingOf(b) - ratingOf(a) || a.playerId.localeCompare(b.playerId);
+      })
+      .map((player) => player.playerId);
+
+  const boards: Record<string, string[]> = { all: order(players) };
+  for (const [componentId, group] of components) {
+    const inComponent = players.filter((player) => player.componentId === componentId);
+    boards[`component:${componentId}`] = order(inComponent);
+    void group;
+  }
+  const allSetIds = [...new Set(players.flatMap((player) => player.setRatings.map((entry) => entry.setId)))];
+  for (const setId of allSetIds) {
+    const inSet = players.filter((player) => player.setRatings.some((entry) => entry.setId === setId));
+    boards[`set:${setId}`] = order(inSet, setId);
+    for (const componentId of components.keys()) {
+      const both = inSet.filter((player) => player.componentId === componentId);
+      if (both.length > 0) boards[`set:${setId}#component:${componentId}`] = order(both, setId);
+    }
+  }
+
+  return { players, matches, ratings, boards };
+}
+
+export const LAUNCH_FIXTURE_DATA: FixtureData = buildLaunchFixture();
+
+// --- the adapter ------------------------------------------------------------
+
+function encodeCursor(index: number): string {
+  return Buffer.from(`i:${index}`, 'utf8').toString('base64url');
+}
+
+function decodeCursor(cursor: string | undefined): number {
+  if (!cursor) return 0;
+  try {
+    const decoded = Buffer.from(cursor, 'base64url').toString('utf8');
+    const match = /^i:(\d+)$/.exec(decoded);
+    return match ? Number(match[1]) : 0;
+  } catch {
+    return 0;
+  }
+}
+
+export function createFixtureRankingStore(data: FixtureData = LAUNCH_FIXTURE_DATA): RankingStore {
+  const byId = new Map(data.players.map((player) => [player.playerId, player]));
+
+  return {
+    kind: 'fixture',
+
+    async getLeaderboard(scope: Scope, limit: number, cursor?: string): Promise<LeaderboardPage> {
+      const ids = data.boards[scope.raw] ?? [];
+      const start = decodeCursor(cursor);
+      const slice = ids.slice(start, start + limit);
+
+      const items: LeaderboardRecord[] = slice.map((playerId) => {
+        const player = byId.get(playerId);
+        // In a set scope the engine's board carries that set's own numbers.
+        const setRating = scope.setId
+          ? player?.setRatings.find((entry) => entry.setId === scope.setId)
+          : undefined;
+        return {
+          playerId,
+          rating: scope.setId ? setRating?.rating ?? null : player?.rating ?? null,
+          uncertainty: scope.setId ? setRating?.uncertainty ?? null : player?.uncertainty ?? null,
+          gamesPlayed: scope.setId ? setRating?.gamesPlayed ?? null : player?.gamesPlayed ?? null,
+          matchesPlayed: scope.setId ? setRating?.matchesPlayed ?? null : player?.matchesPlayed ?? null,
+          displayName: player?.displayName ?? null,
+          tagLine: player?.tagLine ?? null,
+          componentId: player?.componentId ?? null,
+          componentSize: player?.componentSize ?? null,
+          regionLabel: player?.regionLabel ?? null,
+        };
+      });
+
+      return {
+        items,
+        cursor: start + limit < ids.length ? encodeCursor(start + limit) : null,
+        updatedAt: ids.length > 0 ? '2026-10-25T06:00:00.000Z' : null,
+        totalPlayers: ids.length,
+      };
+    },
+
+    async getPlayer(playerId: string) {
+      return byId.get(playerId) ?? null;
+    },
+
+    async getPlayers(playerIds: string[]) {
+      const out = new Map<string, PlayerRecord>();
+      for (const id of playerIds) {
+        const player = byId.get(id);
+        if (player) out.set(id, player);
+      }
+      return out;
+    },
+
+    async getMatches(playerId: string, limit: number, cursor?: string, setId?: string): Promise<Page<PlayerMatch>> {
+      const all = (data.matches[playerId] ?? []).filter((match) => !setId || match.setId === setId);
+      const start = decodeCursor(cursor);
+      return {
+        items: all.slice(start, start + limit),
+        cursor: start + limit < all.length ? encodeCursor(start + limit) : null,
+      };
+    },
+
+    async getRatingHistory(playerId: string, scope: Scope, limit: number) {
+      return (data.ratings[playerId]?.[scope.raw] ?? []).slice(0, limit);
+    },
+
+    async searchPlayers(query: string, limit: number) {
+      const needle = query.trim().toLowerCase();
+      if (needle.length < 2) return [];
+      return data.players
+        .filter((player) => `${player.displayName ?? ''}#${player.tagLine ?? ''}`.toLowerCase().includes(needle))
+        .slice(0, limit);
+    },
+
+    async listSetIds() {
+      const ids = new Set<string>();
+      for (const player of data.players) {
+        for (const setRating of player.setRatings) ids.add(setRating.setId);
+      }
+      for (const scope of Object.keys(data.boards)) {
+        const match = /^set:([^#]+)/.exec(scope);
+        if (match) ids.add(match[1]);
+      }
+      return [...ids];
+    },
+
+    async listComponents() {
+      const out = new Map<string, { regionLabel: string | null; componentSize: number | null; ratedPlayers: number; totalPlayers: number }>();
+      for (const player of data.players) {
+        if (!player.componentId) continue;
+        const existing = out.get(player.componentId) ?? {
+          regionLabel: player.regionLabel,
+          componentSize: player.componentSize,
+          ratedPlayers: 0,
+          totalPlayers: 0,
+        };
+        existing.totalPlayers += 1;
+        if (!assessConfidence(player).provisional) existing.ratedPlayers += 1;
+        out.set(player.componentId, existing);
+      }
+      return out;
+    },
+  };
+}
+
+export const fixtureRankingStore = createFixtureRankingStore();

@@ -6,6 +6,7 @@ import {
   QueryCommand,
   DeleteCommand,
   BatchWriteCommand,
+  BatchGetCommand,
   ScanCommand,
 } from '@aws-sdk/lib-dynamodb';
 import { env } from './env.js';
@@ -50,6 +51,8 @@ export const EntityPrefix = {
   GEOCACHE: 'GEOCACHE#',
   SCRAPE_RUN: 'SCRAPE_RUN',
   ZIPCODE: 'ZIPCODE#',
+  PLAYER: 'PLAYER#',
+  RANKING: 'RANKING#',
 } as const;
 
 // Helper to create event keys
@@ -110,6 +113,39 @@ export function scrapeRunKeys(timestamp: string) {
   };
 }
 
+// --- Ranking / rating items (written by the scraper's rating engine) ---
+// PLAYER#<uuid> / PROFILE
+// PLAYER#<uuid> / RATING#<scope>#<iso-date>
+// PLAYER#<uuid> / MATCH#<iso-timestamp>#<matchId>
+// RANKING#<scope>
+
+export const PLAYER_PROFILE_SK = 'PROFILE';
+export const PLAYER_RATING_SK_PREFIX = 'RATING#';
+export const PLAYER_MATCH_SK_PREFIX = 'MATCH#';
+
+// Helper to create player profile keys
+export function playerProfileKeys(playerId: string) {
+  return {
+    PK: `${EntityPrefix.PLAYER}${playerId}`,
+    SK: PLAYER_PROFILE_SK,
+  };
+}
+
+// Partition key shared by every item of one player
+export function playerPK(playerId: string) {
+  return `${EntityPrefix.PLAYER}${playerId}`;
+}
+
+// Sort-key prefix for one scope's rating history
+export function playerRatingSKPrefix(scope: string) {
+  return `${PLAYER_RATING_SK_PREFIX}${scope}#`;
+}
+
+// Partition key for one leaderboard scope
+export function rankingPK(scope: string) {
+  return `${EntityPrefix.RANKING}${scope}`;
+}
+
 // Helper to create zipcode keys
 export function zipcodeKeys(zipcode: string) {
   return {
@@ -125,5 +161,6 @@ export {
   QueryCommand,
   DeleteCommand,
   BatchWriteCommand,
+  BatchGetCommand,
   ScanCommand,
 };

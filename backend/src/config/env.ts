@@ -33,6 +33,11 @@ const envSchema = z.object({
 
   // Geocoding - Mapbox API (optional, takes precedence over Photon)
   MAPBOX_ACCESS_TOKEN: z.string().optional(),
+
+  // Ranking data source. 'auto' follows DB_TYPE: DynamoDB in production,
+  // in-memory fixtures everywhere else (the rating engine only writes to
+  // DynamoDB). Force either one for testing.
+  RANKING_SOURCE: z.enum(['auto', 'dynamodb', 'fixture']).default('auto'),
 });
 
 export type Env = z.infer<typeof envSchema>;

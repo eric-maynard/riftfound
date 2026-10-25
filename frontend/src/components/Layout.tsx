@@ -1,11 +1,69 @@
-import { Outlet } from 'react-router-dom';
+import { useRef } from 'react';
+import { Link, Outlet, useLocation } from 'react-router-dom';
+import CalendarPage from '../pages/CalendarPage';
+import SectionTabs from './SectionTabs';
+
+/**
+ * The calendar is mounted *here*, not by its route, so switching to the
+ * Ranking tab hides it rather than unmounting it: its fetched events,
+ * in-memory cache, staged filters and geolocation state all survive the round
+ * trip. An event detail page is still a page of its own, as it was before.
+ */
+/**
+ * Ranking is deployed but unlisted: the routes are live and shareable, the tab
+ * selector is not rendered, so the section is reachable only by URL
+ * (`/ranking`). Flip this to true to surface it to everyone - that is the whole
+ * launch switch. A reader can preview the tabs without a rebuild by setting
+ * `localStorage.riftfoundRankingTabs = 'on'`.
+ */
+const SHOW_SECTION_TABS = false;
+
+function readTabsOverride(): boolean {
+  // Browser storage is unavailable in private windows and can throw outright.
+  try {
+    return localStorage.getItem('riftfoundRankingTabs') === 'on';
+  } catch {
+    return false;
+  }
+}
 
 function Layout() {
+  const location = useLocation();
+  const pathname = location.pathname;
+  const isEventDetail = pathname.startsWith('/events/');
+  const isCalendar = pathname === '/';
+  const isRanking = pathname.startsWith('/ranking');
+
+  // Remember each section's query string so a tab switch keeps a shared
+  // calendar filter URL and the ranking page's set/scene selection.
+  const eventsSearch = useRef('');
+  const rankingSearch = useRef('');
+  if (isCalendar) eventsSearch.current = location.search;
+  if (isRanking) rankingSearch.current = location.search;
+
+  const showTabs = SHOW_SECTION_TABS || readTabsOverride();
+
   return (
     <div className="layout">
+      {/* Always a way back to the calendar, including from the unlisted ranking pages. */}
+      <Link to="/" aria-label="Riftfound home">
+        <img src="/logo.png" alt="Riftfound" className="site-logo" />
+      </Link>
       <main>
         <div className="container">
-          <Outlet />
+          {!isEventDetail && showTabs && (
+            <div className="section-tabs-bar">
+              <SectionTabs eventsSearch={eventsSearch.current} rankingSearch={rankingSearch.current} />
+            </div>
+          )}
+
+          {!isEventDetail && (
+            <div hidden={!isCalendar}>
+              <CalendarPage active={isCalendar} />
+            </div>
+          )}
+
+          {!isCalendar && <Outlet />}
         </div>
       </main>
       <footer className="site-footer">
