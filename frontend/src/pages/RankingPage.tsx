@@ -10,6 +10,7 @@ import type {
 } from '../types/ranking';
 import {
   ALL_SETS,
+  ALL_SETS_LABEL,
   buildScope,
   componentLabel,
   formatDate,
@@ -18,6 +19,7 @@ import {
   pickDefaultComponent,
   provisionalShortLabel,
   setBoundaryNote,
+  selectableSets,
   setLabel,
   splitByConfidence,
 } from '../lib/ranking';
@@ -182,8 +184,8 @@ function RankingPage() {
             value={setId}
             onChange={(event) => updateParam(URL_PARAMS.SET, event.target.value === ALL_SETS ? null : event.target.value)}
           >
-            <option value={ALL_SETS}>All sets</option>
-            {sets.map((set) => (
+            <option value={ALL_SETS}>{ALL_SETS_LABEL}</option>
+            {selectableSets(sets).map((set) => (
               <option key={set.setId} value={set.setId}>
                 {setLabel(set)}
               </option>
@@ -221,7 +223,7 @@ function RankingPage() {
           <CoveragePanel
             coverage={coverage}
             component={selectedComponent}
-            scopeLabel={activeSet ? setLabel(activeSet) : 'all sets'}
+            scopeLabel={activeSet ? setLabel(activeSet) : ALL_SETS_LABEL}
           />
 
           {!laddered && (rated.length > 0 || provisional.length > 0) && (

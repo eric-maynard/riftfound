@@ -5,6 +5,7 @@ import type { PlayerMatch, PlayerProfile, RatingPoint, SetInfo } from '../types/
 import RatingChart from '../components/RatingChart';
 import {
   ALL_SETS,
+  ALL_SETS_LABEL,
   buildScope,
   formatDate,
   formatRating,
@@ -14,6 +15,7 @@ import {
   matchRecord,
   provisionalExplanation,
   setBoundaryNote,
+  selectableSets,
   setLabel,
 } from '../lib/ranking';
 
@@ -133,7 +135,7 @@ function PlayerPage() {
   }
 
   const activeSet = sets.find((set) => set.setId === setId) ?? null;
-  const scopeLabel = activeSet ? setLabel(activeSet) : 'all sets';
+  const scopeLabel = activeSet ? setLabel(activeSet) : ALL_SETS_LABEL;
   // The scoped numbers: the per-set entry when a set is selected, else all-time.
   const scoped = setFilter
     ? profile.setRatings.find((entry) => entry.setId === setFilter) ?? null
@@ -188,8 +190,8 @@ function PlayerPage() {
               setSearchParams(next);
             }}
           >
-            <option value={ALL_SETS}>All sets</option>
-            {sets.map((set) => (
+            <option value={ALL_SETS}>{ALL_SETS_LABEL}</option>
+            {selectableSets(sets).map((set) => (
               <option key={set.setId} value={set.setId}>
                 {setLabel(set)}
               </option>
@@ -255,7 +257,7 @@ function PlayerPage() {
               </thead>
               <tbody>
                 <tr className="row-emphasis">
-                  <th scope="row">All sets</th>
+                  <th scope="row">{ALL_SETS_LABEL}</th>
                   <td className="muted">&mdash;</td>
                   <td className="numeric">
                     {profile.provisional ? <span className="stat-withheld">Not rated</span> : formatRating(profile.rating)}

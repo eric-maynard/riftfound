@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import type { ComponentSummary, PlayerMatch, RatingPoint, SetInfo } from '../../types/ranking';
 import {
   ALL_SETS,
+  ALL_SETS_LABEL,
   BACKFILL_DAYS,
   MIN_Y_SPAN,
   buildRatingChartGeometry,
@@ -17,6 +18,7 @@ import {
   parseChartDate,
   parseScope,
   pickDefaultComponent,
+  selectableSets,
   provisionalExplanation,
   setBoundaryNote,
   setLabel,
@@ -96,6 +98,38 @@ describe('set labels with unknown boundaries', () => {
     endDate: null,
     hasRatingData: true,
     ...overrides,
+  });
+
+  it('offers only released sets the engine has data for, newest first', () => {
+    const now = new Date('2026-10-25T00:00:00Z');
+    const offered = selectableSets(
+      [
+        set({ setId: 's7', name: 'The Reckoning', releaseDate: '2027-04-30', hasRatingData: false }),
+        set({ setId: 's6', name: 'Legacy', releaseDate: '2027-01-29', hasRatingData: false }),
+        set({ setId: 's5', name: 'Radiance', releaseDate: '2026-10-23', hasRatingData: true }),
+        set({ setId: 's4', name: 'Vendetta', releaseDate: '2026-07-31', hasRatingData: true }),
+        set({ setId: 's1', name: 'Origins', releaseDate: '2025-10-31', hasRatingData: false }),
+      ],
+      now
+    );
+    // Order is the API's (newest first) and is preserved by the filter.
+    expect(offered.map((entry) => entry.name)).toEqual(['Radiance', 'Vendetta']);
+  });
+
+  it('drops a set released in the future even when it somehow has data', () => {
+    const now = new Date('2026-10-25T00:00:00Z');
+    expect(selectableSets([set({ setId: 's6', releaseDate: '2027-01-29', hasRatingData: true })], now)).toEqual([]);
+  });
+
+  it('keeps a set released today', () => {
+    const now = new Date('2026-10-23T18:00:00Z');
+    expect(selectableSets([set({ setId: 's5', releaseDate: '2026-10-23' })], now)).toHaveLength(1);
+  });
+
+  it('does not call the all-time scope "all sets", which would overstate it', () => {
+    // Results only exist for events the backfill has reached.
+    expect(ALL_SETS_LABEL).toBe('Radiance+');
+    expect(ALL_SETS_LABEL.toLowerCase()).not.toContain('all sets');
   });
 
   it('falls back to the id when a set has no name', () => {

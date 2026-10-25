@@ -19,6 +19,33 @@ import type {
 
 export const ALL_SETS = 'all';
 
+/**
+ * Label for the all-time scope.
+ *
+ * Deliberately not "All sets": results only exist for events the backfill has
+ * reached, so the scope covers a recent window rather than the game's whole
+ * history, and claiming otherwise overstates what the number is built from.
+ */
+export const ALL_SETS_LABEL = 'Radiance+';
+
+/**
+ * The sets worth offering in a picker: ones that have actually released, and
+ * that the engine has rating data for.
+ *
+ * A future set is noise - nobody has played it. A released set with no data
+ * yet would select a scope that can only render an empty board, which reads as
+ * a broken page rather than an honest one. Both are still carried by
+ * `/api/sets`, which reports the whole catalogue; this is a presentation rule.
+ */
+export function selectableSets(sets: SetInfo[], now: Date = new Date()): SetInfo[] {
+  const today = now.toISOString().slice(0, 10);
+  return sets.filter((set) => {
+    if (!set.hasRatingData) return false;
+    if (set.releaseDate && set.releaseDate > today) return false;
+    return true;
+  });
+}
+
 /** Build the scope string the API expects from the two selectors. */
 export function buildScope(setId: string | null, componentId: string | null): string {
   const parts = [
