@@ -13,6 +13,8 @@ src/
 │   ├── ModeSwitch.tsx    # The mark itself, switching Events / Ranking
 │   ├── EventFilters.tsx  # Format dropdown, distance dropdown, location search
 │   ├── EventTooltip.tsx  # Hover card for events
+│   ├── SceneSelect.tsx   # Searchable scene (connected-component) picker
+│   ├── HowRankingWorks.tsx # The ranking explanation, at the foot of the page
 │   └── RatingChart.tsx   # Inline-SVG rating-over-time chart
 ├── pages/
 │   ├── CalendarPage.tsx  # Main view with FullCalendar
@@ -50,11 +52,23 @@ round trip.
 ### Ranking
 - Defaults to a *scene* (connected component), never a global ladder: ratings
   only compare players who have played each other.
-- A rating below the confidence gate is not printed; the player is listed under
-  "Not yet rated" with the reason and how far off they are.
+- A rating below the confidence gate is not printed; the player reads
+  **`Unranked`** and nothing else. The reason is the `title` on that word
+  (`provisionalExplanation`), never inline prose - the page reports, it does not
+  explain itself at every row.
+- The exposition lives in `HowRankingWorks` at the *foot* of the page
+  (`#how-ranking-works`), with a link to the engine source. Short hints carry
+  the same facts where the concepts appear: the scene picker's `?` and the
+  dotted-underlined "Rating" column header.
+- The scene picker is searchable (`SceneSelect`): ~194 components and growing,
+  so it copies the calendar's location autocomplete rather than inventing a
+  second idiom. Filtering is a pure function in `lib/ranking.ts`
+  (`sceneOptions` / `filterSceneOptions`) so it is tested without a DOM.
 - Positions are suppressed entirely when the scope mixes scenes or the scene is
   too small - with a banner saying why.
 - Empty and sparse states are the primary design, not a fallback.
+- `RATING_ANCHOR` (1200) mirrors the engine's `ELO_ORIGIN`. Nothing else in the
+  frontend hardcodes a rating value; the chart's axis is fitted to the data.
 
 ### RatingChart
 - Single-series inline SVG, no chart library, no legend box.
@@ -85,6 +99,19 @@ round trip.
 ## Styling
 
 - Dracula color scheme (purple #bd93f9, cyan #8be9fd, pink #ff79c6)
+- **Contrast tokens.** `--color-text-muted` is `#a0aede`, not Dracula's
+  `#6272a4`: the original scored 2.39:1 on `--color-bg` and 3.36:1 on
+  `--color-bg-tertiary`, so every secondary label on the site failed WCAG AA.
+  The new value clears 4.5:1 on every surface it sits on (5.15 / 7.22 / 4.64 on
+  the `.row-emphasis` tint). `--color-text-muted-lifted` (`#b8c3ec`) is the same
+  role on the lightest surface, `--color-bg-secondary` `#44475a`, and on the
+  tinted chips. `--color-border` keeps `#6272a4`: a hairline is not text.
+- `--color-red-text` (`#ffacac`) is red *as text*; `--color-red` `#ff5555` is
+  3.59:1 on the page ground. Likewise `--color-green-text` for the win chip.
+- A chip's ink must contrast with its own tint, not with the page: the W/L chips
+  used the saturated hue on an 18% wash of the same hue.
+- When changing any of these, measure. Walk the DOM, composite every ancestor
+  background, and check the real ratio - an eyeball is not a measurement.
 - FullCalendar heavily customized via CSS variables
 - Fixed cell height (110px) for uniform grid
 - Tooltip z-index 10000 (above FullCalendar popover)

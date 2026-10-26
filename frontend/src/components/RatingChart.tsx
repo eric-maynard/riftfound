@@ -271,9 +271,7 @@ function RatingChart({ points, scopeLabel, provisional = false }: RatingChartPro
 
       {provisional && (
         <p className="rating-chart-note">
-          {points.length === 1
-            ? 'This rating is not published yet: one game-day is not a standing.'
-            : 'This rating is not published yet, so read the line as a sketch rather than a standing.'}
+          Unranked &mdash; this rating is not published yet.
         </p>
       )}
 

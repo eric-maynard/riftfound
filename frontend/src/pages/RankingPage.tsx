@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { getRankings, getSets, searchPlayers } from '../services/api';
+import HowRankingWorks from '../components/HowRankingWorks';
+import SceneSelect from '../components/SceneSelect';
 import type {
   ComponentSummary,
   LeaderboardEntry,
@@ -12,16 +14,16 @@ import {
   ALL_SETS,
   ALL_SETS_LABEL,
   buildScope,
-  componentLabel,
   formatDate,
   formatRating,
   formatUncertainty,
   pickDefaultComponent,
-  provisionalShortLabel,
+  provisionalExplanation,
   setBoundaryNote,
   selectableSets,
   setLabel,
   splitByConfidence,
+  UNRANKED_LABEL,
 } from '../lib/ranking';
 
 /**
@@ -40,8 +42,18 @@ import {
  *    refuses to print positions when the selected scope mixes scenes or is too
  *    small to order anyone.
  *  - A rating that has not cleared the confidence gate is not printed at all;
- *    the player is listed with the reason it is being withheld.
+ *    the player simply reads "Unranked". The reason is a tooltip, and the
+ *    general explanation lives in "How ranking works" at the foot of the page -
+ *    not in prose beside every row.
  */
+
+/** Hover/focus copy for the two concepts the page cannot avoid naming. */
+const HINTS = {
+  scene:
+    'A scene is a group of players who have played each other. Ratings only compare inside one, so a ranking is always scoped to a scene.',
+  rating:
+    'Worked out from games recorded at events. The ± is the margin of uncertainty around the number.',
+} as const;
 
 const PAGE_SIZE = 25;
 const URL_PARAMS = { SET: 'set', REGION: 'region' } as const;
@@ -169,10 +181,6 @@ function RankingPage() {
     <div className="ranking-page">
       <div className="ranking-head">
         <h1>Ranking</h1>
-        <p className="ranking-lede">
-          Ratings are worked out from games recorded at events, so they only compare players who have
-          actually played each other. Pick a scene to see a ranking that means something.
-        </p>
       </div>
 
       {/* One filter row, above everything it scopes. */}
@@ -194,22 +202,12 @@ function RankingPage() {
           {activeSet?.releaseDate && <span className="filter-note">{setBoundaryNote(activeSet)}</span>}
         </div>
 
-        <div className="filter-group">
-          <label className="filter-label" htmlFor="ranking-region">Scene</label>
-          <select
-            id="ranking-region"
-            value={regionParam ?? ''}
-            onChange={(event) => updateParam(URL_PARAMS.REGION, event.target.value || null)}
-          >
-            <option value="">Everywhere (not comparable)</option>
-            {state.components.map((component) => (
-              <option key={component.componentId} value={component.componentId}>
-                {componentLabel(component)} &middot; {component.ratedPlayers} rated
-                {component.comparable ? '' : ' · too small'}
-              </option>
-            ))}
-          </select>
-        </div>
+        <SceneSelect
+          components={state.components}
+          value={regionParam}
+          onChange={(componentId) => updateParam(URL_PARAMS.REGION, componentId)}
+          hint={HINTS.scene}
+        />
 
         <PlayerSearch />
       </div>
@@ -235,7 +233,7 @@ function RankingPage() {
           )}
 
           {rated.length === 0 ? (
-            <NobodyRatedYet coverage={coverage} hasPlayers={provisional.length > 0} />
+            <NobodyRatedYet hasPlayers={provisional.length > 0} />
           ) : (
             <section className="ranking-section">
               <h2>{laddered ? 'Ranked' : 'Rated players'}</h2>
@@ -245,7 +243,9 @@ function RankingPage() {
                     <tr>
                       {laddered && <th scope="col" className="numeric">#</th>}
                       <th scope="col">Player</th>
-                      <th scope="col" className="numeric">Rating</th>
+                      <th scope="col" className="numeric">
+                        <abbr className="col-hint" title={HINTS.rating}>Rating</abbr>
+                      </th>
                       <th scope="col" className="numeric">Games</th>
                       {!laddered && <th scope="col">Scene</th>}
                     </tr>
@@ -273,19 +273,22 @@ function RankingPage() {
 
           {provisional.length > 0 && (
             <section className="ranking-section">
-              <h2>Not yet rated</h2>
-              <p className="muted">
-                These players have been seen at events but have not played enough recorded games for a
-                rating. No number is shown rather than a number that would mislead.
-              </p>
+              <h2>Unranked</h2>
               <ul className="provisional-list">
                 {provisional.map((entry) => (
                   <li key={entry.playerId}>
                     <PlayerLink entry={entry} />
-                    <span className="provisional-reason">
-                      {provisionalShortLabel(entry.provisionalReason)}
-                      {entry.gamesPlayed !== null && ` · ${entry.gamesPlayed} game${entry.gamesPlayed === 1 ? '' : 's'}`}
-                      {entry.gamesUntilRated > 0 && ` · ${entry.gamesUntilRated} to go`}
+                    {/* The word, and nothing else. The reason is the tooltip;
+                        the general rule is in "How ranking works" below. */}
+                    <span
+                      className="unranked"
+                      title={provisionalExplanation(
+                        entry.provisionalReason,
+                        entry.gamesUntilRated,
+                        coverage?.minGamesForRating ?? 8
+                      )}
+                    >
+                      {UNRANKED_LABEL}
                     </span>
                   </li>
                 ))}
@@ -300,6 +303,13 @@ function RankingPage() {
           )}
         </div>
       )}
+
+      {/* The exposition, at the foot: after the numbers, not before them. */}
+      <HowRankingWorks
+        minGamesForRating={coverage?.minGamesForRating}
+        maxUncertaintyForRating={coverage?.maxUncertaintyForRating}
+        minComponentSize={coverage?.minComponentSize}
+      />
     </div>
   );
 }
@@ -350,37 +360,32 @@ function CoveragePanel({
           <dd>{component?.componentSize ?? '--'}</dd>
         </div>
       </dl>
+      {/* Provenance only. The gate thresholds moved to "How ranking works". */}
       <p className="coverage-note">
-        A rating needs {coverage.minGamesForRating} recorded games and a margin under{' '}
-        {coverage.maxUncertaintyForRating} points. Positions need a scene of at least{' '}
-        {coverage.minComponentSize} players who have played each other.
-        {coverage.lastUpdated && ` Last updated ${formatDate(coverage.lastUpdated)}.`}
+        {coverage.lastUpdated && `Last updated ${formatDate(coverage.lastUpdated)}.`}
         {!coverage.coverageComplete && ' Counts are a floor: this scope has more players than one page of coverage.'}
+        {' '}
+        <a href="#how-ranking-works">How ranking works</a>
       </p>
     </section>
   );
 }
 
-function NobodyRatedYet({ coverage, hasPlayers }: { coverage: RankingCoverage | null; hasPlayers: boolean }) {
+function NobodyRatedYet({ hasPlayers }: { hasPlayers: boolean }) {
   return (
     <section className="ranking-section empty-state">
       <h2>No ratings yet</h2>
       {hasPlayers ? (
         <p>
-          Players have been recorded here, but none has played the{' '}
-          {coverage?.minGamesForRating ?? 8} games a rating needs. They are listed below with how far
-          off they are.
+          Players have been recorded here, but none has enough games for a rating yet. They are
+          listed below as <strong>Unranked</strong>.
         </p>
       ) : (
-        <p>
-          No games have been recorded for this slice yet. Nothing is hidden - there is simply nothing
-          to rank.
-        </p>
+        <p>No games have been recorded for this slice yet - there is simply nothing to rank.</p>
       )}
       <p className="muted">
-        Competitive Riftbound is days old: Radiance released on 23 October 2026 and results only reach
-        back about three weeks, so a near-empty ranking is the honest picture for now. It fills in as
-        events are played.
+        Competitive Riftbound is days old, so a near-empty ranking is the honest picture for now. It
+        fills in as events are played.
       </p>
       <p>
         <Link to="/">Find an event to play in &rarr;</Link>
@@ -450,8 +455,8 @@ function PlayerSearch() {
                 {hit.displayName ?? 'Unknown player'}
                 {hit.tagLine && <span className="player-tag">#{hit.tagLine}</span>}
               </span>
-              <span className="muted">
-                {hit.provisional ? 'not yet rated' : formatRating(hit.rating)}
+              <span className={hit.provisional ? 'unranked' : 'muted'}>
+                {hit.provisional ? UNRANKED_LABEL : formatRating(hit.rating)}
               </span>
             </Link>
           ))}

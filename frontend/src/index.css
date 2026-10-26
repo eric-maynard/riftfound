@@ -10,7 +10,20 @@
   --color-bg-secondary: #44475a;
   --color-bg-tertiary: #21222c;
   --color-text: #f8f8f2;
-  --color-text-muted: #6272a4;
+  /* Secondary text. Dracula "comment" #6272a4 scored 2.39:1 on --color-bg and
+     3.36:1 on --color-bg-tertiary, so every muted label on the site failed
+     WCAG AA for body text. Lightened along the same hue (hue 226 held, L 51% ->
+     75%) until it clears 4.5:1 on every surface it actually sits on:
+       #363b43 card/page ground  5.15:1
+       #21222c tertiary panels   7.22:1
+       #3d4150 .row-emphasis     4.64:1
+       #3b424f table row hover   4.62:1
+     --color-border keeps the original value: a hairline is not text. */
+  --color-text-muted: #a0aede;
+  /* The same role one step lighter, for the lifted #44475a hover surfaces and
+     the tinted chips, where #a0aede only reaches 4.19:1 / 4.32:1.
+     #44475a 5.25:1 - #3f4656 draw-chip tint 5.43:1 */
+  --color-text-muted-lifted: #b8c3ec;
   --color-border: #6272a4;
   --color-primary: #bd93f9;
   --color-primary-dark: #9d79d9;
@@ -20,6 +33,12 @@
   --color-pink: #ff79c6;
   --color-purple: #bd93f9;
   --color-red: #ff5555;
+  /* Dracula red is 3.59:1 as text on --color-bg; this step is 6.30:1 there and
+     5.21:1 on the loss-chip tint, so result text stays red and readable. */
+  --color-red-text: #ffacac;
+  /* Green ink for the win chip: #50fa7b reaches 5.35:1 on its own tint, this
+     reaches 6.07:1 and matches the red step's weight. */
+  --color-green-text: #a8fcc0;
   --color-yellow: #f1fa8c;
   --color-success: #50fa7b;
   --color-error: #ff5555;
@@ -300,7 +319,9 @@ a:hover {
   background-color: rgba(255, 85, 85, 0.1);
   border: 1px solid var(--color-error);
   border-radius: 8px;
-  color: var(--color-error);
+  /* The border carries the red; the text uses the readable step. Dracula red
+     on this tint is 3.25:1, which fails AA for body text. */
+  color: var(--color-red-text);
 }
 
 .warning-banner {
@@ -418,7 +439,9 @@ select:disabled {
 
 .event-filters .filter-group label {
   font-size: 0.75rem;
-  color: var(--color-text-muted);
+  /* This panel is --color-bg-secondary (#44475a), the site's lightest surface,
+     where the ordinary muted step only reaches 4.19:1. */
+  color: var(--color-text-muted-lifted);
   text-transform: uppercase;
   letter-spacing: 0.05em;
 }
@@ -1236,12 +1259,6 @@ select:disabled {
   margin-bottom: 0.25rem;
 }
 
-.ranking-lede {
-  max-width: 62ch;
-  color: var(--color-text-muted);
-  margin-bottom: 1rem;
-}
-
 .muted {
   color: var(--color-text-muted);
 }
@@ -1323,10 +1340,125 @@ select:disabled {
   text-decoration: none;
 }
 
+/* On the lifted hover surface the secondary text needs the lighter step. */
+.search-result:hover .muted,
+.search-result:hover .unranked,
+.event-filters .suggestion-item:hover .suggestion-type,
+.event-filters .suggestion-item.selected .suggestion-type {
+  color: var(--color-text-muted-lifted);
+}
+
 .search-empty {
   padding: 0.5rem 0.75rem;
   font-size: 0.875rem;
   color: var(--color-text-muted);
+}
+
+/* Scene picker: the calendar's location-autocomplete interaction, reused.
+   ~194 scenes and growing, so the list is typed into rather than scrolled. */
+.scene-select {
+  position: relative;
+}
+
+.scene-select-input {
+  padding: 0.5rem 0.75rem;
+  height: 36px;
+  min-width: 230px;
+  background-color: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: 0.375rem;
+  color: var(--color-text);
+  font-size: 0.875rem;
+}
+
+.scene-select-input::placeholder {
+  color: var(--color-text-muted);
+}
+
+.scene-select-input:focus-visible {
+  outline: 2px solid var(--color-cyan);
+  outline-offset: 1px;
+  border-color: var(--color-cyan);
+}
+
+.scene-options {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  min-width: 100%;
+  max-height: 280px;
+  overflow-y: auto;
+  z-index: 60;
+  background-color: var(--color-bg-tertiary);
+  border: 1px solid var(--color-border);
+  border-radius: 0.375rem;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+}
+
+.scene-option {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.4rem 0.75rem;
+  font-size: 0.875rem;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+/* One highlight for hover and for the arrow keys - the same row either way. */
+.scene-option.is-active {
+  background-color: var(--color-bg-secondary);
+}
+
+.scene-option-meta {
+  font-size: 0.75rem;
+  color: var(--color-text-muted);
+}
+
+.scene-option.is-active .scene-option-meta {
+  color: var(--color-text-muted-lifted);
+}
+
+/* Hints: the explanation where the concept appears, not a paragraph up front */
+.filter-hint {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  margin-left: 0.3rem;
+  border: 1px solid var(--color-text-muted);
+  border-radius: 50%;
+  font-size: 0.6rem;
+  line-height: 1;
+  cursor: help;
+}
+
+.filter-hint:focus-visible,
+.col-hint:focus-visible {
+  outline: 2px solid var(--color-cyan);
+  outline-offset: 2px;
+}
+
+.col-hint {
+  text-decoration: underline dotted;
+  text-underline-offset: 2px;
+  cursor: help;
+}
+
+/* "Unranked": the word, and the reason only on hover/focus. */
+.unranked {
+  color: var(--color-text-muted);
+  font-size: 0.8rem;
+  cursor: help;
+  text-decoration: underline dotted;
+  text-underline-offset: 2px;
+}
+
+.stat-tile .unranked {
+  font-size: 1rem;
+  font-weight: 500;
 }
 
 /* Coverage: what the data actually supports */
@@ -1381,10 +1513,11 @@ select:disabled {
   /* Proportional figures: tabular-nums reads loose at display sizes. */
 }
 
+/* Kept as a hook for "a stat tile whose value is withheld"; the colour and the
+   help cursor come from .unranked, which it is always paired with. */
 .stat-withheld {
   font-size: 1rem;
   font-weight: 500;
-  color: var(--color-text-muted);
 }
 
 .notice-banner {
@@ -1511,11 +1644,6 @@ select:disabled {
   font-size: 0.875rem;
 }
 
-.provisional-reason {
-  color: var(--color-text-muted);
-  font-size: 0.8rem;
-}
-
 .load-more {
   padding: 0.5rem 1rem;
   background-color: var(--color-bg-tertiary);
@@ -1550,7 +1678,8 @@ select:disabled {
 }
 
 .outcome-loss {
-  color: var(--color-red);
+  /* 3.59:1 in Dracula red; this step is 6.30:1 on the page ground. */
+  color: var(--color-red-text);
 }
 
 .outcome-draw,
@@ -1580,20 +1709,25 @@ select:disabled {
   font-weight: 700;
 }
 
+/* The chip ink has to contrast with the chip's *own* tint, not with the page.
+   The tint is the hue at 18% over --color-bg, so the saturated hue is nearly
+   the same colour as its background: #ff5555 on the loss tint was 2.96:1 and
+   the muted token on the draw tint 2.01:1. Each ink is now a light step of its
+   own hue, measured against the composited tint. */
 .game-win {
-  background-color: rgba(80, 250, 123, 0.18);
-  color: var(--color-green);
+  background-color: rgba(80, 250, 123, 0.18); /* composites to #3b5d4d */
+  color: var(--color-green-text); /* 6.07:1 */
 }
 
 .game-loss {
-  background-color: rgba(255, 85, 85, 0.18);
-  color: var(--color-red);
+  background-color: rgba(255, 85, 85, 0.18); /* composites to #5a4046 */
+  color: var(--color-red-text); /* 5.21:1 */
 }
 
 .game-draw,
 .game-unknown {
-  background-color: rgba(98, 114, 164, 0.2);
-  color: var(--color-text-muted);
+  background-color: rgba(98, 114, 164, 0.2); /* composites to #3f4656 */
+  color: var(--color-text-muted-lifted); /* 5.43:1 */
 }
 
 .event-name {
@@ -1604,6 +1738,47 @@ select:disabled {
   display: block;
   font-size: 0.75rem;
   color: var(--color-text-muted);
+}
+
+/* How ranking works: the exposition, below the numbers it explains */
+.how-it-works {
+  margin-top: 2rem;
+  padding: 1.25rem;
+  background-color: var(--color-bg-tertiary);
+  border: 1px solid var(--color-border);
+  border-radius: 0.5rem;
+  max-width: 76ch;
+}
+
+.how-it-works h2 {
+  font-size: 1.05rem;
+  margin-bottom: 0.75rem;
+}
+
+.how-it-works-list dt {
+  font-size: 0.875rem;
+  font-weight: 600;
+  margin-top: 0.75rem;
+}
+
+.how-it-works-list dt:first-child {
+  margin-top: 0;
+}
+
+.how-it-works-list dd {
+  font-size: 0.875rem;
+  color: var(--color-text-muted);
+  margin-top: 0.15rem;
+}
+
+.how-it-works-list dd strong {
+  color: var(--color-text);
+  font-weight: 600;
+}
+
+.how-it-works-link {
+  margin-top: 1.5rem;
+  font-size: 0.875rem;
 }
 
 /* ===================================================================
@@ -1814,7 +1989,13 @@ select:disabled {
 
   .ranking-filters .filter-group,
   .player-search input,
+  .scene-select-input,
   .ranking-filters select {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .scene-options {
     width: 100%;
   }
 

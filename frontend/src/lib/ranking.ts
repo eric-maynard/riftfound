@@ -87,6 +87,59 @@ export function componentLabel(component: ComponentSummary | { componentId: stri
   return component.regionLabel ?? `Scene ${component.componentId}`;
 }
 
+/**
+ * One row of the scene picker. Kept as data rather than JSX so the filtering a
+ * searchable picker needs is a pure function - there are ~194 scenes already
+ * and the list only grows.
+ */
+export interface SceneOption {
+  /** null is the "Everywhere" pseudo-scene, which is never comparable. */
+  id: string | null;
+  label: string;
+  /** Secondary line: rated count, and whether the scene can carry positions. */
+  meta: string;
+  comparable: boolean;
+}
+
+export const EVERYWHERE_OPTION: SceneOption = {
+  id: null,
+  label: 'Everywhere',
+  meta: 'not comparable',
+  comparable: false,
+};
+
+export function sceneOptions(components: ComponentSummary[]): SceneOption[] {
+  return [
+    EVERYWHERE_OPTION,
+    ...components.map((component) => ({
+      id: component.componentId,
+      label: componentLabel(component),
+      meta: `${component.ratedPlayers} rated${component.comparable ? '' : ' · too small'}`,
+      comparable: component.comparable,
+    })),
+  ];
+}
+
+/**
+ * Substring match on the region label, case- and accent-insensitive, so
+ * "puget" finds "Puget Sound" and "seattle" finds nothing rather than
+ * everything. An empty query is not a filter.
+ */
+export function filterSceneOptions(options: SceneOption[], query: string): SceneOption[] {
+  const needle = normalizeForSearch(query);
+  if (!needle) return options;
+  return options.filter((option) => normalizeForSearch(option.label).includes(needle));
+}
+
+function normalizeForSearch(value: string): string {
+  return value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toLowerCase();
+}
+
+/** The option matching the current selection, for the closed picker's label. */
+export function findSceneOption(options: SceneOption[], id: string | null): SceneOption | null {
+  return options.find((option) => option.id === id) ?? null;
+}
+
 // ---------------------------------------------------------------------------
 // Sets
 // ---------------------------------------------------------------------------
@@ -129,7 +182,29 @@ export function formatShortDate(epochMs: number): string {
   return new Date(epochMs).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 }
 
-/** Why a rating is being withheld, in a sentence a player can act on. */
+/**
+ * The word the UI prints in place of a rating that has not cleared the
+ * confidence gate. One word, everywhere: the leaderboard, the player page and
+ * the per-set table all say the same thing, and the *reason* lives in a
+ * tooltip rather than in prose beside it.
+ */
+export const UNRANKED_LABEL = 'Unranked';
+
+/**
+ * Where the rating scale starts. A player with no games sits here, so the
+ * number is the one to quote when explaining what a rating means.
+ *
+ * Tracks the engine's anchor (`DEFAULT_ELO_ORIGIN` in `scraper/src/ranking/whr.ts`).
+ */
+export const RATING_ANCHOR = 1200;
+
+/**
+ * Why a rating is being withheld - as a *tooltip*, never as inline prose.
+ *
+ * The page used to print this sentence next to the player, which read as the
+ * site explaining itself rather than reporting a fact. Now the page says
+ * "Unranked" and this is the hover/focus text on that word.
+ */
 export function provisionalExplanation(
   reason: ProvisionalReason | null,
   gamesUntilRated: number,
@@ -137,18 +212,19 @@ export function provisionalExplanation(
 ): string {
   switch (reason) {
     case 'no-rating':
-      return `No rating yet - no games have been recorded. A rating appears after ${minGames} games.`;
+      return `Unranked - no games recorded yet. A rating appears after ${minGames} games.`;
     case 'too-few-games':
       return gamesUntilRated === 1
-        ? 'Not rated yet - one more recorded game to go.'
-        : `Not rated yet - ${gamesUntilRated} more recorded games to go (${minGames} needed).`;
+        ? `Unranked - one more recorded game to go (${minGames} needed).`
+        : `Unranked - ${gamesUntilRated} more recorded games to go (${minGames} needed).`;
     case 'uncertainty-too-wide':
-      return 'Not rated yet - the margin is still too wide to place this player against others.';
+      return 'Unranked - the margin is still too wide to place this player against others.';
     default:
       return '';
   }
 }
 
+/** The reason as a lower-case fragment, for a tooltip or an aria label. */
 export function provisionalShortLabel(reason: ProvisionalReason | null): string {
   switch (reason) {
     case 'no-rating':
@@ -160,6 +236,16 @@ export function provisionalShortLabel(reason: ProvisionalReason | null): string 
     default:
       return '';
   }
+}
+
+/**
+ * The reason capitalised, for a table cell's tooltip. Same wording as
+ * `provisionalShortLabel`, sentence-cased - kept here rather than in a page so
+ * the two surfaces cannot drift apart.
+ */
+export function provisionalShortReason(reason: ProvisionalReason | null): string {
+  const label = provisionalShortLabel(reason);
+  return label ? label.charAt(0).toUpperCase() + label.slice(1) : '--';
 }
 
 /** Splits a leaderboard page into the part that is a ladder and the part that is not. */

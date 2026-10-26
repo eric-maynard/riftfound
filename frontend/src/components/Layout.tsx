@@ -10,21 +10,46 @@ import ModeSwitch from './ModeSwitch';
  * trip. An event detail page is still a page of its own, as it was before.
  */
 /**
- * Ranking is deployed but unlisted: the routes are live and shareable, the tab
- * selector is not rendered, so the section is reachable only by URL
+ * Ranking is deployed but unlisted: the routes are live and shareable, the mode
+ * switch is not rendered, so the section is reachable only by URL
  * (`/ranking`). Flip this to true to surface it to everyone - that is the whole
- * launch switch. A reader can preview the tabs without a rebuild by setting
- * `localStorage.riftfoundRankingTabs = 'on'`.
+ * launch switch. Until then `?preview=ranking` shows the switch to whoever
+ * follows that link, without a rebuild (see readTabsOverride).
  */
 const SHOW_SECTION_TABS = false;
 
-function readTabsOverride(): boolean {
+const TABS_STORAGE_KEY = 'riftfoundRankingTabs';
+
+/**
+ * Whether to show the mode switch while the Ranking section is still unlisted.
+ *
+ * `?preview=ranking` turns it on and is remembered, so a single link is enough
+ * to hand someone the preview - they do not have to type anything into a
+ * console, and it survives navigating between the sections. `?preview=off`
+ * clears it again.
+ */
+function readTabsOverride(search: string): boolean {
+  let stored: string | null = null;
   // Browser storage is unavailable in private windows and can throw outright.
   try {
-    return localStorage.getItem('riftfoundRankingTabs') === 'on';
+    stored = localStorage.getItem(TABS_STORAGE_KEY);
   } catch {
-    return false;
+    stored = null;
   }
+
+  const requested = new URLSearchParams(search).get('preview');
+  if (requested === 'ranking' || requested === 'off') {
+    const on = requested === 'ranking';
+    try {
+      if (on) localStorage.setItem(TABS_STORAGE_KEY, 'on');
+      else localStorage.removeItem(TABS_STORAGE_KEY);
+    } catch {
+      // Storage blocked: honour the parameter for this page view anyway.
+    }
+    return on;
+  }
+
+  return stored === 'on';
 }
 
 function Layout() {
@@ -41,7 +66,7 @@ function Layout() {
   if (isCalendar) eventsSearch.current = location.search;
   if (isRanking) rankingSearch.current = location.search;
 
-  const showTabs = SHOW_SECTION_TABS || readTabsOverride();
+  const showTabs = SHOW_SECTION_TABS || readTabsOverride(location.search);
 
   return (
     <div className="layout">

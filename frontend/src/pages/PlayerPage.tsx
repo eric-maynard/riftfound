@@ -14,9 +14,11 @@ import {
   gameScore,
   matchRecord,
   provisionalExplanation,
+  provisionalShortReason,
   setBoundaryNote,
   selectableSets,
   setLabel,
+  UNRANKED_LABEL,
 } from '../lib/ranking';
 
 /**
@@ -25,6 +27,11 @@ import {
  *
  * The set selector scopes the chart and the match log together, so the numbers
  * on the page always describe the same slice.
+ *
+ * A rating below the confidence gate is never printed. The page says
+ * "Unranked" - one word, with the reason as its tooltip - instead of the banner
+ * of prose it used to carry; the general rule lives in "How ranking works" on
+ * the ranking page.
  */
 
 const MATCH_PAGE_SIZE = 25;
@@ -149,12 +156,10 @@ function PlayerPage() {
       };
   const record = matchRecord(matches);
 
-  const explanation = scoped
-    ? provisionalExplanation(
-        scoped.provisionalReason,
-        profile.gamesUntilRated,
-        seriesProvisional?.minGames ?? 8
-      )
+  const minGames = seriesProvisional?.minGames ?? 8;
+  // The reason, for the tooltip on the word "Unranked" - never as inline prose.
+  const unrankedWhy = scoped
+    ? provisionalExplanation(scoped.provisionalReason, profile.gamesUntilRated, minGames)
     : '';
 
   return (
@@ -203,7 +208,15 @@ function PlayerPage() {
 
       <dl className="stat-row">
         <div className="stat-tile">
-          <dt>Rating ({scopeLabel})</dt>
+          <dt>
+            <abbr
+              className="col-hint"
+              title="Worked out from games recorded at events. The ± is the margin of uncertainty around the number."
+            >
+              Rating
+            </abbr>{' '}
+            ({scopeLabel})
+          </dt>
           <dd>
             {scoped && !scoped.provisional ? (
               <>
@@ -211,7 +224,9 @@ function PlayerPage() {
                 <span className="rating-margin">{formatUncertainty(scoped.uncertainty)}</span>
               </>
             ) : (
-              <span className="stat-withheld">Not rated</span>
+              <span className="unranked stat-withheld" title={unrankedWhy || undefined}>
+                {UNRANKED_LABEL}
+              </span>
             )}
           </dd>
         </div>
@@ -228,8 +243,6 @@ function PlayerPage() {
           <dd>{formatRecord(record)}</dd>
         </div>
       </dl>
-
-      {explanation && <div className="notice-banner">{explanation}</div>}
 
       <section className="player-section">
         <RatingChart
@@ -260,11 +273,17 @@ function PlayerPage() {
                   <th scope="row">{ALL_SETS_LABEL}</th>
                   <td className="muted">&mdash;</td>
                   <td className="numeric">
-                    {profile.provisional ? <span className="stat-withheld">Not rated</span> : formatRating(profile.rating)}
+                    {profile.provisional ? (
+                      <span className="unranked" title={unrankedWhy || undefined}>{UNRANKED_LABEL}</span>
+                    ) : (
+                      formatRating(profile.rating)
+                    )}
                     {!profile.provisional && <span className="rating-margin">{formatUncertainty(profile.uncertainty)}</span>}
                   </td>
                   <td className="numeric">{profile.gamesPlayed ?? 0}</td>
-                  <td>{profile.provisional ? provisionalShortReason(profile.provisionalReason) : 'Rated'}</td>
+                  <td title={profile.provisional ? provisionalShortReason(profile.provisionalReason) : undefined}>
+                    {profile.provisional ? UNRANKED_LABEL : 'Rated'}
+                  </td>
                 </tr>
                 {profile.setRatings.map((setRating) => (
                   <tr key={setRating.setId}>
@@ -278,7 +297,12 @@ function PlayerPage() {
                     </td>
                     <td className="numeric">
                       {setRating.provisional ? (
-                        <span className="stat-withheld">Not rated</span>
+                        <span
+                          className="unranked"
+                          title={provisionalExplanation(setRating.provisionalReason, profile.gamesUntilRated, minGames) || undefined}
+                        >
+                          {UNRANKED_LABEL}
+                        </span>
                       ) : (
                         <>
                           {formatRating(setRating.rating)}
@@ -287,7 +311,9 @@ function PlayerPage() {
                       )}
                     </td>
                     <td className="numeric">{setRating.gamesPlayed ?? 0}</td>
-                    <td>{setRating.provisional ? provisionalShortReason(setRating.provisionalReason) : 'Rated'}</td>
+                    <td title={setRating.provisional ? provisionalShortReason(setRating.provisionalReason) : undefined}>
+                      {setRating.provisional ? UNRANKED_LABEL : 'Rated'}
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -369,21 +395,13 @@ function PlayerPage() {
           </>
         )}
       </section>
+
+      {/* One line, not a lecture: the explanation lives on the ranking page. */}
+      <p className="how-it-works-link">
+        <Link to="/ranking#how-ranking-works">How ranking works &rarr;</Link>
+      </p>
     </div>
   );
-}
-
-function provisionalShortReason(reason: PlayerProfile['provisionalReason']): string {
-  switch (reason) {
-    case 'too-few-games':
-      return 'Too few games';
-    case 'uncertainty-too-wide':
-      return 'Margin too wide';
-    case 'no-rating':
-      return 'No games yet';
-    default:
-      return '--';
-  }
 }
 
 export default PlayerPage;

@@ -5,9 +5,13 @@ import {
   ALL_SETS_LABEL,
   BACKFILL_DAYS,
   MIN_Y_SPAN,
+  RATING_ANCHOR,
+  UNRANKED_LABEL,
   buildRatingChartGeometry,
   buildScope,
   componentLabel,
+  filterSceneOptions,
+  findSceneOption,
   formatRating,
   formatRecord,
   formatUncertainty,
@@ -18,8 +22,10 @@ import {
   parseChartDate,
   parseScope,
   pickDefaultComponent,
+  sceneOptions,
   selectableSets,
   provisionalExplanation,
+  provisionalShortReason,
   setBoundaryNote,
   setLabel,
   splitByConfidence,
@@ -38,7 +44,7 @@ function entry(overrides: Partial<Parameters<typeof splitByConfidence>[0][number
     playerId: 'p',
     displayName: 'P',
     tagLine: 'NA1',
-    rating: 1500,
+    rating: 1240,
     uncertainty: 90,
     gamesPlayed: 10,
     matchesPlayed: 5,
@@ -148,7 +154,7 @@ describe('formatting', () => {
   it('shows a dash rather than a zero for a missing rating', () => {
     expect(formatRating(null)).toBe('--');
     expect(formatRating(undefined)).toBe('--');
-    expect(formatRating(1587.6)).toBe('1,588');
+    expect(formatRating(1287.6)).toBe('1,288');
   });
 
   it('renders uncertainty as a margin, and nothing when unknown', () => {
@@ -163,9 +169,22 @@ describe('formatting', () => {
   });
 });
 
-describe('provisionalExplanation', () => {
-  it('says why a rating is withheld and what would change it', () => {
-    expect(provisionalExplanation('no-rating', 8, 8)).toMatch(/no games have been recorded/);
+describe('the unranked wording', () => {
+  it('prints one word, not a reason, wherever a rating is withheld', () => {
+    // The page used to say "too few games · 4 games · 4 to go" inline. It
+    // says "Unranked" now; the reason is a tooltip.
+    expect(UNRANKED_LABEL).toBe('Unranked');
+  });
+
+  it('starts the scale at the engine anchor', () => {
+    expect(RATING_ANCHOR).toBe(1200);
+  });
+
+  it('keeps the reason available as tooltip text, headed by the word', () => {
+    for (const reason of ['no-rating', 'too-few-games', 'uncertainty-too-wide'] as const) {
+      expect(provisionalExplanation(reason, 4, 8)).toMatch(/^Unranked/);
+    }
+    expect(provisionalExplanation('no-rating', 8, 8)).toMatch(/no games recorded yet/);
     expect(provisionalExplanation('too-few-games', 1, 8)).toMatch(/one more recorded game/);
     expect(provisionalExplanation('too-few-games', 6, 8)).toMatch(/6 more recorded games/);
     expect(provisionalExplanation('uncertainty-too-wide', 0, 8)).toMatch(/margin is still too wide/);
@@ -173,6 +192,66 @@ describe('provisionalExplanation', () => {
 
   it('says nothing when the rating is fit to show', () => {
     expect(provisionalExplanation(null, 0, 8)).toBe('');
+  });
+
+  it('sentence-cases the short reason for a table cell tooltip', () => {
+    expect(provisionalShortReason('too-few-games')).toBe('Too few games');
+    expect(provisionalShortReason('uncertainty-too-wide')).toBe('Margin too wide');
+    expect(provisionalShortReason('no-rating')).toBe('No games yet');
+    expect(provisionalShortReason(null)).toBe('--');
+  });
+});
+
+describe('the searchable scene picker', () => {
+  const comp = (id: string, label: string | null, rated: number, comparable = true): ComponentSummary => ({
+    componentId: id,
+    regionLabel: label,
+    componentSize: 30,
+    ratedPlayers: rated,
+    comparable,
+  });
+
+  const components = [
+    comp('a', 'Puget Sound', 12),
+    comp('b', 'Bay Area', 9),
+    comp('c', 'Montréal', 2, false),
+    comp('d', null, 0, false),
+  ];
+
+  it('leads with Everywhere, then one row per scene', () => {
+    const options = sceneOptions(components);
+    expect(options[0]).toEqual({ id: null, label: 'Everywhere', meta: 'not comparable', comparable: false });
+    expect(options.map((option) => option.label)).toEqual([
+      'Everywhere',
+      'Puget Sound',
+      'Bay Area',
+      'Montréal',
+      'Scene d',
+    ]);
+    expect(options[1].meta).toBe('12 rated');
+    expect(options[3].meta).toBe('2 rated · too small');
+  });
+
+  it('filters by what you type, ignoring case and accents', () => {
+    const options = sceneOptions(components);
+    expect(filterSceneOptions(options, 'puget').map((o) => o.label)).toEqual(['Puget Sound']);
+    expect(filterSceneOptions(options, 'AREA').map((o) => o.label)).toEqual(['Bay Area']);
+    expect(filterSceneOptions(options, 'montreal').map((o) => o.label)).toEqual(['Montréal']);
+    expect(filterSceneOptions(options, 'sound').map((o) => o.label)).toEqual(['Puget Sound']);
+  });
+
+  it('treats an empty query as no filter, and an unmatched one as no rows', () => {
+    const options = sceneOptions(components);
+    expect(filterSceneOptions(options, '')).toHaveLength(options.length);
+    expect(filterSceneOptions(options, '   ')).toHaveLength(options.length);
+    expect(filterSceneOptions(options, 'zzz')).toEqual([]);
+  });
+
+  it('finds the row for the current selection, including Everywhere', () => {
+    const options = sceneOptions(components);
+    expect(findSceneOption(options, 'b')?.label).toBe('Bay Area');
+    expect(findSceneOption(options, null)?.label).toBe('Everywhere');
+    expect(findSceneOption(options, 'missing')).toBeNull();
   });
 });
 
@@ -246,11 +325,11 @@ describe('match helpers', () => {
 
 describe('niceTicks', () => {
   it('rounds to readable steps', () => {
-    expect(niceTicks(1400, 1600)).toEqual([1400, 1450, 1500, 1550, 1600]);
+    expect(niceTicks(1100, 1300)).toEqual([1100, 1150, 1200, 1250, 1300]);
   });
 
   it('degenerates safely when there is no span', () => {
-    expect(niceTicks(1500, 1500)).toEqual([1500]);
+    expect(niceTicks(1200, 1200)).toEqual([1200]);
   });
 });
 
@@ -262,7 +341,7 @@ describe('buildRatingChartGeometry', () => {
   });
 
   it('draws no line for a one-point series - one point is not a trend', () => {
-    const geometry = buildRatingChartGeometry([point('2026-10-24', 1476, 259, 2)], options)!;
+    const geometry = buildRatingChartGeometry([point('2026-10-24', 1176, 259, 2)], options)!;
     expect(geometry.points).toHaveLength(1);
     expect(geometry.linePath).toBeNull();
     expect(geometry.bandPath).toBeNull();
@@ -273,7 +352,7 @@ describe('buildRatingChartGeometry', () => {
 
   it('keeps a two-point series honest: it spans the backfill window, not the chart', () => {
     const geometry = buildRatingChartGeometry(
-      [point('2026-10-23', 1500, 240, 2), point('2026-10-24', 1520, 230, 4)],
+      [point('2026-10-23', 1200, 240, 2), point('2026-10-24', 1220, 230, 4)],
       options
     )!;
 
@@ -291,7 +370,7 @@ describe('buildRatingChartGeometry', () => {
   it('never magnifies a small move into a cliff', () => {
     // Two points eight rating points apart, with no uncertainty at all.
     const geometry = buildRatingChartGeometry(
-      [point('2026-10-23', 1500, null, 2), point('2026-10-24', 1508, null, 4)],
+      [point('2026-10-23', 1200, null, 2), point('2026-10-24', 1208, null, 4)],
       options
     )!;
     const [yMin, yMax] = geometry.yDomain;
@@ -304,17 +383,17 @@ describe('buildRatingChartGeometry', () => {
 
   it('fits the y-axis around the band, not just the line', () => {
     const geometry = buildRatingChartGeometry(
-      [point('2026-10-10', 1500, 300, 2), point('2026-10-24', 1520, 260, 4)],
+      [point('2026-10-10', 1200, 300, 2), point('2026-10-24', 1220, 260, 4)],
       options
     )!;
     const [yMin, yMax] = geometry.yDomain;
-    expect(yMin).toBeLessThan(1500 - 300);
-    expect(yMax).toBeGreaterThan(1520 + 260);
+    expect(yMin).toBeLessThan(1200 - 300);
+    expect(yMax).toBeGreaterThan(1220 + 260);
   });
 
   it('skips the band when no point carries an uncertainty', () => {
     const geometry = buildRatingChartGeometry(
-      [point('2026-10-20', 1500, null), point('2026-10-22', 1510, null), point('2026-10-24', 1505, null)],
+      [point('2026-10-20', 1200, null), point('2026-10-22', 1210, null), point('2026-10-24', 1205, null)],
       options
     )!;
     expect(geometry.bandPath).toBeNull();
@@ -323,7 +402,7 @@ describe('buildRatingChartGeometry', () => {
 
   it('keeps every mark inside the plot area', () => {
     const geometry = buildRatingChartGeometry(
-      [point('2026-10-06', 1400, 200), point('2026-10-18', 1600, 120), point('2026-10-24', 1588, 86)],
+      [point('2026-10-06', 1100, 200), point('2026-10-18', 1300, 120), point('2026-10-24', 1288, 86)],
       options
     )!;
     for (const placed of geometry.points) {
@@ -340,7 +419,7 @@ describe('buildRatingChartGeometry', () => {
 
   it('snaps the crosshair to the nearest point', () => {
     const geometry = buildRatingChartGeometry(
-      [point('2026-10-06', 1400), point('2026-10-18', 1500), point('2026-10-24', 1588)],
+      [point('2026-10-06', 1100), point('2026-10-18', 1200), point('2026-10-24', 1288)],
       options
     )!;
     expect(nearestPointIndex(geometry, geometry.points[1].x + 3)).toBe(1);
@@ -350,7 +429,7 @@ describe('buildRatingChartGeometry', () => {
 
   it('survives a narrow phone-width container', () => {
     const geometry = buildRatingChartGeometry(
-      [point('2026-10-20', 1500, 200), point('2026-10-24', 1510, 180)],
+      [point('2026-10-20', 1200, 200), point('2026-10-24', 1210, 180)],
       { width: 320, height: 260, now: NOW }
     )!;
     expect(geometry.plot.width).toBeGreaterThan(0);
