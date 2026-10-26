@@ -7,6 +7,7 @@ import {
 } from '../ranking/observations.js';
 import { buildEras } from '../ranking/sets.js';
 import {
+  DEFAULT_ELO_ORIGIN,
   ELO_PER_NAT,
   fitWhr,
   latestRating,
@@ -28,8 +29,8 @@ import type { EventResults, EventRoster } from '../database.js';
  *   that never meet must both centre on the prior mean, with their internal
  *   order intact. This is the failure mode plain Elo dresses up as a result.
  * - **a known-answer fit.** A strict dominance order has to come out in order,
- *   symmetric about 1500, and the strongest player's uncertainty must be the
- *   widest of the three (an unbeaten record is less informative per game).
+ *   symmetric about the anchor, and the strongest player's uncertainty must be
+ *   the widest of the three (an unbeaten record is less informative per game).
  * - **byes never become games**, however they reach the fact row.
  * - **uncertainty tracks evidence**, so the publishing bar can rely on it.
  */
@@ -322,10 +323,13 @@ describe('known-answer fit', () => {
 
   it('is symmetric about the prior mean, because the evidence is', () => {
     // A beat B and C every time, C lost every time, B is exactly in between -
-    // so the fit has no reason to put the group anywhere but 1500.
-    expect(elo('B')).toBeCloseTo(1500, 1);
-    expect(elo('A') - 1500).toBeCloseTo(1500 - elo('C'), 1);
-    expect((elo('A') + elo('B') + elo('C')) / 3).toBeCloseTo(1500, 1);
+    // so the fit has no reason to put the group anywhere but the anchor.
+    // Written against DEFAULT_ELO_ORIGIN rather than a literal, because the
+    // anchor is a display offset: moving it must move these three together and
+    // change nothing else.
+    expect(elo('B')).toBeCloseTo(DEFAULT_ELO_ORIGIN, 1);
+    expect(elo('A') - DEFAULT_ELO_ORIGIN).toBeCloseTo(DEFAULT_ELO_ORIGIN - elo('C'), 1);
+    expect((elo('A') + elo('B') + elo('C')) / 3).toBeCloseTo(DEFAULT_ELO_ORIGIN, 1);
   });
 
   it('is least certain about the unbeaten player', () => {
@@ -363,8 +367,8 @@ describe('the global prior stops disconnected clusters floating', () => {
   });
 
   it('centres both clusters on the prior mean rather than letting them drift', () => {
-    expect(mean(['A', 'B', 'C'])).toBeCloseTo(1500, 1);
-    expect(mean(['X', 'Y', 'Z'])).toBeCloseTo(1500, 1);
+    expect(mean(['A', 'B', 'C'])).toBeCloseTo(DEFAULT_ELO_ORIGIN, 1);
+    expect(mean(['X', 'Y', 'Z'])).toBeCloseTo(DEFAULT_ELO_ORIGIN, 1);
   });
 
   it('keeps each cluster internal order, and gives identical evidence identical ratings', () => {
@@ -395,7 +399,7 @@ describe('the global prior stops disconnected clusters floating', () => {
     const bigMean = ['X', 'Y', 'Z']
       .map(player => natToElo(latestRating(strongFit, strong.players.indexOf(player)).rating))
       .reduce((total, value) => total + value, 0) / 3;
-    expect(bigMean).toBeCloseTo(1500, 1);
+    expect(bigMean).toBeCloseTo(DEFAULT_ELO_ORIGIN, 1);
   });
 });
 
@@ -427,9 +431,9 @@ describe('uncertainty tracks evidence', () => {
     ]);
     const fit = fitWhr(observations);
     const elo = natToElo(latestRating(fit, 0).rating);
-    expect(elo).toBeGreaterThan(1500);
+    expect(elo).toBeGreaterThan(DEFAULT_ELO_ORIGIN);
     // One win is evidence, not a verdict: the prior still dominates.
-    expect(elo).toBeLessThan(1560);
+    expect(elo).toBeLessThan(DEFAULT_ELO_ORIGIN + 60);
   });
 });
 

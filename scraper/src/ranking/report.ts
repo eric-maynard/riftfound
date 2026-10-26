@@ -14,6 +14,11 @@
  *   sweeps of the prior strength and the observation level. The only honest way
  *   to pick those two knobs.
  * - **fit** - a dry-run refit, to see what the publishing bar admits.
+ * - **communities** - Louvain community detection on the same graph, plus the
+ *   coverage curve, the geographic agreement and the stability measurements
+ *   that decide whether a "scene" should stay a connected component. Nothing
+ *   here is published: see ranking/communities.ts.
+ * - **venues** - per-venue aggregates, the input a map view would need.
  *
  * Reads a fact source that is either the configured database (`DB_TYPE`) or an
  * NDJSON file of captured facts, which is how a regional sample can be analysed
@@ -24,6 +29,7 @@ import { readFileSync } from 'node:fs';
 import { loadEventNames } from '../database.js';
 import { ObservationBuilder, dayNumber, type ObservationSet } from './observations.js';
 import { connectivityReport, type ConnectivityReport } from './graph.js';
+import { communityReport, venueAggregates, type CommunityReport } from './communities.js';
 import { buildEras, DEFAULT_PRERELEASE_OPTIONS, parseSetTable, parsePrereleaseTypes, type SetEra } from './sets.js';
 import { replayDates, replayFacts, resolveVenueLabels, runRankingPass } from './pass.js';
 import { gamesPerMatchByType, sweepObservationLevel, sweepPriorSigma, validate, validateByType } from './validate.js';
@@ -147,6 +153,131 @@ function printConnectivity(report: ConnectivityReport): void {
   }))));
 }
 
+
+function printCommunities(report: CommunityReport): void {
+  console.log('\n=== COMMUNITIES (Louvain on the weighted co-play graph) ===\n');
+  console.log(table([{
+    'players with matches': report.playersWithMatches,
+    edges: report.edges,
+    resolution: report.resolution,
+    communities: report.communityCount,
+    modularity: report.modularity.toFixed(4),
+    levels: report.levels,
+    'largest community': percent(report.largestCommunityShare),
+  }]));
+  console.log(table([{
+    'components (incumbent)': report.componentCount,
+    'giant component': percent(report.giantComponentShare),
+    'louvain ms': report.elapsedMs.louvain,
+    'components ms': report.elapsedMs.components,
+  }]));
+
+  console.log('\nCommunity size distribution');
+  console.log(table(report.communitySizes.map(row => ({ percentile: `p${row.percentile}`, size: row.size }))));
+  console.log(table(report.communitiesOverSize.map(row => ({
+    'at least': `${row.size} players`,
+    communities: row.communities,
+    players: row.players,
+    share: percent(report.playersWithMatches > 0 ? row.players / report.playersWithMatches : 0),
+  }))));
+
+  console.log('\nLargest communities (does one look like a scene?)');
+  console.log(table(report.topCommunities.map(row => ({
+    id: row.id,
+    players: row.size,
+    matches: row.matches,
+    venues: row.venues,
+    'top venue share': percent(row.dominantVenueShare),
+    'mean venue spread (km)': row.spreadKm.toFixed(1),
+    'dominant metro purity': percent(row.metroPurity),
+  }))));
+
+  console.log(`\nAgreement with geography (metros = venues single-linked within ${report.metroRadiusKm}km)`);
+  console.log(table([
+    {
+      compared: `metro (${report.metroCount} of them)`,
+      ARI: report.vsMetro.adjustedRand.toFixed(4),
+      NMI: report.vsMetro.normalisedMutualInformation.toFixed(4),
+      'label churn': percent(report.vsMetro.churn),
+    },
+    {
+      compared: 'home venue',
+      ARI: report.vsHomeVenue.adjustedRand.toFixed(4),
+      NMI: report.vsHomeVenue.normalisedMutualInformation.toFixed(4),
+      'label churn': percent(report.vsHomeVenue.churn),
+    },
+  ]));
+  console.log(table([{
+    'communities spanning >1 metro': report.communitiesSpanningMetros,
+    'metros split across >1 community': report.metrosSplitAcrossCommunities,
+  }]));
+
+  console.log('\n=== HOW THE PARTITION MOVES AS COVERAGE GROWS ===');
+  console.log('(a random share of events, which is what an incomplete backfill looks like)');
+  console.log(table(report.coverage.map(row => ({
+    coverage: percent(row.coverage),
+    events: row.events,
+    matches: row.matches,
+    players: row.playersWithMatches,
+    components: row.components,
+    'giant share': percent(row.giantShare),
+    communities: row.communities,
+    'largest community': percent(row.largestCommunityShare),
+    modularity: row.modularity.toFixed(4),
+  }))));
+
+  console.log('\nThe same, with only the earliest X% of the window captured');
+  console.log('(what a backfill walking the calendar actually produces)');
+  console.log(table(report.coverageByDate.map(row => ({
+    coverage: percent(row.coverage),
+    events: row.events,
+    matches: row.matches,
+    players: row.playersWithMatches,
+    components: row.components,
+    'giant share': percent(row.giantShare),
+    communities: row.communities,
+    'largest community': percent(row.largestCommunityShare),
+    modularity: row.modularity.toFixed(4),
+  }))));
+
+  console.log('\n=== RESOLUTION SWEEP (how coarse should a scene be?) ===\n');
+  console.log(table(report.resolutionSweep.map(row => ({
+    resolution: row.resolution,
+    communities: row.communities,
+    modularity: row.modularity.toFixed(4),
+    'largest community': percent(row.largestShare),
+    'metro ARI': row.metroAdjustedRand.toFixed(4),
+    'metro NMI': row.metroNormalisedMutualInformation.toFixed(4),
+    'churn on 90% subsample': percent(row.churn90),
+  }))));
+
+  console.log('\n=== STABILITY (relabel a subsample, compare to the full one) ===');
+  console.log('(churn = share of players who would see a different scene label)');
+  console.log(table(report.stability.flatMap(row => [
+    {
+      subsample: row.label,
+      primitive: 'community',
+      churn: percent(row.community.churn),
+      ARI: row.community.adjustedRand.toFixed(4),
+      NMI: row.community.normalisedMutualInformation.toFixed(4),
+    },
+    {
+      subsample: row.label,
+      primitive: `community (>= ${report.largeCommunityThreshold})`,
+      churn: percent(row.communityLargeOnly.churn),
+      ARI: row.communityLargeOnly.adjustedRand.toFixed(4),
+      NMI: row.communityLargeOnly.normalisedMutualInformation.toFixed(4),
+    },
+    {
+      subsample: row.label,
+      primitive: 'component',
+      churn: percent(row.component.churn),
+      ARI: row.component.adjustedRand.toFixed(4),
+      NMI: row.component.normalisedMutualInformation.toFixed(4),
+    },
+  ])));
+}
+
 async function loadObservations(args: Record<string, string>): Promise<ObservationSet> {
   const { table: setTable } = parseSetTable(args.setTable ?? process.env.RANKING_SET_TABLE);
   const eras = buildEras(setTable);
@@ -221,6 +352,36 @@ async function main(): Promise<void> {
 
   if (command === 'connectivity' || command === 'all') {
     printConnectivity(connectivityReport(observations));
+  }
+
+  if (command === 'communities' || command === 'all') {
+    printCommunities(communityReport(observations, {
+      resolution: Number(args.resolution ?? '1'),
+      metroRadiusKm: Number(args.metroRadiusKm ?? '25'),
+    }));
+  }
+
+  if (command === 'venues' || command === 'all') {
+    const venues = venueAggregates(observations);
+    console.log('\n=== VENUES (what a map view would aggregate) ===\n');
+    const withCoordinates = venues.filter(venue => venue.latitude !== null).length;
+    console.log(table([{
+      venues: venues.length,
+      'with coordinates': withCoordinates,
+      'with a shop id': venues.filter(venue => venue.shopExternalId !== null).length,
+      'median players/venue': venues.length > 0
+        ? [...venues].map(v => v.players).sort((a, b) => a - b)[Math.floor(venues.length / 2)]
+        : 0,
+    }]));
+    console.log('\nBusiest venues');
+    console.log(table(venues.slice(0, 15).map(venue => ({
+      venue: venue.venue,
+      players: venue.players,
+      matches: venue.matches,
+      events: venue.events,
+      latitude: venue.latitude?.toFixed(4) ?? '-',
+      longitude: venue.longitude?.toFixed(4) ?? '-',
+    }))));
   }
 
   if (command === 'validate' || command === 'all') {

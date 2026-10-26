@@ -73,6 +73,8 @@ connected component*, so if play is clustered a global ladder is not meaningful.
 
 ```bash
 ./ranking-metrics.sh connectivity --remote   # measure the co-play graph
+./ranking-metrics.sh communities --remote    # Louvain communities vs connected components
+./ranking-metrics.sh venues --remote         # per-venue aggregates (what a map view needs)
 ./ranking-metrics.sh validate --remote       # held-out accuracy vs Riot's tiebreakers
 ./ranking-metrics.sh bar --remote            # how many players clear each publishing bar
 ./ranking-metrics.sh fit --remote            # dry-run refit summary (writes nothing)
@@ -82,6 +84,14 @@ connected component*, so if play is clustered a global ladder is not meaningful.
 ./ranking-metrics.sh all --file sample.ndjson  # a captured regional sample
 ./ranking-metrics.sh validate --holdout-days 10
 ```
+
+`communities` answers the follow-on question - a connected component is not a
+*scene*, since one travelling player welds two cities into one component, so it
+runs Louvain modularity maximisation over the same graph weighted by matches
+played and reports the size distribution, the modularity, the agreement with
+geography, how the partition moves as coverage grows and how much the labels
+churn on a subsample. Nothing it computes is published: `componentId` still
+means a connected component. `--resolution` and `--metro-radius-km` tune it.
 
 All read-only; `fit` is a dry run and never writes derived items. The `--file`
 form reads NDJSON of `{externalId, results, roster}` objects, which is how a

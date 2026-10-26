@@ -50,15 +50,28 @@ import { MatchResult, type ObservationSet } from './observations.js';
 /** Elo points per natural (logistic) rating unit: 400 / ln(10). */
 export const ELO_PER_NAT = 400 / Math.LN10;
 
-/** The published scale's midpoint. The prior mean is 0 in natural units. */
-export const ELO_ORIGIN = 1500;
+/**
+ * Default midpoint of the published scale: where an unrated player sits.
+ *
+ * The prior mean is 0 in natural units, so this constant is **only** a display
+ * offset. Every quantity the model actually fits - rating *differences*, the
+ * prior SD, the drift, the posterior SDs - is invariant under changing it, so
+ * moving the anchor cannot change a single prediction. Held-out accuracy, log
+ * loss and Brier are identical before and after; see scraper/CLAUDE.md,
+ * "Where the scale is anchored".
+ *
+ * Configurable as `RANKING_ELO_ORIGIN` for the same reason the other knobs are:
+ * it is a product decision (1200 reads as "new player" in the TCG/chess idiom
+ * that most Riftbound players will arrive with) and not a measured value.
+ */
+export const DEFAULT_ELO_ORIGIN = 1200;
 
-export function natToElo(rating: number): number {
-  return ELO_ORIGIN + rating * ELO_PER_NAT;
+export function natToElo(rating: number, origin: number = DEFAULT_ELO_ORIGIN): number {
+  return origin + rating * ELO_PER_NAT;
 }
 
-export function eloToNat(elo: number): number {
-  return (elo - ELO_ORIGIN) / ELO_PER_NAT;
+export function eloToNat(elo: number, origin: number = DEFAULT_ELO_ORIGIN): number {
+  return (elo - origin) / ELO_PER_NAT;
 }
 
 export interface WhrOptions {
@@ -66,10 +79,18 @@ export interface WhrOptions {
    * Prior SD of a player's first rating, in Elo points.
    *
    * The single most consequential knob: it sets how far one game can move a
-   * newcomer and how hard a disconnected cluster is pinned to 1500. See
+   * newcomer and how hard a disconnected cluster is pinned to the anchor. See
    * scraper/CLAUDE.md for how the default was picked and its sensitivity.
    */
   priorSigmaElo: number;
+  /**
+   * Midpoint of the published scale - the rating of a player with no evidence.
+   *
+   * Carried on the options so the fit can hand it to whoever converts natural
+   * units to published ones, and so a refit records the anchor it was written
+   * with. It takes no part in the fit: see `DEFAULT_ELO_ORIGIN`.
+   */
+  eloOrigin: number;
   /** Rating drift, in Elo per sqrt(day). Controls how fast the curve may bend. */
   driftEloPerSqrtDay: number;
   /**
@@ -112,6 +133,7 @@ export interface WhrOptions {
 
 export const DEFAULT_WHR_OPTIONS: WhrOptions = {
   priorSigmaElo: 150,
+  eloOrigin: DEFAULT_ELO_ORIGIN,
   driftEloPerSqrtDay: 4,
   observationLevel: 'game-shared',
   weightScale: 1,
@@ -214,7 +236,10 @@ export function fitWhr(observations: ObservationSet, overrides: Partial<WhrOptio
   const playerCount = observations.players.length;
   const matchCount = observations.playerA.length;
 
-  const priorSigma = eloToNat(ELO_ORIGIN + options.priorSigmaElo);
+  // An SD, not a position on the scale, so the anchor cancels out of it. Written
+  // as a plain division rather than `eloToNat(origin + sigma)` precisely so that
+  // the anchor cannot creep into the fit by accident.
+  const priorSigma = options.priorSigmaElo / ELO_PER_NAT;
   const priorPrecision = 1 / (priorSigma * priorSigma);
   const driftNat = options.driftEloPerSqrtDay / ELO_PER_NAT;
   const driftVariancePerDay = driftNat * driftNat;

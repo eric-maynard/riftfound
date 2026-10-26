@@ -61,9 +61,14 @@ const envSchema = z.object({
 
   // --- the model (ranking/whr.ts) ---
   // Prior SD of a player's rating, in Elo points. The one knob that decides how
-  // fast a newcomer leaves 1500 and how hard a disconnected cluster is pinned
-  // to it. See scraper/CLAUDE.md for how the default was chosen.
+  // fast a newcomer leaves the anchor and how hard a disconnected cluster is
+  // pinned to it. See scraper/CLAUDE.md for how the default was chosen.
   RANKING_PRIOR_SIGMA_ELO: z.string().transform(Number).default('150'),
+  // Where the published scale is anchored: the rating of a player with no
+  // evidence. A pure display offset - the fit is invariant under changing it,
+  // so no prediction moves - but stored absolute numbers only pick up a new
+  // anchor on the next refit.
+  RANKING_ELO_ORIGIN: z.string().transform(Number).default('1200'),
   // Rating drift allowed by the Wiener prior, in Elo per sqrt(day).
   RANKING_DRIFT_ELO_PER_SQRT_DAY: z.string().transform(Number).default('4'),
   // What one observation is: 'game-shared' splits a match's weight across its
@@ -79,7 +84,7 @@ const envSchema = z.object({
 
   // --- the publishing bar (ranking/snapshot.ts) ---
   // No public rating below this many game observations...
-  RANKING_MIN_GAMES: z.string().transform(Number).default('10'),
+  RANKING_MIN_GAMES: z.string().transform(Number).default('8'),
   // ...or above this posterior SD, in Elo points.
   RANKING_MAX_UNCERTAINTY_ELO: z.string().transform(Number).default('120'),
   // Component size below which a rank is published but not presented as a

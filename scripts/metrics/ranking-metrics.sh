@@ -11,6 +11,8 @@
 # Usage:
 #   ./ranking-metrics.sh connectivity            # measure the co-play graph
 #   ./ranking-metrics.sh validate                # held-out accuracy vs Riot's tiebreakers
+#   ./ranking-metrics.sh communities             # Louvain communities vs connected components
+#   ./ranking-metrics.sh venues                  # per-venue aggregates (what a map view needs)
 #   ./ranking-metrics.sh bar                     # how many players clear each publishing bar
 #   ./ranking-metrics.sh fit                     # dry-run refit summary (writes nothing)
 #   ./ranking-metrics.sh all                     # everything
@@ -18,6 +20,8 @@
 #   --remote                 Read production DynamoDB (needs AWS credentials)
 #   --days N                 History window to replay (default: 400)
 #   --holdout-days N         Days held out for validation (default: 7)
+#   --resolution N           Louvain modularity resolution (default: 1; >1 means smaller communities)
+#   --metro-radius-km N      Venue single-linkage radius used as the geographic yardstick (default: 25)
 #   --file PATH              Read captured facts from an NDJSON file instead of a database
 #                            (one {externalId, results, roster} object per line - how a
 #                             regional sample is analysed before the backfill finishes)
@@ -34,7 +38,7 @@ PASSTHROUGH=()
 
 while [[ $# -gt 0 ]]; do
     case $1 in
-        connectivity|validate|bar|fit|all)
+        connectivity|communities|venues|validate|bar|fit|all)
             COMMAND="$1"
             shift
             ;;
@@ -42,11 +46,11 @@ while [[ $# -gt 0 ]]; do
             REMOTE=true
             shift
             ;;
-        --days|--holdout-days|--file|--set-table)
+        --days|--holdout-days|--file|--set-table|--resolution|--metro-radius-km)
             PASSTHROUGH+=("$1=$2")
             shift 2
             ;;
-        --days=*|--holdout-days=*|--file=*|--set-table=*)
+        --days=*|--holdout-days=*|--file=*|--set-table=*|--resolution=*|--metro-radius-km=*)
             PASSTHROUGH+=("$1")
             shift
             ;;

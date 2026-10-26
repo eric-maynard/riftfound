@@ -25,7 +25,9 @@
  * never has to filter a non-player item out of the results.
  *
  * Every rating in these items is on the published Elo-like scale (prior mean
- * 1500, 400/ln 10 points per logistic unit), never in the solver's natural
+ * `RANKING_ELO_ORIGIN`, 1200 by default, 400/ln 10 points per logistic unit -
+ * the anchor is a display offset and a stored item carries whatever anchor the
+ * refit that wrote it used), never in the solver's natural
  * units, and `uncertainty` is on that same scale so it renders as `+/- N`. The
  * solver's native log-odds SD is kept alongside as `uncertaintyLogOdds` for
  * anyone who needs it.

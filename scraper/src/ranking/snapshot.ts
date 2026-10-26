@@ -222,7 +222,7 @@ function scopedRating(
   const games = scopeFit.fit.gamesPlayed[player];
   const matches = scopeFit.fit.matchesPlayed[player];
   const uncertainty = sigma * ELO_PER_NAT;
-  const provisionalRating = natToElo(rating);
+  const provisionalRating = natToElo(rating, scopeFit.fit.options.eloOrigin);
   const decision = matches > 0
     ? verdict(games, uncertainty, componentSize, options)
     : { rated: false, reason: 'too-few-games' as ProvisionalReason, gamesUntilRated: options.minGames };
@@ -454,7 +454,7 @@ export function buildSnapshot(
           playerId: observations.players[p],
           scope: scopeFit.scope,
           date: utcDate(new Date(day * 86_400_000)),
-          rating: round(natToElo(scopeFit.fit.ratings[p][t])),
+          rating: round(natToElo(scopeFit.fit.ratings[p][t], scopeFit.fit.options.eloOrigin)),
           uncertainty: round(scopeFit.fit.sigmas[p][t] * ELO_PER_NAT),
           matchesPlayed: cumulativeMatches,
           gamesPlayed: cumulativeGames,
@@ -540,7 +540,7 @@ export function buildSnapshot(
           playerId: observations.players[p],
           displayName: observations.displayNames[p],
           tagLine: observations.tagLines[p],
-          rating: round(natToElo(rating)),
+          rating: round(natToElo(rating, scopeFit.fit.options.eloOrigin)),
           uncertainty: round(uncertainty),
           crossComponentUncertainty: round(crossComponentSigma(uncertainty, componentSize, priorSigmaElo)),
           gamesPlayed: scopeFit.fit.gamesPlayed[p],

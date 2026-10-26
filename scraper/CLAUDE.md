@@ -460,6 +460,7 @@ src/ranking/
 ├── sets.ts          # curated, source-cited set boundaries -> rating scopes
 ├── observations.ts  # stored results -> paired comparisons (flat typed arrays)
 ├── graph.ts         # the co-play graph: components, bridging, the measurements
+├── communities.ts   # Louvain communities on the same graph - measurement only
 ├── whr.ts           # the model: Whole-History Rating with a global prior
 ├── validate.ts      # held-out accuracy against Riot's own tiebreakers
 ├── snapshot.ts      # fit -> the derived items, and the publishing bar
@@ -632,6 +633,216 @@ In order of how much the answer is expected to move:
 4. `./ranking-metrics.sh bar --remote`, to confirm the publishing bar still
    admits a sensible share when the event mix is normal.
 
+### Is a scene a connected component? Measured: no, but don't switch yet
+
+`componentId` / `componentSize` / `regionLabel` are the output contract's answer
+to "which scene is this player in", and the 97.4% giant share above says that
+answer is already nearly vacuous: 7,531 of 7,732 players are in one component,
+so a "Scene" selector built on components offers one entry containing everybody.
+A single travelling player is enough to weld two cities together, because
+reachability is a transitive closure and does not care how thin the link is.
+`rankingCommunities.test.ts` pins that as an executable assertion: two six-player
+cliques joined by **one** match are one component.
+
+So the alternative was implemented and measured rather than argued about.
+`src/ranking/communities.ts` is Louvain modularity maximisation (Blondel 2008)
+over the co-play graph weighted by matches played, ~400 lines of arithmetic over
+typed arrays, **no new runtime dependency** - the same posture as the hand-rolled
+WHR solver. `./ranking-metrics.sh communities` is the report. **Nothing it
+computes is published**: no item, key or attribute reads it, and `componentId`
+still means a connected component.
+
+#### What the communities look like
+
+Complete California sample, resolution 1:
+
+| | components (incumbent) | Louvain communities |
+|---|---|---|
+| partitions the 7,732 players into | **29** | **51** |
+| largest holds | **97.4%** | **15.4%** (1,188 players) |
+| modularity | 0.0 by construction (one blob) | **0.8299** |
+| groups of >= 100 players | 1 | **14**, covering 91.5% |
+| groups of >= 8 players | 7 | 29, covering 99.2% |
+| compute time (7,732 nodes, 25,029 edges) | 21ms | **199ms** |
+
+Modularity 0.83 is high - the literature treats anything above ~0.3 as real
+community structure - so the dense groups are genuinely there and the giant
+component is hiding them, not absorbing them.
+
+#### Does a community correspond to a place?
+
+Mostly yes, and the exceptions are informative. Venues were single-linked into
+**metros** at 25km (46 of them) as the geographic yardstick:
+
+| compared against | ARI | NMI | best-match disagreement |
+|---|---|---|---|
+| metro (25km linkage) | 0.390 | **0.761** | 43.9% |
+| home venue | 0.112 | 0.671 | 80.7% |
+
+- **A community is not a venue.** 0.11 ARI against home venue: communities pool
+  several stores, which is what a scene is.
+- **A community is not a metro either**, but it is close to one and clearly
+  *about* geography: NMI 0.76. Of the 14 communities with >= 100 players, 11 have
+  >= 95% of their members' home venues inside one metro. 19 communities span more
+  than one metro, and 13 of the 46 metros are split across more than one
+  community - that split is the interesting half, because it is a *real* local
+  structure a map would not show: two groups of stores in the same metro whose
+  players do not actually play each other.
+- The exceptions are visible in the per-community rows: the largest community has
+  a 133km mean venue spread (a corridor, not a city) and two of the smaller ones
+  have dominant-metro purity of 38% and 34%, i.e. genuinely cross-metro circuits.
+
+And the complementary measurement, which is what a map view would lean on: a
+venue's players overwhelmingly belong to **one** community. Median share of a
+venue's player-match participations in its dominant community is **99.3%**
+(p10 = 76%). Venue -> community is nearly a function; community -> venue is not.
+
+#### How the two partitions behave as coverage grows
+
+The coverage question is the decisive one, so it is measured two ways. A missing
+event is a missing set of edges, and the two realistic shapes of partial coverage
+are not equivalent - events missing *at random* (optimistic: every venue keeps
+some edges) and only the first X% of the window captured (what a backfill walking
+the calendar produces).
+
+Chronological coverage, which reproduces the 40% -> 83.2% data point measured
+during the original sample fetch almost exactly:
+
+| coverage | matches | components | giant share | communities | largest community | modularity |
+|---|---|---|---|---|---|---|
+| 10% | 1,689 | 44 | **24.9%** | 52 | 16.5% | 0.909 |
+| 20% | 3,172 | 52 | **37.1%** | 63 | 13.5% | 0.902 |
+| 40% | 9,924 | 44 | **82.8%** | 64 | 11.4% | 0.874 |
+| 60% | 15,783 | 26 | **94.7%** | 48 | 12.7% | 0.860 |
+| 80% | 21,790 | 18 | **98.1%** | 40 | 16.3% | 0.840 |
+| 100% | 26,102 | 29 | **97.4%** | 51 | 15.4% | 0.830 |
+
+Random coverage for comparison: 36.0% giant share at 10%, 92.2% at 40%, 97.4% at
+100% - uniformly more optimistic than the chronological curve at the same
+coverage, which is why a production number should be read against the
+chronological one.
+
+**The projection.** The giant share is saturating: the last 20 points of coverage
+move it by 0.3pp (random) or -0.7pp (chronological, having already overshot to
+98.1%). A complete region lands at **97-98%**, and there is no coverage level
+beyond which it falls. Nationally the mechanism is the same one level up: each
+contiguous travel region fills to ~97%, and interregional events then merge those
+too. So the component partition's information content goes to **zero** as the
+backfill completes - it is the one measurement here that is monotone in the
+direction nobody wants.
+
+Against that, **the community partition's shape is coverage-invariant**: 40-65
+communities and a largest community of 11-17% across the entire range, with
+modularity drifting slowly down from 0.91 to 0.83 as more cross-scene edges
+appear. It answers the same question at every coverage level, which is exactly
+the property a UI label needs and the property components lack.
+
+#### Stability: the real cost
+
+Re-run on a subsample and ask how many players would see a different scene label
+(greedy best-match between the two labellings, so this is partition churn, not id
+churn):
+
+| subsample | community churn | community ARI | component churn | component ARI |
+|---|---|---|---|---|
+| 90% of matches, seed 1 | 17.7% | 0.747 | **0.0%** | 0.995 |
+| 90% of matches, seed 2 | 13.4% | 0.799 | **0.0%** | 1.000 |
+| 90% of matches, seed 3 | 12.3% | 0.757 | **0.1%** | 0.975 |
+| 80% of matches, seed 4 | 13.4% | 0.776 | **0.3%** | 0.939 |
+
+**This is the honest cost and it is not small: roughly one player in seven would
+see a different scene next refit.** Restricting to players in communities of >= 100
+does not help (13-18%), so it is not a small-group artifact; it is boundary
+players, who genuinely play at two scenes and whose assignment is a close call.
+Components are near-perfectly stable by comparison - and that stability is worth
+nothing, because the thing being stably reported is "everyone".
+
+Note what churn is *not* measured on: community **ids** are derived from the
+smallest player UUID in the community, exactly as component ids are, so an id
+changes whenever that one member moves. Id churn is therefore strictly worse than
+partition churn. Any switch would need ids carried forward by overlap (match a
+new community to last refit's by Jaccard and keep the old id above some
+threshold) rather than derived from membership - which is a piece of persisted
+state the ranking pass currently, deliberately, does not have.
+
+#### Robustness to the event mix
+
+The sample window is Radiance's prerelease fortnight and 83% of its matches are
+Pre-Rift, so the partition was re-fitted with whole tiers deleted:
+
+| removed | players left | communities | modularity | community ARI vs full | components | giant share | component ARI vs full |
+|---|---|---|---|---|---|---|---|
+| Nexus Night (16% of matches) | 7,369 | 54 | 0.836 | **0.783** | 35 | 97.1% | 0.954 |
+| Pre-Rift (83% of matches) | 1,956 | 79 | 0.913 | **0.538** | 63 | 66.5% | **0.041** |
+
+Deleting 83% of the matches degrades the community partition (ARI 0.54) and
+*destroys* the component partition (ARI 0.041 - indistinguishable from chance),
+while community modularity actually rises to 0.91. The density structure is
+intrinsic; the connectivity structure is an artifact of how much data happens to
+be present.
+
+#### Cost of switching
+
+- **Compute: negligible.** 199ms for 7,732 players and 25,029 edges, against a
+  WHR fit that takes several seconds on the same data. Louvain is near-linear in
+  edges, so a national graph an order of magnitude larger is a couple of seconds
+  per refit. It would be recomputed every refit, like everything else.
+- **Write volume: negligible.** A `COMMUNITY#<id>` catalogue item per community
+  (51 at regional scale) plus two attributes on each profile and ladder row.
+- **Contract: the expensive part, and it is not a rename.** `componentId` is
+  doing a *statistical* job as well as a product one -
+  `crossComponentUncertainty` is `sqrt(uncertainty^2 + sigma0^2/componentSize)`,
+  and that formula is only correct for a connected component, because the
+  floating offset it corrects for is a property of connectivity and nothing else.
+  Redefining `componentId` to mean "community" would silently make that number
+  wrong (every community sits *inside* the giant component, where the offset is
+  already pinned to 1.7 points). So a switch is an **addition**: `communityId` /
+  `communitySize` / `communityLabel` alongside the component fields, with the
+  UI's "Scene" selector reading the new fields and `componentId` retained for
+  scale honesty and `positionsSuppressed`.
+- **One genuine bonus.** Community ladders are *more* defensible than the
+  component ladders they would replace, not less: all 51 communities live inside
+  one connected component, so their ratings are on one scale and a position
+  inside a community board - and a comparison *between* two community boards - is
+  meaningful. Today `scope=component:<id>` produces one board of 7,531 players
+  and 28 near-empty ones, which as a product is nothing.
+  `RANKING_MAX_COMPONENT_LADDERS` (50) would start to bind, since communities
+  outnumber components.
+
+#### Recommendation
+
+**Components are the wrong primitive for a scene and the data says so. Do not
+switch this week; switch when a label-stability mechanism exists.** Specifically:
+
+1. **Keep `componentId` exactly as it is, permanently.** It answers "are these
+   two ratings on the same scale", and nothing else can. It should stop being
+   presented as a scene.
+2. **Do not ship a component-based "Scene" selector.** At 97.4% giant share it
+   lists one entry containing everybody, labelled by whichever venue wins the
+   `displayCity` vote. That is worse than no selector, and the backfill is making
+   it worse, not better. This is the actionable half and it does not need
+   Louvain.
+3. **Communities are the right definition when they can be *named* stably.** The
+   blocker is 12-18% label churn per refit plus id churn on top; a selector whose
+   entries reshuffle daily is not shippable. The fix is overlap-carried ids
+   (Jaccard match against the previous refit, keep the old id above ~0.5) and a
+   hysteresis rule so a boundary player does not flip on a single match. Both
+   need persisted state across refits, which is a real design change to a pass
+   whose whole premise is statelessness.
+4. **Geography as the label, inference as the definition.** With venue ->
+   community at 99.3% median purity, a community can be *named* from its
+   dominant metro cheaply and reliably, which is the shape the original instinct
+   described: geography becomes a label and a prior, not the definition.
+5. **Re-measure after the prerelease falls out of the window.** Community ARI
+   0.54 under Pre-Rift removal says the current partition is partly a property of
+   one unusual fortnight. `./ranking-metrics.sh communities --remote` over a
+   normal month is the gate, and it is the same gate the connectivity numbers are
+   already waiting on.
+
+The honest summary of the threshold question: **components stopped being
+informative at around 60% coverage of a single region** (94.7% giant share), and
+production is heading through that point, not toward it.
+
 ### The model: Whole-History Rating with a global prior
 
 `src/ranking/whr.ts`. Chosen over regularized Bradley-Terry and over sequential
@@ -653,7 +864,7 @@ is the piece that makes clustered play survivable. A component's common offset
 gets posterior N(0, sigma0^2/n), so a disconnected cluster lands *at* the prior
 mean with wide per-player uncertainty - an explicit "no evidence either way"
 rather than a floating scale. `rankingModel.test.ts` pins this with two
-disconnected round robins: both centre on 1500 to within 0.1 points, both keep
+disconnected round robins: both centre on the anchor to within 0.1 points, both keep
 their internal order, and identical evidence in either pool yields identical
 ratings.
 
@@ -676,6 +887,56 @@ opponents' ratings being known exactly. So the profile carries two numbers -
 `crossComponentUncertainty` = sqrt(uncertainty^2 + sigma0^2/componentSize) for
 comparisons across them. For a two-player island the second collapses to the
 prior SD, which is the honest statement.
+
+### Where the scale is anchored
+
+An unrated player sits at **1200**, not 1500. `RANKING_ELO_ORIGIN` (default
+`1200`, `DEFAULT_ELO_ORIGIN` in `whr.ts`) is the whole of it.
+
+This is a **display offset and nothing else.** The solver works in natural
+(logistic) units with a prior mean of 0; everything it fits is a rating
+*difference*, and the prior SD, the Wiener drift and the posterior SDs are all
+widths rather than positions. So moving the anchor is an affine shift of a
+relative scale and cannot change a prediction. That is a claim worth checking
+rather than asserting, so it was checked three ways on the complete California
+sample (1,011 events, 26,102 matches, 7,732 players):
+
+| | 1500 | 1200 |
+|---|---|---|
+| held-out accuracy | 63.4% | **63.4%** |
+| held-out log loss | 0.6390 | **0.6390** |
+| held-out Brier | 0.2242 | **0.2242** |
+| Newton sweeps to converge | 11 | **11** |
+| final `maxDelta` | 7.618772469079608e-5 | **7.618772469079608e-5** |
+| rated players | 2,603 | **2,603** |
+| components / giant share | 29 / 97.4% | **29 / 97.4%** |
+
+1. `./ranking-metrics.sh validate --file sample.ndjson` before and after is
+   **byte-identical output**, the prior-SD sweep and the observation-level sweep
+   included.
+2. A full `buildSnapshot` at each anchor over the same observations: all 7,732
+   profiles, all 10,366 leaderboard rows and all 16,907 rating-history points
+   differ by **exactly 300.0 points** (largest deviation 1.1e-13, i.e. float
+   noise), with **zero** differences in rank order, `rated`, `provisional`,
+   `provisionalReason`, `gamesUntilRated`, `uncertainty`, `componentId` or
+   `componentSize`.
+3. `rankingModel.test.ts` now asserts against `DEFAULT_ELO_ORIGIN` rather than a
+   literal, so the "two disconnected clusters both centre on the anchor" test
+   proves the invariance instead of hard-coding one side of it.
+
+**Stored numbers only move on the next refit.** Player profiles, ladder rows and
+rating-history points all carry absolute ratings, and the pass does not migrate
+them - it rewrites them. So between deploying this and the next refit completing
+(up to `RANKING_REFIT_INTERVAL_HOURS`, default 24), the table holds 1500-anchored
+values. A refit rewrites every one of them, and because the rank is in the sort
+key the usual `RANK#` pruning handles the changeover; no backfill step exists or
+is needed. Mixed anchors inside one snapshot are impossible - every item in a
+snapshot is written from one fit, which carries one `eloOrigin`.
+
+Why 1200 at all: it is a product choice, not a measured one. 1200 is the
+new-player number in the chess and TCG idiom most Riftbound players will arrive
+with, where 1500 reads as "average of a rated field". Nothing in the model
+prefers either.
 
 ### Measured: the knobs
 
@@ -1034,6 +1295,70 @@ outcomes in that player's match log, `matchesPlayed` exactly the number of
 entries, and the same per set. Everything comes from one pass over one
 observation set, so it holds by construction, and `rankingStore.test.ts` pins it.
 
+### A venue-level aggregate, and the map view
+
+A map of venues - zoomable down to one store, showing who plays there - needs
+nothing the facts do not already carry. Every match fact has `shopExternalId`
+plus latitude and longitude, and on the California sample **390 of 390 venues
+have both** a shop id and coordinates, so there is no missing-data case to
+design around. The numbers, measured with `./ranking-metrics.sh venues`:
+
+| | |
+|---|---|
+| venues | **390** |
+| with coordinates / with a shop id | 390 / 390 (**100%**) |
+| distinct (player, venue) pairs | **12,885** |
+| players per venue | median **22**, p10 7, p90 72, max 209 |
+| *rated* players per venue (bar 8/120/8) | median **11**, p90 43, max 123 |
+| venues with at least one rated player | **368 of 390** |
+| venues with 8+ rated players | **258 of 390** |
+| median share of a venue's play in one community | **99.3%** |
+
+So a per-venue item would carry: the shop id, a centroid (the mean of its
+events' coordinates - stores do not move, but two sources geocode them ~20m
+apart), distinct players, rated players, matches, events, first and last seen,
+and the dominant community or metro with its share. The last one is cheap
+precisely because of the 99.3% figure: a venue has one scene, so a single
+dominant id plus a purity number is an honest summary rather than a lossy one.
+
+**Should the pass emit `VENUE#<id>`?** Yes, and the argument is the same one that
+produced `COMPONENT#` and `SET#`: a reader that needs the list cannot get it
+without a scan, and the fix is cheap only before anything depends on inferring
+it. Concretely:
+
+- **Shape it like the existing catalogues.** `PK: VENUE#<shopExternalId>`,
+  `SK: PROFILE`, plus `GSI1PK: 'VENUE'` / `GSI1SK: 'VENUE#<id>'` so the whole
+  catalogue is **one Query** on an index that already exists and projects ALL.
+  This is exactly the gap that had to be retrofitted onto `SET#` and
+  `COMPONENT#` after `/api/sets` was found inferring set ids from player
+  profiles and serving `name: null`.
+- **390 items regionally**, a few thousand nationally. Against a refit that
+  already rewrites ~7,700 profiles and ~17,000 rating points, free.
+- **A map view wants the catalogue, not a per-venue fetch.** The first render is
+  "every venue with a pin", which is one Query; the drill-down to one store is
+  then a `GetItem`. Without the GSI key it is a Scan, and that is the retrofit
+  the brief is right to want to avoid.
+- **"Everyone who plays here" is the one piece that is *not* free.** A venue's
+  roster is 22 players at the median but 209 at the maximum, and it is a
+  many-to-many relation: 12,885 pairs regionally. Three options, in order of
+  preference: (a) denormalise a capped top-N roster onto the venue item ordered
+  by matches played there, which answers the drill-down in one read and is what a
+  map UI actually shows; (b) `VENUE#<id>` / `PLAYER#<playerId>` rows, one per
+  pair, so the roster is a Query and the full list is available - 12,885 items
+  regionally, which is within budget but is the first time this pass would write
+  a per-relationship item; (c) put the venue list on the *player* profile only
+  (it already carries `venues`) and reconstruct the reverse direction in the API,
+  which is a scan and should not be built.
+- **Do not reuse `venueKey`'s `geo:` fallback as an item id.** `venueKey` falls
+  back to coordinates rounded to ~1km for an organizer that never resolved to a
+  shop, which is right for a *graph* node and wrong for a durable key - the id
+  would move if the geocode moved. A venue item should exist only for a real
+  `shopExternalId`, with unresolved organizers left off the map until
+  `shopMatch.ts` resolves them.
+
+None of this is built. It is recorded here because the GSI key and the id choice
+are the two decisions that are cheap now and expensive later.
+
 ### Idempotency, and the cost of a refit
 
 The pass is a **batch refit from scratch**, deliberately. Incremental state would
@@ -1113,6 +1438,12 @@ matches is ~50MB that way.
   evidence, by construction. Note the flip side of prerelease attribution: a set
   can have a *well-populated* ladder built almost entirely from sealed prerelease
   play, which is not the same thing as constructed skill in that set.
+- **A component being read as a scene.** It is not one, and the giant share is
+  the proof: at 97.4% a component-keyed "Scene" selector offers one entry
+  holding everybody. The failure gets *worse* with coverage, not better - see
+  "Is a scene a connected component?" - so a component id must never be the
+  thing a region picker is built on, however convenient it is that one is
+  already on every row.
 - **A cross-component rank being read as a placement.** Hence
   `positionsSuppressed` and `giantComponentShare` on every board. If the giant
   share ever falls, the global board has to stop being the default.
@@ -1137,6 +1468,8 @@ matches is ~50MB that way.
 ```bash
 cd scripts/metrics
 ./ranking-metrics.sh connectivity --remote   # measure the co-play graph
+./ranking-metrics.sh communities --remote    # Louvain communities vs components (nothing published)
+./ranking-metrics.sh venues --remote         # per-venue aggregates, for a map view
 ./ranking-metrics.sh validate --remote       # held-out accuracy + knob sweeps
 ./ranking-metrics.sh bar --remote            # what each publishing bar admits
 ./ranking-metrics.sh fit --remote            # dry-run refit (writes nothing)
@@ -1357,6 +1690,9 @@ Player ratings (`src/ranking/`):
 The model (see "Measured: the knobs"):
 
 - `RANKING_PRIOR_SIGMA_ELO`: Prior SD of a player's rating (default: `150`)
+- `RANKING_ELO_ORIGIN`: Where the published scale is anchored - an unrated
+  player's rating (default: `1200`). A display offset: no prediction depends on
+  it, but stored ratings only pick up a change on the next refit.
 - `RANKING_DRIFT_ELO_PER_SQRT_DAY`: Wiener drift allowance (default: `4`)
 - `RANKING_OBSERVATION_LEVEL`: `game-shared` | `game` | `match` (default: `game-shared`)
 - `RANKING_WEIGHT_SCALE`: Total weight of one match (default: `1`)
@@ -1383,10 +1719,18 @@ The rating model's tests are worth knowing about by name, because they pin the
 properties the design rests on rather than its surface:
 
 - `rankingModel.test.ts` - a known-answer fit (a strict dominance order comes out
-  in order, symmetric about 1500, with the unbeaten player the *least* certain),
+  in order, symmetric about the anchor, with the unbeaten player the *least*
+  certain),
   **two disconnected clusters proving the prior stops them floating**, bye
   rejection by every route a bye id can reach a fact row, and uncertainty
   narrowing monotonically with evidence while never exceeding the prior.
+- `rankingCommunities.test.ts` - the case against components as a scene
+  primitive, as assertions: two cliques joined by **one** match are one
+  component and two communities, Louvain's labelling is deterministic (an
+  order-dependent scene label would reshuffle in the UI between identical runs),
+  the reported modularity agrees with an independent evaluation of the same
+  labelling, and the partition-agreement metrics score a relabelling as
+  identical.
 - `rankingSets.test.ts` - set partitioning, including that an unpublished
   boundary stays unpublished and that filling one in splits the era.
 - `rankingStore.test.ts` - the storage shape against a real throwaway SQLite

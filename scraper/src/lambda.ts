@@ -803,6 +803,7 @@ async function runRanking(context: Context): Promise<{ statusCode: number; body:
       deadline: Date.now() + context.getRemainingTimeInMillis() - RANKING_RESERVED_MS,
       whr: {
         priorSigmaElo: env.RANKING_PRIOR_SIGMA_ELO,
+        eloOrigin: env.RANKING_ELO_ORIGIN,
         driftEloPerSqrtDay: env.RANKING_DRIFT_ELO_PER_SQRT_DAY,
         observationLevel: env.RANKING_OBSERVATION_LEVEL,
         weightScale: env.RANKING_WEIGHT_SCALE,
