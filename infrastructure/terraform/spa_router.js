@@ -14,8 +14,8 @@
 // status its origin produced.
 //
 // Attached ONLY to the default cache behavior (S3-Frontend). Requests matched
-// by the /api/* or /iykyk* behaviors never invoke it at all; the guards below
-// are belt-and-braces so a future behavior change can't resurrect the bug.
+// by the /api/* behaviors never invoke it at all; the guard below is
+// belt-and-braces so a future behavior change can't resurrect the bug.
 //
 // Deployed by Terraform (aws_cloudfront_function.spa_router in main.tf) — it is
 // NOT part of ./deploy.sh frontend.
@@ -28,12 +28,6 @@ function handler(event) {
   // The API namespace must always return its real status and its real JSON
   // body, 404 and 400 included.
   if (uri === '/api' || uri.indexOf('/api/') === 0) {
-    return request;
-  }
-
-  // /iykyk* is a separate project on this distribution (EC2-backed) with its
-  // own cache behavior and its own routing. Never touch it.
-  if (uri.indexOf('/iykyk') === 0) {
     return request;
   }
 

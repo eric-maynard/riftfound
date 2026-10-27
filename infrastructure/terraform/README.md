@@ -157,12 +157,11 @@ to explain it.
 |---|---|
 | `/`, `/rankings`, `/rankings/players/<uuid>`, `/events/<id>`, `/ranking/*` | rewritten to `/index.html`, query string and fragment preserved |
 | `/api/*` | not rewritten — real status, real JSON, 400 and 404 included |
-| `/iykyk*` | not rewritten — separate project, separate behavior |
 | anything with a file extension (`/assets/*.js`, `/favicon.png`) | not rewritten — a missing file returns 403 from S3 (OAC grants `s3:GetObject` only, so S3 answers AccessDenied rather than NoSuchKey) |
 
-`/api/*` and `/iykyk*` have their own `ordered_cache_behavior` blocks, so those
-requests never invoke the function at all. The guards at the top of
-`spa_router.js` are belt-and-braces against a future behavior change.
+The `/api/*` patterns have their own `ordered_cache_behavior` blocks, so those
+requests never invoke the function at all. The guard at the top of
+`spa_router.js` is belt-and-braces against a future behavior change.
 
 A CloudFront Function rather than Lambda@Edge: it is ~15 lines of string
 matching with no I/O, it runs at every edge POP in sub-millisecond time, and it

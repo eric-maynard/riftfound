@@ -49,9 +49,8 @@ Fully serverless architecture:
 
 ### CloudFront routing
 
-One distribution (`E2TPPYH1N9YLG5`) fronts three things, by cache behavior:
-`/api/*` -> API Gateway, `/iykyk*` -> the separate iykyk EC2 app, everything
-else -> the S3 frontend.
+One distribution (`E2TPPYH1N9YLG5`) fronts two things, by cache behavior:
+`/api/*` -> API Gateway, everything else -> the S3 frontend.
 
 SPA deep links are served by `aws_cloudfront_function.spa_router`
 (`terraform/spa_router.js`) on viewer-request of the **default behavior only**.

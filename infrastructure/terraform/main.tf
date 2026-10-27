@@ -198,17 +198,6 @@ resource "aws_eip" "riftfound" {
   tags     = { Name = "riftfound-eip" }
 }
 
-# Optional lookup for an additional EIP-backed origin. Toggled via
-# var.extra_origin_eip_name_tag; empty by default so this data source
-# is not evaluated.
-data "aws_eip" "extra_origin" {
-  count = var.extra_origin_eip_name_tag != "" ? 1 : 0
-  filter {
-    name   = "tag:Name"
-    values = [var.extra_origin_eip_name_tag]
-  }
-}
-
 # S3 Bucket for Frontend
 resource "aws_s3_bucket" "frontend" {
   bucket = "riftfound-frontend-${random_id.bucket_suffix.hex}"
@@ -240,6 +229,11 @@ resource "aws_s3_bucket_lifecycle_configuration" "logs" {
   rule {
     id     = "expire-old-logs"
     status = "Enabled"
+
+    # Every object in the bucket. The provider requires exactly one of
+    # `filter` or `prefix` per rule; an empty filter is the "match all" form
+    # and the modern replacement for the long-deprecated top-level `prefix`.
+    filter {}
 
     expiration {
       days = 90
@@ -310,7 +304,7 @@ resource "aws_s3_bucket_policy" "frontend" {
 resource "aws_cloudfront_function" "spa_router" {
   name    = "riftfound-spa-router-${var.environment}"
   runtime = "cloudfront-js-2.0"
-  comment = "Rewrite SPA deep links to /index.html; leave /api/*, /iykyk* and real files alone"
+  comment = "Rewrite SPA deep links to /index.html; leave /api/* and real files alone"
   publish = true
   code    = file("${path.module}/spa_router.js")
 }
@@ -494,21 +488,6 @@ resource "aws_cloudfront_distribution" "main" {
     }
   }
 
-  # Optional extra origin (see var.extra_origin_*)
-  dynamic "origin" {
-    for_each = var.extra_origin_eip_name_tag != "" ? [1] : []
-    content {
-      domain_name = data.aws_eip.extra_origin[0].public_dns
-      origin_id   = "ExtraOrigin"
-      custom_origin_config {
-        http_port              = 80
-        https_port             = 443
-        origin_protocol_policy = "http-only"
-        origin_ssl_protocols   = ["TLSv1.2"]
-      }
-    }
-  }
-
   default_cache_behavior {
     allowed_methods        = ["GET", "HEAD", "OPTIONS"]
     cached_methods         = ["GET", "HEAD"]
@@ -521,7 +500,7 @@ resource "aws_cloudfront_distribution" "main" {
     }
 
     # SPA deep-link rewrite. Deliberately ONLY on the default behavior: the
-    # /api/* and /iykyk* behaviors must never run it.
+    # /api/* behaviors must never run it.
     function_association {
       event_type   = "viewer-request"
       function_arn = aws_cloudfront_function.spa_router.arn
@@ -562,30 +541,6 @@ resource "aws_cloudfront_distribution" "main" {
 
     cache_policy_id          = aws_cloudfront_cache_policy.api.id
     origin_request_policy_id = aws_cloudfront_origin_request_policy.api.id
-  }
-
-  # Optional extra cache behavior (see var.extra_origin_*)
-  dynamic "ordered_cache_behavior" {
-    for_each = var.extra_origin_path_pattern != "" && var.extra_origin_eip_name_tag != "" ? [1] : []
-    content {
-      path_pattern           = var.extra_origin_path_pattern
-      allowed_methods        = ["DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"]
-      cached_methods         = ["GET", "HEAD"]
-      target_origin_id       = "ExtraOrigin"
-      viewer_protocol_policy = "redirect-to-https"
-      min_ttl                = 0
-      default_ttl            = 0
-      max_ttl                = 0
-      compress               = true
-      forwarded_values {
-        query_string = true
-        # CloudFront disallows Connection/Host/Upgrade in the legacy header
-        # whitelist — WebSocket upgrade is handled automatically for custom
-        # origins regardless of what's forwarded here.
-        headers = ["Origin", "Access-Control-Request-Headers", "Access-Control-Request-Method", "Authorization", "Sec-WebSocket-Key", "Sec-WebSocket-Version", "Sec-WebSocket-Protocol", "Sec-WebSocket-Extensions"]
-        cookies { forward = "all" }
-      }
-    }
   }
 
   # NO custom_error_response here, on purpose.

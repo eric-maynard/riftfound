@@ -5,7 +5,7 @@
 //
 // It models the two things that decide what a request gets: which cache
 // behavior CloudFront picks (the function is attached to the default behavior
-// ONLY, so /api/* and /iykyk* never reach it) and then the function itself.
+// ONLY, so /api/* never reaches it) and then the function itself.
 // No AWS calls, no dependencies, plain `node`.
 //
 // It also rejects syntax the cloudfront-js runtime does not support — the
@@ -24,7 +24,6 @@ const handler = new Function(src + '; return handler;')();
 // behaviour has the function attached, so model that too.
 function behaviourFor(uri) {
   if (uri === '/api/' || uri.indexOf('/api/') === 0) return 'api';   // path_pattern /api/*
-  if (uri.indexOf('/iykyk') === 0) return 'iykyk';                   // path_pattern /iykyk*
   return 'default';
 }
 
@@ -52,11 +51,6 @@ const cases = [
   ['/api/events/99999999',                          '',             'api',     '/api/events/99999999'],
   ['/api/events',                                   'lat=37&lng=-1','api',     '/api/events'],
   ['/api/health',                                   '',             'api',     '/api/health'],
-  // iykyk: separate project, untouched
-  ['/iykyk',                                        '',             'iykyk',   '/iykyk'],
-  ['/iykyk/',                                       '',             'iykyk',   '/iykyk/'],
-  ['/iykyk/decks/123',                              '',             'iykyk',   '/iykyk/decks/123'],
-  ['/iykyk/assets/app.js',                          '',             'iykyk',   '/iykyk/assets/app.js'],
   // Real files: must keep their real status, so URI must NOT be rewritten
   ['/assets/index-abc123.js',                       '',             'default', '/assets/index-abc123.js'],
   ['/assets/index-STALE.css',                       '',             'default', '/assets/index-STALE.css'],

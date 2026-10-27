@@ -64,18 +64,3 @@ variable "mapbox_access_token" {
   default     = ""
   sensitive   = true
 }
-
-# Optional extra CloudFront origin. Left empty by default so the distribution
-# ignores it entirely; set both values in a private tfvars file to route a path
-# pattern to a custom HTTP origin (e.g. an EIP DNS name).
-variable "extra_origin_eip_name_tag" {
-  description = "Name tag of an EIP to add as an additional CloudFront origin (empty = disabled)"
-  type        = string
-  default     = ""
-}
-
-variable "extra_origin_path_pattern" {
-  description = "Path pattern routed to the extra origin (empty = disabled). Example: /foo/*"
-  type        = string
-  default     = ""
-}
