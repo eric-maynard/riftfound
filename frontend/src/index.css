@@ -319,6 +319,10 @@ a:hover {
   margin: -1px;
   overflow: hidden;
   clip: rect(0, 0, 0, 0);
+  /* `clip` is deprecated and only ever clipped the painting; `clip-path` is
+     its replacement. Neither removes the box from its containing block's
+     scroll area, which is why the fix for that lives on `.table-scroll`. */
+  clip-path: inset(50%);
   white-space: nowrap;
   border: 0;
 }
@@ -1496,6 +1500,10 @@ select:disabled {
   margin: -1px;
   overflow: hidden;
   clip: rect(0, 0, 0, 0);
+  /* `clip` is deprecated and only ever clipped the painting; `clip-path` is
+     its replacement. Neither removes the box from its containing block's
+     scroll area, which is why the fix for that lives on `.table-scroll`. */
+  clip-path: inset(50%);
   white-space: nowrap;
   border: 0;
 }
@@ -2084,6 +2092,16 @@ select:disabled {
 
 .table-scroll {
   overflow-x: auto;
+  /* A containing block, so the table's own absolutely-positioned descendants
+     are clipped by this scroller instead of escaping it.
+
+     `.sr-only` pins itself with `position: absolute` and no offsets, so it
+     sits at its static position - which, inside a 674px table, is past a
+     375px viewport. With no positioned ancestor its containing block was the
+     viewport, so `overflow-x` here never clipped it and RecordBar's "4 wins,
+     0 losses" dragged the whole page 29px sideways on a phone. The text is
+     invisible either way; what leaked was the scroll area. */
+  position: relative;
 }
 
 .data-table {
