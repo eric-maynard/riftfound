@@ -197,6 +197,89 @@ for 150 anchors). In Lambda the pass also takes a `deadline` and stops early
 rather than eating the invocation's time budget; unswept anchors simply roll over
 to the next run.
 
+### Riot's `tournamentType` enum, in full
+
+Read out of Riot's web bundle on 2026-10-26, from chunk `0zmnko3-hmh1v.js`
+(787,431 bytes, 9th of the 36 chunks the events page references), which carries
+the generated TypeScript enum verbatim. **Eleven values:**
+
+| tier group | values |
+|---|---|
+| local | `LEARN_TO_PLAY` `NEXUS_NIGHT` `OPEN_PLAY` `PRE_RIFT` |
+| premier | `SUMMONER_SKIRMISH` |
+| competitive | `NEXUS_CUP` `CHALLENGE_SERIES` `SHOWDOWN_SERIES` `REGIONAL` `CONTINENTAL` `WORLD_CHAMPIONSHIP` |
+
+Three things worth knowing:
+
+- **There is no `RC` and no `RQ`.** The championship and qualifier tiers are
+  spelled `WORLD_CHAMPIONSHIP`, `CONTINENTAL` and `REGIONAL`, with the three
+  series tiers between those and `SUMMONER_SKIRMISH`. A weighting table keyed on
+  invented literals would match nothing and look like it was working.
+- **Riot's own filter UI exposes only five of the eleven**, grouped exactly as
+  "Local" and "Premier" above. The six competitive tiers are in the schema and
+  not yet filterable - consistent with no such event having been scheduled.
+- **The same object literal holds the format enum**: `CONSTRUCTED`,
+  `LIMITED_DRAFT`, `LIMITED_SEALED`, with a separate game-format enum
+  (`ONE_V_ONE`, `TWO_V_TWO`) in the filter options. That is the vocabulary
+  `playFormat` is stored in, verbatim.
+
+How it was found, which is the part that will need repeating: the enum is **not**
+in the persisted-query manifest (that holds operation documents, not schema
+types). It is in a page chunk, so the route is the same crawl the hash
+self-heal uses - fetch the events page, read the `static/chunks/*.js` names it
+references, probe them and grep for `NEXUS_NIGHT`. One chunk of 36 held it.
+Riot's *server-rendered page* also carries the filter's `eventTypeOptions` array
+with the five user-visible values and their labels, which is a cheaper check and
+a smaller answer.
+
+#### `mapEventType` now maps all eleven, and that moves some rows
+
+Until 2026-10-26 it mapped three and **everything else collapsed into `Other`**,
+which made a casual Open Play indistinguishable from a World Championship in our
+own data - and therefore made any tier-keyed rating weight impossible to
+express. All eleven are now mapped, with Riot's own labels except that
+`NEXUS_NIGHT` keeps the singular `Nexus Night` this codebase and the frontend
+filter have always used.
+
+Two of the previously-unmapped values are in the feed **today**: one live query
+each from San Francisco and New York returned 200 upcoming events as
+`NEXUS_NIGHT` 188, `OPEN_PLAY` 9, `LEARN_TO_PLAY` 3.
+
+What moves, counted over the 47,179 stored `prb-` events in a -59/+90 day window
+on 2026-10-26:
+
+| stored `eventType` | all | already past |
+|---|---|---|
+| Nexus Night | 21,883 | 8,325 |
+| Pre-Rift | 12,204 | 12,187 |
+| Summoner Skirmish | 11,600 | 0 |
+| **Other** | **1,492** | **787** |
+
+So **up to 1,492 rows (3.2%) change label**, and the live sample says they are
+overwhelmingly Open Play and Learn to Play - *casual* tiers below Nexus Night,
+not championships. Three consequences to be explicit about, since this field is
+read outside the scraper:
+
+1. **The calendar's event-type chips change for those rows.** They stop reading
+   `Other` and start reading `Open Play` / `Learn to Play`. The frontend's
+   "Format" filter matches on `eventType`, so new labels behave the way `Other`
+   does today rather than appearing as filter options - nothing breaks, nothing
+   new is selectable until the frontend adds them.
+2. **Only upcoming rows pick it up.** `hasEventChanged` includes `eventType`, so
+   an upcoming row acquires the new label on the next anchor sweep. The 787 rows
+   whose event has already happened keep `Other` **permanently**, for the same
+   reason `playFormat` cannot be backfilled: the search API is upcoming-only.
+3. **`mergeEventType` now overwrites more UVS categories.** Its rule is "Riot's
+   enum wins unless Riot said `Other`", and a Riot event that used to say `Other`
+   now says `Open Play`, so it will win where it previously deferred to the UVS
+   name-inferred category. That is the intended direction - the UVS inference is
+   82.8% accurate and Riot's is an enum - but it is a behaviour change, not a
+   no-op.
+
+An unrecognised value still falls through to `Other`, and must: the enum
+demonstrably grows, and no record is ever dropped for carrying a value we do not
+know.
+
 ### The event format is captured here or nowhere
 
 Riot's `RiftboundTournamentConfig.format` (`CONSTRUCTED`, `SEALED`, …) is stored
@@ -251,6 +334,78 @@ answer however the formula changes. Nothing here stores a derived rating.
 Locally (`index.ts`) it runs at the end of each cycle, after the other two
 sources. In production it is its own Lambda invocation (see "Lambda layout").
 
+### Which rows are results candidates
+
+A stored event is a candidate when a **Riot tournament id can be derived from
+it**, which is two row shapes, not one:
+
+1. a `prb-` `external_id` - a Riot event the UVS feed never duplicated. The id
+   is the prefix stripped.
+2. any row whose `url` is a Riot event page - which is what a **merged** row
+   looks like. The id is parsed out of the URL.
+
+`resultsCandidateTournamentId` (in `sources/playriftbound.ts`, beside the
+converter that writes those URLs) is the single test, and both backends' loaders
+call it: `loadEventFactCandidatesDynamoDB` over the day partitions, and the
+SQLite query, where the `LIKE` on the URL is only a pre-filter.
+
+**The second shape was missing, and it was the largest gap in this pipeline.**
+Selecting on the `prb-` prefix alone - which is what the loader did until
+2026-10-27 - made every merged event *structurally invisible* to this pass. The
+merge keeps the UVS record as the row of record (same `external_id`, see
+"Merging matched pairs"), so a matched event has a numeric UVS id and no prefix
+to match on; it was never a candidate, so it was never queued, so it could never
+have results. Measured against production on 2026-10-27, lookback 45:
+
+| | before | now |
+|---|---|---|
+| candidates in the window | 22,852 | **26,904** |
+| of those, merged rows | 0 | **4,052** |
+| merged rows with any capture already | - | **0** - the proof that none was ever queued |
+| **results-due** | 15,928 | **19,352** (+3,424) |
+| roster-due | 141 | **314** (+173) |
+
+At the 71% of finished events that hold real pairings (see "An empty capture is
+a fact"), 3,424 newly-queued results are worth roughly **2,400 events with
+standings** - projected on that rate, not yet observed, since the queue has not
+reached them. The investigation that found this gap put steady-state trophy
+coverage on a fully-backfilled window at 22.8% today against ~34.7% with these
+rows, a ~52% relative increase and the largest single win available in this
+pipeline. The 173 extra rosters are the better half per row: a *dated* roster
+only exists on an **upcoming** event's page, so those were hours from being
+unrecoverable rather than merely uncaptured.
+
+**Why `url` is the route.** `url` is Riot-owned in the merge policy (UVS has no
+event URL on any row; Riot has one on 100%), so Riot's event page URL survives
+on the merged row - it is the one Riot-derived identifier that does. Verified
+rather than assumed, on one day partition (`DATE#2026-10-18`, 2,977 stored rows):
+62 rows were merged and **62 of 62** carried a
+`https://playriftbound.com/en-us/events/<id>` URL, while all 389 UVS-only rows
+carried **no URL at all**. So a parseable URL and a merged row are the same set
+today, and a UVS-only row cannot sneak in.
+
+**The parser is a URL parse, not a regex** (`tournamentIdFromEventUrl`). It
+tolerates what legitimately varies - the scheme, `www.`, the locale segment and
+its case (this converter writes `en-us`, the user-facing links elsewhere in the
+repo use `en-US`), a trailing slash, a query string, a fragment - and rejects a
+hostname that merely *contains* `playriftbound.com`, which is the failure a loose
+regex would ship: `playriftbound.com.evil.test` passes any `includes` or
+`endsWith` test. Hosts are compared exactly against a two-entry allow-list after
+a leading `www.` is dropped, the path must be `/events/<id>` with at most one
+locale segment in front, and the id must be a run of digits.
+
+**What the derived id does *not* change is the key the capture is written
+under.** `RESULTS#`/`ROSTER#` are still built from the event row's own
+`external_id`, so a merged event's facts land under its **UVS** id. That is
+deliberate and it is what makes the whole thing work end to end: the calendar
+and the backend's `tournament-availability` BatchGet ask about the event ids they
+already hold, which for a merged event *is* the UVS id, so the capture is where
+the reader looks. The Riot id travels on the fact's `tournamentId` attribute -
+which is where the API reads it for the "view on playriftbound" link, falling
+back to the prefix-strip only for a fact written before that attribute existed.
+Nothing downstream of the loader can tell a URL-derived candidate from a
+`prb-` one.
+
 ### Why page HTML and not GraphQL
 
 Both facts are embedded, public and unauthenticated, in the Next.js RSC flight
@@ -260,7 +415,9 @@ payload of the event detail page:
 GET https://playriftbound.com/en-US/events/<tournamentId>
 ```
 
-`<tournamentId>` is our `external_id` with the `prb-` prefix stripped. The JSON
+`<tournamentId>` is the id the candidate loader derived - our `external_id` with
+the `prb-` prefix stripped, or, for a merged row, the id parsed out of its `url`
+(see "Which rows are results candidates"). The JSON
 arrives `\"`-escaped inside a `self.__next_f.push([1,"…"])` script, so the
 payload is read back out with `JSON.parse` of the string literal (which also
 handles `\\`, `\n` and `\uXXXX` - a naive replace of `\"` corrupts those). The
@@ -308,6 +465,127 @@ stored as `partial` and re-checked once, `RESULTS_RECHECK_AFTER_MS` (24h) later,
 after which the partial capture is accepted as-is. A roster already on file is
 never replaced - a dated registrant list cannot be reconstructed afterwards, so
 a post-event capture only fills a roster we never took.
+
+### How far back the backfill can reach
+
+The pass works **oldest-first**, so the window it looks through decides what is
+recoverable at all: an event that ages out before the queue reaches it is lost
+for good. `PLAYRIFTBOUND_RESULTS_LOOKBACK_DAYS` was **21** and is now **45**.
+Three limits stack, and all three were measured against production on
+2026-10-26 rather than reasoned about:
+
+| limit | measurement | binds when |
+|---|---|---|
+| **event-row retention** | `DATE#` partitions hold rows back to 2026-08-28 (**-59d**) and **zero** at -60d and earlier - `deleteOldEvents(60)` runs every coordinator cycle, and a results capture needs an event row as its candidate | always; this is the hard ceiling |
+| **when `prb-` rows start existing** | **2026-10-01** (227 rows). The whole of September holds **4** rows (09-25, 09-26, 09-28) and nothing before 09-25 | today; this is the binding limit |
+| **Riot still serving the page** | 5 of 6 spot-checked 2026-09-25..10-03 pages returned HTTP 200 carrying the `esportsTournamentId` marker, 3 of them with `FINALIZED` rounds. The sixth 500s on every attempt - a broken event, not an age effect, since another event the same day is fine | not yet |
+
+The honest headline: **raising the lookback does not recover the Vendetta era.**
+Vendetta ran 2026-07-31..10-23, and this scraper's first `prb-` event row is
+2026-10-01, because `CompeteTournamentSearch` is upcoming-only - it will never
+return an event that had already happened. Most of that set's play was over
+before we were looking, and no lookback, retention policy or backfill reaches
+it. A store showing 5 Vendetta players is showing the truth about our data.
+
+What the change does recover, measured with `loadEventFactCandidates` against
+production:
+
+| lookback | candidates | results-due | candidate load |
+|---|---|---|---|
+| **21** (before) | 21,426 | 15,208 | 27.5s |
+| **26** | 22,842 | **16,383** | 26.4s |
+| **45** (now) | 22,846 | 16,387 | 29.7s |
+| 58 | 22,846 | 16,387 | 28.9s |
+
+So the entire recoverable gain is the step from 21 to 26 days: **1,179 events**
+that were about to become unreachable. The receipts are specific - 2026-10-01..03
+held 983 `prb-` events and **0** results captures, because they fell out of a
+21-day window while the queue was still working through 10-09. Everything past
+26 days is worth 4 events, because the history does not go back further.
+
+45 is therefore chosen for **headroom, not for today's data**: it reaches
+everything that exists, stays 14 days inside the measured 59-day retention
+floor, costs ~3s of extra candidate load out of an ~840s budget
+(900s Lambda timeout less `PLAYRIFTBOUND_RESULTS_RESERVED_MS`), and needs no
+further change as the history lengthens over the next two months. From roughly
+2026-12-10 the retention ceiling becomes the binding limit instead, and 45 will
+start clipping about a fortnight of recoverable history - at which point the
+queue will long since have drained, so the window only matters for recovering
+from an outage.
+
+#### The queue, and how long it takes to drain
+
+Measured on production 2026-10-27, at lookback 45, **with merged rows
+included** (see "Which rows are results candidates" - adding them is the reason
+this table moved):
+
+| | |
+|---|---|
+| candidates in the window | **26,904** (22,852 `prb-` + 4,052 merged) |
+| already have a results capture | 5,567 - all of them `prb-` |
+| **results-due** | **19,352** (15,928 `prb-` + 3,424 merged) |
+| roster-due (upcoming, inside `ROSTER_LEAD_MS`) | 314 (141 + 173) |
+| page slots per day | 500/run x 12 runs/day (`rate(2 hours)`) = **6,000** |
+| new work arriving per day | ~1,370: ~1,200 as before, plus ~86 merged events/day x 2 fetches |
+| **net drain** | ~4,630/day |
+
+**So about 4.3 days, and 4.5-5 with re-checks and failures** - up from the 3.5-4
+days the `prb-`-only queue read, which is the cost of the +3,424 and is paid
+once. 500 per run fits the budget on measurement rather than hope: a 250-item run
+used 376s (1.5s per page - 0.8s fetch plus the 1s politeness delay), so 500 is
+~750s plus ~37s of candidate loading against the 840s available.
+
+**The new candidates interleave; they do not jump the queue.** Worth checking
+rather than assuming, because `selectDueEventFacts` is strictly oldest-first on
+the event's start time and an injection at the head would stall the existing
+backfill. Measured, results-due in run-sized slices of 500:
+
+| run | dates covered | merged share |
+|---|---|---|
+| 1-4 | 2026-10-01..10-08 | 274, 149, 249, 357 of 500 |
+| 5-6 | 2026-10-08..10-15 | **499, 500** of 500 |
+| 7 | 10-15..10-16 | 101 of 500 |
+| 8-14 | 10-16..10-17 | 6-18 of 500 |
+
+Merged rows are spread across the whole window, 49-235 per day, because they are
+events like any other - and only **70 of 3,424** are strictly older than the
+oldest `prb-` row still due, so almost nothing is inserted *ahead* of the
+backlog. Runs 5 and 6 read as near-total takeovers and are the opposite: on
+2026-10-08..10-15 the `prb-` queue is **already drained** (0 due), so the merged
+rows are filling a hole rather than displacing anything. The real delay to the
+existing backlog is the 2,049 merged rows dated before 2026-10-16, where its
+bulk sits: **about 4 runs, ~8 hours**, once.
+
+Two things that keep the per-run cap honest as the lookback grows. The candidate
+load is one Query per UTC day plus a `BatchGetItem` of two fact keys per
+candidate (~53,800 keys at this volume, up from ~45,700 with merged rows
+included, in serial 100-key chunks), so it scales with the window and is now
+~37s of the 840s. And `batchGetFactMeta` retries
+`UnprocessedKeys` four times: a `RESULTS#` item can be 300KB, so a chunk can
+come back heavily deferred, and a key dropped after four attempts reads as "not
+captured" and costs one wasted re-fetch. Neither is new, but both get bigger
+with the window, so they are the things to watch if the drain stalls.
+
+#### Rosters are a different story, and worse
+
+Raising the lookback recovers **results**. It does **not** recover rosters, and
+the difference is not a detail:
+
+- A **dated** roster - every registrant with their own `acceptedTermsAt`, which
+  is what reconstructs a signup curve retroactively - exists only on the page of
+  an event that has **not yet started**. All six old event pages fetched in the
+  spot-check above contained **zero** occurrences of `acceptedTermsAt`: a played
+  event's page shows pairings, not registrants.
+- What a late capture gets instead is `normalizeRosterFromResults`, the
+  `source: 'participants'` fallback: who was in the field, with their
+  `esportsTeamId`, and `registeredAt: null`. Enough to know who played; nothing
+  about when they signed up, and nothing at all for the 29% of finished events
+  whose organizer never ran pairings.
+- 4,698 of the 22,846 candidates (20.6%) have a roster on file. The rest will
+  only ever have the thin version, or none.
+
+So the recovery is asymmetric by construction, and the roster half of the window
+closes daily whatever the lookback is.
 
 ### An empty capture is a fact, not an error
 
@@ -460,7 +738,9 @@ src/ranking/
 ├── sets.ts          # curated, source-cited set boundaries -> rating scopes
 ├── observations.ts  # stored results -> paired comparisons (flat typed arrays)
 ├── graph.ts         # the co-play graph: components, bridging, the measurements
-├── communities.ts   # Louvain communities on the same graph - measurement only
+├── communities.ts   # Louvain communities on the same graph - measurement
+├── scenes.ts        # venue -> scene, persisted between deliberate re-clusterings
+├── recluster.ts     # the re-clustering CLI: propose, diff, write only when told
 ├── whr.ts           # the model: Whole-History Rating with a global prior
 ├── validate.ts      # held-out accuracy against Riot's own tiebreakers
 ├── snapshot.ts      # fit -> the derived items, and the publishing bar
@@ -632,6 +912,12 @@ In order of how much the answer is expected to move:
    in one fortnight.
 4. `./ranking-metrics.sh bar --remote`, to confirm the publishing bar still
    admits a sensible share when the event mix is normal.
+5. `./scene-recluster.sh --remote` (dry run). Today it proposes 1,042 scenes of
+   2.1 stores each and the CLI refuses it; a drained backfill should give
+   something like the regional picture (7-8 stores per scene, modularity ~0.83).
+6. `./ranking-metrics.sh validate --remote`'s tier-weight sweep, once any event
+   above Nexus Night has finished. Today every tier above it has **zero**
+   matches, so the table cannot be evaluated at all.
 
 ### Is a scene a connected component? Measured: no, but don't switch yet
 
@@ -842,6 +1128,172 @@ switch this week; switch when a label-stability mechanism exists.** Specifically
 The honest summary of the threshold question: **components stopped being
 informative at around 60% coverage of a single region** (94.7% giant share), and
 production is heading through that point, not toward it.
+
+**All five of those recommendations are now implemented**, with the stability
+mechanism recommendation 3 asked for. See the next section.
+
+### Scenes: the persisted answer to "which store belongs to which scene"
+
+`src/ranking/scenes.ts`. A **scene** is a Louvain community of the co-play
+graph, projected onto stores and **persisted between deliberate
+re-clusterings**. It exists because the section above established two things at
+once: communities are the right definition of a scene, and recomputing them
+every refit is unshippable.
+
+The resolution is a product decision the measurement could not make: scenes are
+re-clustered **occasionally and on purpose**, not as a by-product of a refit.
+That single change turns the blocker into a non-issue - between two
+re-clusterings a store's scene cannot move at all, not by a point of modularity
+and not by one travelling player.
+
+#### The model, in one line each
+
+- **A scene belongs to the venue, not the player.** Every venue is assigned to
+  the community holding the largest share of its player-match participations,
+  and that share is stored as the venue's `purity`. This is honest rather than
+  convenient: the median venue plays **99.3%** of its matches inside one
+  community (p10 76%), so venue -> community is nearly a function.
+- **A player's scene is their home venue's scene.** One hop, no new inference.
+- **`componentId` is untouched, permanently.** It answers "are these two ratings
+  on the same scale" and `crossComponentUncertainty` is only correct for a
+  connected component. Scenes are an **addition**; redefining the component
+  would silently corrupt that number. The two coexist on every item.
+- **Nothing is clustered during a refit.** The rating pass reads the stored
+  assignment (`loadSceneAssignment`, one `GetItem`) and joins it. A missing,
+  empty or unreadable assignment yields `sceneId: null` everywhere and the
+  ladder is unaffected - scenes are never invented on the fly.
+
+#### How an id survives a re-clustering
+
+This was the actual blocker, and it is not the partition churn: a community id
+derived from its membership is renamed whenever that membership changes, so **id
+churn is strictly worse than partition churn**. Ids are therefore **carried
+forward from the previous assignment by Jaccard overlap**, keeping the old id
+above `carryJaccard` (0.5, the threshold the stability analysis recommended).
+Two proposed scenes cannot both exceed 0.5 against the same previous scene, so
+the carry-over needs no tie-break rule; proposals are matched largest-first, and
+a scene that matches nothing gets a fresh content-derived id rather than
+inheriting a name.
+
+**The overlap is computed on venue sets, not player sets.** A shop id is a
+durable identity that outlives a season; a scene's player population turns over
+continuously. Venues are the more stable signal for the thing being *named*, and
+they are also what the assignment governs. Be precise about what this does and
+does not inherit from the measurements above: the 12-18% figures are **player**
+label churn, from the experiment that motivated this design.
+`diffSceneAssignments` reports **venue** churn. They are different numbers and
+are not quoted as if they were - which is why the operator path leads with the
+diff rather than with a published churn target.
+
+Labels come from geography, as recommendation 4 described: a scene is named from
+the modal city label of its venues, and a carried id keeps its old label when no
+venue in it is geocoded yet, so a name does not flicker to null between runs.
+
+#### What is stored
+
+One row, `SCENE_ASSIGNMENT`, rewritten only by an operator:
+
+```
+version, generatedAt, resolution, carryJaccard,
+venues: [{ venue, shopExternalId, sceneId, purity }],
+scenes: [{ sceneId, label }],
+stats:  { venues, scenes, players, matches, modularity, communities, medianPurity, splitVenues },
+previous: <the assignment this one replaced, one level deep>
+```
+
+Gzipped on DynamoDB, for the reason `SCRAPE_CYCLE` is: the payload scales with
+the number of stores and the uncompressed JSON for a national assignment plus
+one level of rollback history would run at the 400KB item limit. `previous` is
+deliberately **one** level - rollback is one command, and the chain cannot grow
+without bound. SQLite mirrors it as a single-row `ranking_scene_assignment`
+table so `./dev.sh` and the storage tests exercise the real path.
+
+This is **the only cross-refit state the rating pass has**, and it is read-only
+from the pass's point of view. The "batch refit from scratch" premise is intact:
+the refit still derives every number from the facts, and the one thing it does
+not derive is the thing that must not move.
+
+#### The two cautions, honoured
+
+- **A capped roster, not 12,885 relationship rows.** `VENUE#` carries a
+  `topPlayers` list of `RANKING_VENUE_TOP_PLAYERS` (25) entries ordered by
+  matches played at that store, plus `topPlayersTruncated`. 25 covers the median
+  venue's 22 players outright; the maximum is 209 and the rest is the long tail
+  of one-night attendees a drill-down truncates anyway. The alternative -
+  `VENUE#<id>` / `PLAYER#<id>` per pair - would be the first per-relationship
+  item this pass writes, for a list nobody renders in full.
+- **`venueKey`'s `geo:` fallback is never an id.** It rounds coordinates to
+  ~1km, which is right for a graph node and wrong for a durable key: the id
+  would move if the geocode moved. A `VENUE#` item exists only for a real
+  `shopExternalId`, and an unresolved organizer stays off the map until
+  `shopMatch.ts` resolves it. On the California sample this excluded nothing -
+  390 of 390 venues had both a shop id and coordinates.
+
+#### Re-clustering: the operator path
+
+`scripts/metrics/scene-recluster.sh` (CLI: `src/ranking/recluster.ts`). Read-only
+unless `--write`, and the sequence is always **cluster, diff against what is
+live, print the churn and the stores that would move, then write**.
+
+**The diff is the gate; modularity is not.** A partition can have excellent
+modularity and still rename every scene, which is the one failure a reader
+notices. The CLI prints a verdict with explicit stop conditions - venue churn
+over 25%, under 70% of scene ids carried, modularity under 0.3, median purity
+under 0.9 - and the runbook in
+[scripts/metrics/README.md](../scripts/metrics/README.md) says what to look at,
+what a bad result looks like and how to roll back.
+
+The knobs carry over from the measurements above:
+
+| knob | default | why |
+|---|---|---|
+| `--resolution` (`RANKING_SCENE_RESOLUTION`) | **1** | the measured stability optimum: swept against partition churn, 0.5 -> 19.7%, **1 -> 12.1%**, 2 -> 21.8% |
+| `--carry-jaccard` | **0.5** | overlap-carried ids are what keep names stable; 0.5 also makes the match unambiguous |
+| `--days` | 400 | the replay window, as everywhere else |
+
+A written accepted assignment changes nothing immediately: the scene fields on
+the stored items are rewritten by the **next refit**, up to
+`RANKING_REFIT_INTERVAL_HOURS` later. That is a feature - the diff is reviewable
+before anything a reader sees moves.
+
+#### Measured: production is not ready to be clustered yet
+
+The first dry run against production, 2026-10-27, 43-day replay, nothing
+written:
+
+| | |
+|---|---|
+| matches replayed | **56,257** |
+| players | 27,318 |
+| venues with a real shop id | **2,149** |
+| scenes proposed | **1,042** |
+| Louvain communities | 1,257 |
+| **stores per scene** | **2.1** |
+| modularity | **0.9844** |
+| median venue purity | **100.0%** |
+| venues below 60% purity | 43 |
+
+**Do not accept that assignment, and the CLI now says so.** 2.1 stores per scene
+is not a scene map: a scene is supposed to *pool* several stores - that is what
+makes it a scene rather than a venue - and modularity 0.9844 next to it is the
+same symptom rather than reassurance. The comparison that makes it obvious is
+the complete California sample, where 390 venues gave **51** communities (7.6
+venues each) at modularity 0.83.
+
+The cause is coverage, not the method. The results backfill has reached roughly
+2026-10-16 of a window that runs to today, so most of the cross-venue edges that
+join stores into a scene simply have not been captured yet - the same mechanism
+the chronological coverage table measures, one level up. A fragmented co-play
+graph has *more* communities and *higher* modularity, so both numbers move in
+the reassuring direction while the answer gets worse.
+
+So `warnings()` gates on stores-per-scene (STOP below 3) ahead of everything
+else, because it is the one check a first run cannot skip - there is no previous
+assignment to compute churn against. The honest state today: **the plumbing is
+in place, nothing is assigned, and every `sceneId` is null.** Re-run the dry run
+once the backfill has drained (~4 days from 2026-10-26) and the national picture
+should look like the regional one.
+
 
 ### The model: Whole-History Rating with a global prior
 
@@ -1094,6 +1546,92 @@ Summoner Skirmish has finished events and `format` has been captured
 prospectively for long enough to key on directly. The comparison is already
 wired into `./ranking-metrics.sh validate`, so it is one command away.
 
+### Measured: is an event tier worth a weight?
+
+The request was to weight a match by the tier it was played at -
+Championship > Qualifier > Skirmish > Nexus Night > everything else - on the
+reasonable intuition that a result at a Championship says more about true skill
+than a casual weeknight. The mechanism is implemented
+(`WhrOptions.tierWeights`, `RANKING_TIER_WEIGHTS`) and **ships neutral: every
+tier counts the same.** That is a measurement, not an unfinished edge.
+
+**First, the distribution, because that decides whether weighting can help at
+all.** Production facts, 40-day replay, 2026-10-26:
+
+| tier | matches | share | players | whole record in this tier | median matches/player |
+|---|---|---|---|---|---|
+| Nexus Night | 31,236 | **55.5%** | 15,768 | **12,800** | 3 |
+| Pre-Rift | 23,286 | **41.4%** | 13,660 | **10,728** | 3 |
+| Other | 1,735 | 3.1% | 1,121 | 655 | 3 |
+| *everything above Nexus Night* | **0** | **0%** | 0 | - | - |
+
+Two numbers in that table do the work. **Zero matches exist in any tier above
+Nexus Night** - no Summoner Skirmish has finished, and no competitive-tier event
+has been scheduled at all - so the requested ordering is a weight on an empty
+set. And **23,528 of the ~29,000 players have their entire record inside one
+tier**, which a weight merely *rescales*: a rating is identified by differences,
+so scaling every observation a player has cannot move their rating, only narrow
+their posterior SD.
+
+**Then the gate.** `./ranking-metrics.sh validate --remote --days 40
+--holdout-days 11` sweeps candidate tables on a temporal split - 28,287 training
+matches, 26,390 held out, 2,838 of them between two players the fit had seen:
+
+| table | tiers it weights | accuracy | log loss | Brier |
+|---|---|---|---|---|
+| **neutral (DEFAULT)** | 0 | **59.2%** | 0.6681 | 0.2377 |
+| ladder, 1.5x per tier | 2 | 58.9% | 0.6668 | 0.2371 |
+| ladder, 2x per tier | 2 | 58.9% | 0.6678 | 0.2376 |
+| competitive 2x / casual 0.5x | 9 | 59.2% | **0.6681** | **0.2377** |
+| Pre-Rift 0.5x | 1 | 59.2% | **0.6681** | **0.2377** |
+
+Read it carefully, because the two identical rows are the finding:
+
+- **"competitive 2x / casual 0.5x" scores identically to neutral to four
+  decimal places** - the requested shape of the table, scoring exactly as if it
+  were not there, because none of the nine tiers it names exists in the data.
+  That is the empirical version of the distribution table above.
+- **"Pre-Rift 0.5x" is identical too**, for a subtler reason worth recording:
+  the prerelease fortnight falls *inside the held-out window* here, so the
+  training set is almost entirely Nexus Night and down-weighting Pre-Rift has
+  almost nothing to act on.
+- **The only variant that moves is one that down-weights the dominant tier, and
+  it is indistinguishable from a global `weightScale` change.** "Ladder 1.5x"
+  puts Nexus Night at 0.667 across a single-tier training set, and its scores
+  (58.9% / 0.6668 / 0.2371) match `game-shared, scale 0.7` (59.0% / 0.6670 /
+  0.2372) from the same run. So its 0.0013-nat log-loss gain is the
+  already-measured `weightScale` effect, not a tier effect - and it costs 0.3pp
+  of accuracy. 0.0013 nats is inside the noise band this document already
+  established for the three observation levels (0.0015).
+
+**So: do not weight tiers today.** Not because the idea is wrong - it is
+plausible and the plumbing is in place - but because there is nothing yet to
+weight, and the one measurable variant is a knob we already swept under a
+different name.
+
+Three failure modes the neutral default avoids, which are the reason to keep it
+neutral rather than "harmless":
+
+- **A weight narrows the posterior SD.** Up-weighting a tier is arithmetically
+  "those matches happened more often", so it shrinks the uncertainty the
+  publishing bar is set on. Players could clear 8 games / 120 SD on no extra
+  real evidence. `rankingModel.test.ts` pins that this is what happens.
+- **Rarity plus sparsity is variance, not signal.** With a median of 3-5 matches
+  per player, a high weight on a rare tier lets a handful of matches dominate a
+  few players' curves while most of the ladder is untouched. A noisier ladder
+  looks sharper.
+- **An unknown tier must not default low.** `defaultTierWeight` is 1 for the
+  same reason `mapEventType` falls through to `Other`: the enum grows, and
+  defaulting a new tier to a discount would silently devalue a whole tier of
+  real competitive play the first time Riot ships one.
+
+**What to re-run, and when.** The day the competitive tiers have finished
+events: the same `validate` command, reading the distribution table first. The
+ordering to try is the product one, and the gate is the measurement rather than
+the intuition. Until then the table is in place, documented, and *untested
+against real data for the tiers it was asked for* - which is exactly what it
+should say.
+
 ### Publishing honestly: the bar, and what a rank means
 
 The confidence gate lives **in the data**, on the item - `provisional`,
@@ -1242,10 +1780,17 @@ backend API and the ranking UI; additions are safe, renames are not.**
 | leaderboard header | `RANKING_META#<scope>` | `PROFILE` |
 | component profile | `COMPONENT#<id>` | `PROFILE` |
 | set profile | `SET#<id>` | `PROFILE` |
+| **venue profile** | **`VENUE#<shopExternalId>`** | **`PROFILE`** |
+| **scene profile** | **`SCENE#<sceneId>`** | **`PROFILE`** |
 | scope directory | `RANKING_INDEX` | `RANKING_INDEX` |
 | match-log marker | `RANKING_LOG#<eventId>` | `RANKING_LOG#<eventId>` |
+| scene assignment (not derived) | `SCENE_ASSIGNMENT` | `SCENE_ASSIGNMENT` |
 
 `scope` is `all`, `set:<id>`, `component:<id>` or `set:<id>#component:<id>`.
+Scenes do **not** add a scope: the player profile and every ladder row carry
+`sceneId` / `sceneLabel` so a board can be filtered by scene without a new
+ladder, and whether scenes deserve ladders of their own is a decision to take
+with the API rather than by writing them.
 
 - **A player page is one Query** on `PLAYER#<uuid>`: profile, chart and match log
   arrive together, separated by their SK prefixes.
@@ -1256,14 +1801,17 @@ backend API and the ranking UI; additions are safe, renames are not.**
 - **The board header is in its own partition** (`RANKING_META#<scope>`) rather
   than as a `META` row inside the board, so a reader Querying a board never has
   to filter a non-player item out of the results.
-- **`COMPONENT#` and `SET#` exist so the region selector and `/api/sets` are one
-  Query each**, instead of inferring the lists by scanning players.
-- **The two catalogues are enumerable; the per-player items are not.** `SET#<id>`
-  and `COMPONENT#<id>` carry GSI1 keys - `GSI1PK: 'SET'` / `'COMPONENT'`,
-  `GSI1SK: '<PARTITION>#<id>'` - so the whole catalogue is **one Query** with no
+- **`COMPONENT#`, `SET#`, `VENUE#` and `SCENE#` exist so the region selector,
+  `/api/sets`, a venue map and a scene selector are one Query each**, instead of
+  inferring the lists by scanning players.
+- **The four catalogues are enumerable; the per-player items are not.**
+  `SET#<id>`, `COMPONENT#<id>`, `VENUE#<id>` and `SCENE#<id>` carry GSI1 keys -
+  `GSI1PK: 'SET'` / `'COMPONENT'` / `'VENUE'` / `'SCENE'`,
+  `GSI1SK: '<PARTITION>#<id>'` - so each whole catalogue is **one Query** with no
   scan and no new index (GSI1 already exists and projects ALL). A single shared
-  partition per catalogue is right because there are a handful of sets ever and
-  components number in the dozens.
+  partition per catalogue is right because there are a handful of sets ever,
+  components number in the dozens, scenes in the dozens, and venues in the
+  hundreds regionally or low thousands nationally.
 
   This was missing originally, and the symptom was not obvious: the items existed
   and held the authoritative data (`SET#s4` → Vendetta, release 2026-07-31, 1,228
@@ -1295,13 +1843,13 @@ outcomes in that player's match log, `matchesPlayed` exactly the number of
 entries, and the same per set. Everything comes from one pass over one
 observation set, so it holds by construction, and `rankingStore.test.ts` pins it.
 
-### A venue-level aggregate, and the map view
+### Venue items, and the map view
 
-A map of venues - zoomable down to one store, showing who plays there - needs
-nothing the facts do not already carry. Every match fact has `shopExternalId`
-plus latitude and longitude, and on the California sample **390 of 390 venues
-have both** a shop id and coordinates, so there is no missing-data case to
-design around. The numbers, measured with `./ranking-metrics.sh venues`:
+**This is built.** A map of venues - zoomable down to one store, showing who
+plays there - needs nothing the facts do not already carry: every match fact has
+`shopExternalId` plus latitude and longitude, and on the California sample
+**390 of 390 venues have both**, so there is no missing-data case to design
+around. The numbers, measured with `./ranking-metrics.sh venues`:
 
 | | |
 |---|---|
@@ -1314,50 +1862,54 @@ design around. The numbers, measured with `./ranking-metrics.sh venues`:
 | venues with 8+ rated players | **258 of 390** |
 | median share of a venue's play in one community | **99.3%** |
 
-So a per-venue item would carry: the shop id, a centroid (the mean of its
-events' coordinates - stores do not move, but two sources geocode them ~20m
-apart), distinct players, rated players, matches, events, first and last seen,
-and the dominant community or metro with its share. The last one is cheap
-precisely because of the 99.3% figure: a venue has one scene, so a single
-dominant id plus a purity number is an honest summary rather than a lossy one.
+`VENUE#<shopExternalId>` / `SK: PROFILE`, with `GSI1PK: 'VENUE'` /
+`GSI1SK: 'VENUE#<id>'`, carrying:
 
-**Should the pass emit `VENUE#<id>`?** Yes, and the argument is the same one that
-produced `COMPONENT#` and `SET#`: a reader that needs the list cannot get it
-without a scan, and the fix is cheap only before anything depends on inferring
-it. Concretely:
+| field | notes |
+|---|---|
+| `venue` | `shop:<id>`, the graph's own key, for joining to the reports |
+| `shopExternalId` | the item's id, and the only id it is ever keyed on |
+| `name` | the shops table's city label; null until reverse geocoding lands |
+| `latitude` / `longitude` | the **mean** of the venue's events' coordinates - a store does not move, but the two sources geocode it ~20m apart, so the mean is stable where "whichever event was read last" is not |
+| `players`, `ratedPlayers`, `matches`, `events` | the aggregate a store page leads with |
+| `firstSeen` / `lastSeen` | earliest and latest event played there, ISO |
+| `sceneId`, `sceneLabel`, `scenePurity` | the scene it belongs to, and how true that is. Null until a re-clustering has been run |
+| `topPlayers` | up to `RANKING_VENUE_TOP_PLAYERS` (25) entries, ordered by matches at this store, each with the published rating and `rated` |
+| `topPlayersTruncated` | so a reader can say "and N others" |
 
-- **Shape it like the existing catalogues.** `PK: VENUE#<shopExternalId>`,
-  `SK: PROFILE`, plus `GSI1PK: 'VENUE'` / `GSI1SK: 'VENUE#<id>'` so the whole
-  catalogue is **one Query** on an index that already exists and projects ALL.
-  This is exactly the gap that had to be retrofitted onto `SET#` and
-  `COMPONENT#` after `/api/sets` was found inferring set ids from player
-  profiles and serving `name: null`.
-- **390 items regionally**, a few thousand nationally. Against a refit that
+Why this shape:
+
+- **The GSI key is the whole point.** A map's first render is "every venue with
+  a pin", which has to be one Query; the drill-down to one store is then a
+  `GetItem`. Without the index key it is a Scan, and this is exactly the gap
+  that had to be retrofitted onto `SET#` and `COMPONENT#` after `/api/sets` was
+  caught inferring set ids from player profiles and serving them with
+  `name: null`.
+- **390 items regionally, a few thousand nationally.** Against a refit that
   already rewrites ~7,700 profiles and ~17,000 rating points, free.
-- **A map view wants the catalogue, not a per-venue fetch.** The first render is
-  "every venue with a pin", which is one Query; the drill-down to one store is
-  then a `GetItem`. Without the GSI key it is a Scan, and that is the retrofit
-  the brief is right to want to avoid.
-- **"Everyone who plays here" is the one piece that is *not* free.** A venue's
-  roster is 22 players at the median but 209 at the maximum, and it is a
-  many-to-many relation: 12,885 pairs regionally. Three options, in order of
-  preference: (a) denormalise a capped top-N roster onto the venue item ordered
-  by matches played there, which answers the drill-down in one read and is what a
-  map UI actually shows; (b) `VENUE#<id>` / `PLAYER#<playerId>` rows, one per
-  pair, so the roster is a Query and the full list is available - 12,885 items
-  regionally, which is within budget but is the first time this pass would write
-  a per-relationship item; (c) put the venue list on the *player* profile only
-  (it already carries `venues`) and reconstruct the reverse direction in the API,
-  which is a scan and should not be built.
-- **Do not reuse `venueKey`'s `geo:` fallback as an item id.** `venueKey` falls
-  back to coordinates rounded to ~1km for an organizer that never resolved to a
-  shop, which is right for a *graph* node and wrong for a durable key - the id
-  would move if the geocode moved. A venue item should exist only for a real
-  `shopExternalId`, with unresolved organizers left off the map until
-  `shopMatch.ts` resolves them.
+- **The roster is capped and denormalised, not a relationship table.** 22
+  players at the median, 209 at the maximum, 12,885 pairs regionally. A capped
+  top-N answers the drill-down in one read and is what a map UI actually shows.
+- **One dominant scene plus a purity number is an honest summary**, and that is
+  only true because of the 99.3% figure. A venue whose purity is low is a
+  genuinely split store, which is worth showing rather than hiding.
+- **`venueKey`'s `geo:` fallback is never the id.** It rounds coordinates to
+  ~1km - right for a graph node, wrong for a durable key, because the id would
+  move if the geocode moved. Unresolved organizers are left off the map.
 
-None of this is built. It is recorded here because the GSI key and the id choice
-are the two decisions that are cheap now and expensive later.
+`SCENE#<sceneId>` / `SK: PROFILE`, `GSI1PK: 'SCENE'`, is the matching
+catalogue - `label`, `venueCount`, `playerCount`, `ratedCount`, `matchCount`,
+`medianPurity`, and `assignedAt` (when the **assignment** was made, which is not
+the refit time). Its membership comes from the stored assignment, so a scene
+cannot appear or vanish because a refit saw one more match; only its counts
+move. A player belongs to a scene via their **home** venue, so scene player
+counts partition the players rather than double-counting visitors - and
+`rankingScenes.test.ts` pins that the per-scene counts sum to the profile count.
+
+Pruning follows the same discipline as everything else: a venue whose last match
+ages out of the replay window, or a scene a re-clustering retires, is deleted by
+diffing against the scope directory (which now tracks `venueIds` and
+`sceneIds`), so the catalogue Query never serves a pin with no data behind it.
 
 ### Idempotency, and the cost of a refit
 
@@ -1462,21 +2014,49 @@ matches is ~50MB that way.
 - **Region labels are null until shops are geocoded.** They come from the shop
   row's `displayCity`, so a venue awaiting reverse geocoding yields an unlabelled
   component. The ladder still works; the region selector shows `Cluster <id>`.
+- **A scene being read before anything is assigned.** `sceneId` is null on every
+  item until an operator runs a re-clustering, and null is the normal value, not
+  a failure: nothing may treat it as an error and nothing may drop a record for
+  lacking one. A reader should fall back to "no scene", never to `componentId`,
+  which means something else entirely.
+- **A scene assignment accepted on a fragmented graph.** The first production
+  dry run produced 1,042 scenes of 2.1 stores each at modularity 0.9844, because
+  the backfill had not captured the cross-venue edges yet. Fragmentation raises
+  the community count *and* the modularity, so both of the numbers that look
+  reassuring move the wrong way. The stores-per-scene gate exists for exactly
+  this and is checked before everything else.
+- **A tier weight acting on an empty set.** `RANKING_TIER_WEIGHTS` keyed on a
+  tier with no events silently does nothing, and the measured proof is in the
+  sweep: the requested table scored identical to neutral to four decimal places.
+  Read the match distribution by tier *before* setting a weight, not after.
+- **The lookback drifting into the retention gap.** A results capture needs an
+  event row, and `deleteOldEvents(60)` removes those. 45 leaves 14 days of
+  margin; raising it past the high 50s without re-measuring retention would
+  mean querying day partitions whose rows are being deleted under the run, which
+  degrades silently - the candidate simply is not there.
 
 ### Metrics
 
 ```bash
 cd scripts/metrics
 ./ranking-metrics.sh connectivity --remote   # measure the co-play graph
-./ranking-metrics.sh communities --remote    # Louvain communities vs components (nothing published)
-./ranking-metrics.sh venues --remote         # per-venue aggregates, for a map view
-./ranking-metrics.sh validate --remote       # held-out accuracy + knob sweeps
+./ranking-metrics.sh communities --remote    # Louvain communities vs components (measurement only)
+./ranking-metrics.sh venues --remote         # per-venue aggregates + the scene in force
+./ranking-metrics.sh validate --remote       # held-out accuracy + knob sweeps, incl. tier weights
 ./ranking-metrics.sh bar --remote            # what each publishing bar admits
 ./ranking-metrics.sh fit --remote            # dry-run refit (writes nothing)
 ./ranking-metrics.sh all --file sample.ndjson  # analyse a captured regional sample
+
+./scene-recluster.sh --remote                # propose a scene re-clustering and diff it
+./scene-recluster.sh --remote --show         # print the assignment in force
+./scene-recluster.sh --remote --write        # accept it (the one write in this directory)
+./scene-recluster.sh --remote --rollback --write   # undo the last one
 ```
 
-All read-only. The `--file` form takes NDJSON of `{externalId, results, roster}`
+`ranking-metrics.sh` is entirely read-only. `scene-recluster.sh` is read-only
+**unless `--write`**, and it is the one deliberate write in `scripts/metrics/`:
+see the runbook in [scripts/metrics/README.md](../scripts/metrics/README.md) for
+when to re-cluster and what to check before accepting. The `--file` form takes NDJSON of `{externalId, results, roster}`
 objects, which is how a complete region can be measured before the production
 backfill reaches it.
 
@@ -1498,8 +2078,10 @@ page count and async-invokes the same function as:
   before its twin was known) is deleted. `PLAYRIFTBOUND_RESERVED_MS` (default
   300000) is held back from the sweep for that work.
 - one **playriftbound results pass** (`mode: 'playriftboundResults'`, DynamoDB
-  only), also with its own 15-minute budget. It reads the `prb-` event rows in a
-  -21/+2 day window off GSI1, BatchGets the *metadata* of the fact rows to see
+  only), also with its own 15-minute budget. It reads the event rows that
+  identify a Riot tournament - `prb-` rows *and* merged rows, whose id comes off
+  their `url` (see "Which rows are results candidates") - in a
+  -45/+2 day window off GSI1 (see "How far back the backfill can reach"), BatchGets the *metadata* of the fact rows to see
   what has already been captured (so concluding that 8,000 events need nothing
   costs a few dozen RCUs), and then fetches one page per due event. It works off
   the previous cycle's rows, so it does not wait for this cycle's workers.
@@ -1599,7 +2181,7 @@ are merged onto it (`src/merge.ts`):
 | field | winner | why |
 |---|---|---|
 | `eventType` | **Riot** | real `tournamentType` enum vs UVS name-regex inference (82.8% accurate, ~27% wrong outside prerelease week). Riot's generic `Other` does not overwrite a specific UVS category. |
-| `url` | **Riot** | UVS is null on every row; Riot has one on 100% |
+| `url` | **Riot** | UVS is null on every row; Riot has one on 100%. Load-bearing beyond display: it is the only Riot-derived identifier that survives on a merged row, so it is what makes a merged event a results candidate at all (see "Which rows are results candidates") |
 | `playerCount` | **UVS** | Riot returns an empty `registrantCounts` for ~70% of events, so its count is null 72% of the time. Riot only fills a UVS null. |
 | `description`, `imageUrl`, `endDate` | **UVS** | Riot's search API exposes none of the three |
 | `capacity`, `price` | **UVS** unless null | incumbent value; avoids rewriting rows every run |
@@ -1673,8 +2255,12 @@ future code path can write raw text to a table.
 - `PLAYRIFTBOUND_MAX_ANCHORS_PER_RUN`: Anchors swept per run (default: `150`)
 - `PLAYRIFTBOUND_QUERY_HASH`: Pin the persisted query hash (optional, normally self-healing)
 - `PLAYRIFTBOUND_RESULTS_ENABLED`: Enable the rosters + results pass (default: `true`)
-- `PLAYRIFTBOUND_RESULTS_MAX_EVENTS_PER_RUN`: Event pages fetched per run (default: `250`)
-- `PLAYRIFTBOUND_RESULTS_LOOKBACK_DAYS`: How far back to look for finished events awaiting a results capture (default: `21`)
+- `PLAYRIFTBOUND_RESULTS_MAX_EVENTS_PER_RUN`: Event pages fetched per run (default: `250`; production sets `500`)
+- `PLAYRIFTBOUND_RESULTS_LOOKBACK_DAYS`: How far back to look for finished
+  events awaiting a results capture (default: `45`). Bounded above by
+  `deleteOldEvents(60)` - a capture needs an event row as its candidate - and
+  below by when `prb-` rows start existing. See "How far back the backfill can
+  reach"; do not raise it past the high 50s without re-measuring retention.
 - `PLAYRIFTBOUND_RESULTS_RESERVED_MS`: Lambda time held back from the results pass (default: `60000`)
 
 The results pass shares `PLAYRIFTBOUND_REQUEST_DELAY_MS` for its rate limit.
@@ -1696,6 +2282,13 @@ The model (see "Measured: the knobs"):
 - `RANKING_DRIFT_ELO_PER_SQRT_DAY`: Wiener drift allowance (default: `4`)
 - `RANKING_OBSERVATION_LEVEL`: `game-shared` | `game` | `match` (default: `game-shared`)
 - `RANKING_WEIGHT_SCALE`: Total weight of one match (default: `1`)
+- `RANKING_TIER_WEIGHTS`: JSON override for the per-event-tier weight on a
+  match's evidence, keyed on the mapped `eventType`
+  (`{"World Championship": 2, "Learn to Play": 0.5}`). **Empty by default** -
+  every tier counts the same; see "is an event tier worth a weight?" for the
+  measurement that chose that.
+- `RANKING_DEFAULT_TIER_WEIGHT`: Weight for a tier the table does not mention,
+  including every value Riot adds to its enum later (default: `1`)
 - `RANKING_MAX_ITERATIONS`: Newton sweeps before giving up on convergence (default: `60`)
 
 The publishing bar:
@@ -1709,6 +2302,15 @@ The publishing bar:
 - `RANKING_PRERELEASE_TYPES`: Tournament types that count toward the set they preview (default: `Pre-Rift`)
 - `RANKING_PRERELEASE_LEAD_DAYS`: How far before a release a prerelease may sit (default: `14`)
 
+Venues and scenes:
+
+- `RANKING_VENUE_TOP_PLAYERS`: Players denormalised onto a `VENUE#` item,
+  ordered by matches played there (default: `25`)
+- `RANKING_SCENE_RESOLUTION`: Louvain resolution for a **re-clustering**
+  (default: `1`, the measured stability optimum). Read only by
+  `scene-recluster.sh` - a refit never clusters; it reads the stored
+  assignment.
+
 ## Tests
 
 ```bash
@@ -1720,7 +2322,10 @@ properties the design rests on rather than its surface:
 
 - `rankingModel.test.ts` - a known-answer fit (a strict dominance order comes out
   in order, symmetric about the anchor, with the unbeaten player the *least*
-  certain),
+  certain), the event-tier weighting mechanism (neutral by default, an unknown
+  tier never defaults low, a weighted tier narrows the posterior without
+  changing the order, and a tier with no events in the window cannot change the
+  fit at all),
   **two disconnected clusters proving the prior stops them floating**, bye
   rejection by every route a bye id can reach a fact row, and uncertainty
   narrowing monotonically with evidence while never exceeding the prior.
@@ -1731,6 +2336,13 @@ properties the design rests on rather than its surface:
   the reported modularity agrees with an independent evaluation of the same
   labelling, and the partition-agreement metrics score a relabelling as
   identical.
+- `rankingScenes.test.ts` - the persisted scene assignment: a store belongs to
+  exactly one scene with a purity attached, a scene id **survives a
+  re-clustering** that changes the membership (overlap-carried, which is the
+  whole reason the assignment is persisted) while a genuinely new scene gets a
+  new id, a geocode is never a venue id, a refit with no assignment publishes
+  null scenes rather than clustering on the fly, and `componentId` keeps its
+  meaning throughout.
 - `rankingSets.test.ts` - set partitioning, including that an unpublished
   boundary stays unpublished and that filling one in splits the era.
 - `rankingStore.test.ts` - the storage shape against a real throwaway SQLite

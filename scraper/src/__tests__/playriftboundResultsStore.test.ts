@@ -245,6 +245,79 @@ describe('tournament fact storage (SQLite)', () => {
     expect(poisonedRoster?.entries[0].tagLine).toBe('NA');
   });
 
+  it('offers a merged row as a candidate, reading its tournament id off the URL', async () => {
+    // A matched cross-source pair keeps the UVS identity (merge.ts), so this row
+    // has a numeric externalId and no `prb-` prefix to select on - which is why
+    // merged events used to be structurally invisible to this pass. Riot's event
+    // page URL is what survives on it, and that carries the tournament id.
+    await upsertEventWithStore(
+      {
+        externalId: '853410',
+        name: 'Thursday Nexus Nights',
+        startDate: START,
+        eventType: 'Nexus Night',
+        url: 'https://playriftbound.com/en-us/events/117087016664758142',
+        latitude: context.latitude,
+        longitude: context.longitude,
+        sources: ['uvs', 'playriftbound'],
+      },
+      {
+        id: 4242,
+        name: 'Games of Martinez',
+        full_address: '610 Main St, Martinez, CA 94553, USA',
+        city: 'Martinez',
+        state: 'CA',
+        country: 'US',
+        latitude: context.latitude,
+        longitude: context.longitude,
+        website: null,
+        email: null,
+      }
+    );
+    // A UVS-only row is still not a candidate: it has no URL at all (389 of 389
+    // in the measured day partition), so there is no id to derive.
+    await upsertEventWithStore(
+      {
+        externalId: '853411',
+        name: 'Friday Casual',
+        startDate: START,
+        latitude: context.latitude,
+        longitude: context.longitude,
+        sources: ['uvs'],
+      },
+      {
+        id: 4242,
+        name: 'Games of Martinez',
+        full_address: '610 Main St, Martinez, CA 94553, USA',
+        city: 'Martinez',
+        state: 'CA',
+        country: 'US',
+        latitude: context.latitude,
+        longitude: context.longitude,
+        website: null,
+        email: null,
+      }
+    );
+
+    const candidates = await loadEventFactCandidates({ daysBack: 365, daysForward: 2 });
+    expect(candidates.map(c => c.externalId).sort()).toEqual(['853410', EXTERNAL_ID]);
+
+    const merged = candidates.find(c => c.externalId === '853410');
+    // Downstream nothing can tell this candidate from a `prb-` one: the Riot id
+    // is what the page fetch uses, the UVS id is what the capture is keyed on.
+    expect(merged).toMatchObject({
+      externalId: '853410',
+      tournamentId: '117087016664758142',
+      eventType: 'Nexus Night',
+      shopExternalId: 4242,
+      results: null,
+      hasRoster: false,
+    });
+
+    // And the existing path is untouched.
+    expect(candidates.find(c => c.externalId === EXTERNAL_ID)?.tournamentId).toBe('117209411862156256');
+  });
+
   it('returns nothing for an event with no capture', async () => {
     expect(await getEventResults('prb-does-not-exist')).toBeNull();
     await closePool();

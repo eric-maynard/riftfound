@@ -16,6 +16,7 @@ const db = vi.hoisted(() => ({
 vi.mock('../database.js', () => db);
 
 import {
+  DEFAULT_LOOKBACK_DAYS,
   MAX_ATTEMPTS,
   ROSTER_LEAD_MS,
   RESULTS_RECHECK_AFTER_MS,
@@ -610,6 +611,23 @@ describe('runPlayriftboundResultsPass', () => {
     const summary = await runPlayriftboundResultsPass();
     expect(summary.skippedReason).toMatch(/SQLite or DynamoDB/);
     expect(db.loadEventFactCandidates).not.toHaveBeenCalled();
+  });
+
+  it('asks for a window that reaches the whole stored history but stays inside event retention', async () => {
+    // A results capture needs an event row as its candidate, and event rows are
+    // deleted by deleteOldEvents(60). Measured on production 2026-10-26: rows
+    // exist back to -59d and stop dead at -60d, so the window has to clear 60.
+    // The old 21-day window dropped 983 events of 2026-10-01..03 before the
+    // oldest-first queue ever reached them.
+    expect(DEFAULT_LOOKBACK_DAYS).toBeGreaterThanOrEqual(26);
+    expect(DEFAULT_LOOKBACK_DAYS).toBeLessThan(60);
+
+    db.loadEventFactCandidates.mockResolvedValue([]);
+    await runPlayriftboundResultsPass({ requestDelayMs: 0, now: NOW });
+    expect(db.loadEventFactCandidates).toHaveBeenCalledWith({
+      daysBack: DEFAULT_LOOKBACK_DAYS,
+      daysForward: 2,
+    });
   });
 
   it('captures a roster before the event and results after it', async () => {

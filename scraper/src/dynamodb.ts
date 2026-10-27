@@ -32,9 +32,10 @@ import type {
   UpsertShopResult,
 } from './database.js';
 import type { PlayerProfile, RankingRow, RankingSnapshot } from './ranking/items.js';
+import type { SceneAssignment } from './ranking/scenes.js';
 import { preserveMergedFields, type MergeOwnedFields } from './merge.js';
 // Value import; everything on the way back here is type-only, so no cycle.
-import { PLAYRIFTBOUND_ID_PREFIX } from './sources/playriftbound.js';
+import { resultsCandidateTournamentId } from './sources/playriftbound.js';
 
 // DynamoDB client singleton
 let docClient: DynamoDBDocumentClient | null = null;
@@ -1171,8 +1172,27 @@ function factContext(fact: EventFactContext): DynamoFactContext {
 }
 
 /**
- * Stored `prb-` events in the window, with the bookkeeping for what has already
- * been captured for each.
+ * Stored events in the window that identify a Riot tournament, with the
+ * bookkeeping for what has already been captured for each.
+ *
+ * Candidacy is `resultsCandidateTournamentId`, not a `prb-` prefix test. Selecting
+ * on the prefix alone made every **merged** row structurally invisible to the
+ * results pass: a matched cross-source pair keeps the UVS identity, so the
+ * surviving row has a numeric externalId and no prefix to match, was never a
+ * candidate, and therefore could never have results. Their tournament id
+ * survives on `url`, which the merge policy hands to Riot.
+ *
+ * Measured against production on 2026-10-27 at lookback 45: 4,052 merged rows in
+ * the window, **0** of them carrying any capture (which is the proof that none
+ * was ever queued), 3,424 of them results-due and 173 roster-due. At the
+ * measured 71% of finished events that hold real pairings that is roughly 2,400
+ * additional events with standings.
+ *
+ * Note which id goes where, because they differ for a merged row: the fact keys
+ * are built from the row's own `externalId` (so a merged event's capture lands
+ * under its UVS id, which is the id the calendar and the backend's availability
+ * BatchGet already ask about), while `tournamentId` is the Riot id the page
+ * fetch needs.
  *
  * Only the *metadata* of the fact rows is read (BatchGetItem with a projection),
  * never their payloads - so deciding that 8,000 events need nothing costs a few
@@ -1184,17 +1204,21 @@ export async function loadEventFactCandidatesDynamoDB(
   const rows = await loadEventSummariesForDates(
     eventDatePartitions(-window.daysBack, window.daysForward)
   );
-  const events = rows.filter(row => row.externalId.startsWith(PLAYRIFTBOUND_ID_PREFIX));
+  const events: { row: StoredEventSummary; tournamentId: string }[] = [];
+  for (const row of rows) {
+    const tournamentId = resultsCandidateTournamentId(row);
+    if (tournamentId !== null) events.push({ row, tournamentId });
+  }
   if (events.length === 0) return [];
 
-  const keys = events.flatMap(row => [resultsKeys(row.externalId), rosterKeys(row.externalId)]);
+  const keys = events.flatMap(({ row }) => [resultsKeys(row.externalId), rosterKeys(row.externalId)]);
   const meta = await batchGetFactMeta(keys);
 
-  return events.map(row => {
+  return events.map(({ row, tournamentId }) => {
     const results = meta.get(`${RESULTS_PREFIX}${row.externalId}`);
     return {
       externalId: row.externalId,
-      tournamentId: row.externalId.slice(PLAYRIFTBOUND_ID_PREFIX.length),
+      tournamentId,
       eventStartDate: row.startDate,
       eventType: row.eventType ?? null,
       playFormat: row.playFormat ?? null,
@@ -1495,9 +1519,22 @@ function setKeys(setId: string) {
   return { PK: `SET#${setId}`, SK: 'PROFILE' };
 }
 
+function venueKeys(shopExternalId: number) {
+  return { PK: `VENUE#${shopExternalId}`, SK: 'PROFILE' };
+}
+
+function sceneKeys(sceneId: string) {
+  return { PK: `SCENE#${sceneId}`, SK: 'PROFILE' };
+}
+
 /** GSI1 partitions the catalogue items are enumerable in. */
 export const SET_CATALOGUE_PARTITION = 'SET';
 export const COMPONENT_CATALOGUE_PARTITION = 'COMPONENT';
+export const VENUE_CATALOGUE_PARTITION = 'VENUE';
+export const SCENE_CATALOGUE_PARTITION = 'SCENE';
+
+/** The single row holding the persisted venue -> scene assignment. */
+const SCENE_ASSIGNMENT_KEY = 'SCENE_ASSIGNMENT';
 
 /**
  * Enumeration index for the catalogue items (`SET#<id>`, `COMPONENT#<id>`).
@@ -1656,6 +1693,9 @@ export interface RankingScopeIndex {
   scopes: string[];
   componentIds: string[];
   setIds: string[];
+  /** Shop ids with a `VENUE#` item. Numbers, because that is the key. */
+  venueIds: number[];
+  sceneIds: string[];
 }
 
 export async function loadRankingScopeIndexDynamoDB(): Promise<RankingScopeIndex> {
@@ -1666,10 +1706,14 @@ export async function loadRankingScopeIndexDynamoDB(): Promise<RankingScopeIndex
   const item = response.Item ?? {};
   const list = (value: unknown): string[] =>
     Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === 'string') : [];
+  const numbers = (value: unknown): number[] =>
+    Array.isArray(value) ? value.map(Number).filter(entry => Number.isFinite(entry)) : [];
   return {
     scopes: list(item.scopes),
     componentIds: list(item.componentIds),
     setIds: list(item.setIds),
+    venueIds: numbers(item.venueIds),
+    sceneIds: list(item.sceneIds),
   };
 }
 
@@ -1702,6 +1746,8 @@ export interface RankingWriteSummary {
   metas: number;
   components: number;
   sets: number;
+  venues: number;
+  scenes: number;
   markers: number;
   deletedRows: number;
   deletedScopes: number;
@@ -1764,6 +1810,22 @@ export async function saveRankingSnapshotDynamoDB(
     entityType: 'SET_PROFILE' as const,
     ...set,
   }));
+  // Venues and scenes are enumerable for the same reason sets and components
+  // are: a map's first render is "every venue with a pin", which has to be one
+  // Query and not a Scan. The id is the shop id, never venueKey's `geo:`
+  // fallback - that one moves if the geocode moves.
+  const venueItems = snapshot.venues.map(venue => ({
+    ...venueKeys(venue.shopExternalId),
+    ...catalogueGSI1Keys(VENUE_CATALOGUE_PARTITION, String(venue.shopExternalId)),
+    entityType: 'VENUE_PROFILE' as const,
+    ...venue,
+  }));
+  const sceneItems = snapshot.scenes.map(scene => ({
+    ...sceneKeys(scene.sceneId),
+    ...catalogueGSI1Keys(SCENE_CATALOGUE_PARTITION, scene.sceneId),
+    entityType: 'SCENE_PROFILE' as const,
+    ...scene,
+  }));
 
   // Prune before writing markers, so a crash mid-run leaves the log un-marked
   // (and therefore retried) rather than marked but unwritten.
@@ -1791,6 +1853,18 @@ export async function saveRankingSnapshotDynamoDB(
   for (const setId of previous.setIds) {
     if (!currentSets.has(setId)) staleKeys.push(setKeys(setId));
   }
+  // A venue only disappears when its last match ages out of the replay window,
+  // and a scene only when a re-clustering retires it - but both have to be
+  // pruned or the catalogue Query would keep serving a pin with no data behind
+  // it.
+  const currentVenues = new Set(snapshot.venues.map(venue => venue.shopExternalId));
+  for (const shopExternalId of previous.venueIds) {
+    if (!currentVenues.has(shopExternalId)) staleKeys.push(venueKeys(shopExternalId));
+  }
+  const currentScenes = new Set(snapshot.scenes.map(scene => scene.sceneId));
+  for (const sceneId of previous.sceneIds) {
+    if (!currentScenes.has(sceneId)) staleKeys.push(sceneKeys(sceneId));
+  }
 
   const deletedRows = staleKeys.length > 0 ? await batchDelete(staleKeys) : 0;
 
@@ -1802,6 +1876,8 @@ export async function saveRankingSnapshotDynamoDB(
     ...metaItems,
     ...componentItems,
     ...setItems,
+    ...venueItems,
+    ...sceneItems,
   ]);
 
   const markerItems = snapshot.matchLogEvents.map(eventExternalId => ({
@@ -1822,6 +1898,8 @@ export async function saveRankingSnapshotDynamoDB(
       scopes: [...currentScopes],
       componentIds: [...currentComponents],
       setIds: [...currentSets],
+      venueIds: [...currentVenues],
+      sceneIds: [...currentScenes],
       generatedAt: now,
     },
   }));
@@ -1834,10 +1912,61 @@ export async function saveRankingSnapshotDynamoDB(
     metas: metaItems.length,
     components: componentItems.length,
     sets: setItems.length,
+    venues: venueItems.length,
+    scenes: sceneItems.length,
     markers: markerItems.length,
     deletedRows,
     deletedScopes,
   };
+}
+
+/**
+ * The persisted venue -> scene assignment.
+ *
+ * One row, read in full at the start of every refit and written only when an
+ * operator re-clusters, so a single item is the right shape and a Query would
+ * be ceremony. Stored **gzipped** for the same reason `SCRAPE_CYCLE` is: the
+ * payload is a list that scales with the number of stores, and the uncompressed
+ * JSON for a national assignment (plus one level of rollback history) would run
+ * at DynamoDB's 400KB item limit. Gzip buys roughly an order of magnitude on
+ * this kind of repetitive JSON.
+ */
+export async function loadSceneAssignmentDynamoDB(): Promise<SceneAssignment | null> {
+  const response = await getDynamoClient().send(new GetCommand({
+    TableName: getTableName(),
+    Key: { PK: SCENE_ASSIGNMENT_KEY, SK: SCENE_ASSIGNMENT_KEY },
+  }));
+  const raw = response.Item?.assignmentGz;
+  if (!raw) return null;
+  try {
+    return JSON.parse(gunzipSync(Buffer.from(raw as Uint8Array)).toString()) as SceneAssignment;
+  } catch (error) {
+    // A corrupt assignment must not take the ladder down: the refit simply
+    // publishes null scenes until an operator re-clusters.
+    console.error(
+      `[scenes] stored assignment unreadable (${error instanceof Error ? error.message : error}); ` +
+        'treating scenes as unassigned'
+    );
+    return null;
+  }
+}
+
+export async function saveSceneAssignmentDynamoDB(assignment: SceneAssignment): Promise<void> {
+  const payload = Buffer.from(JSON.stringify(assignment));
+  await getDynamoClient().send(new PutCommand({
+    TableName: getTableName(),
+    Item: {
+      PK: SCENE_ASSIGNMENT_KEY,
+      SK: SCENE_ASSIGNMENT_KEY,
+      entityType: 'SCENE_ASSIGNMENT',
+      version: assignment.version,
+      generatedAt: assignment.generatedAt,
+      resolution: assignment.resolution,
+      venueCount: assignment.venues.length,
+      sceneCount: assignment.scenes.length,
+      assignmentGz: gzipSync(payload),
+    },
+  }));
 }
 
 /** When the rating pass last completed, for the refit-interval gate. */

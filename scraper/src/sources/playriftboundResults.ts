@@ -36,9 +36,19 @@ import { PLAYRIFTBOUND_ID_PREFIX } from './playriftbound.js';
  * derived rating and nothing here rewrites a fact once it is recorded.
  *
  * Unlike the other two sources this is not a discovery sweep. The events table
- * already holds every `prb-` tournament id we care about, so the pass is simply
+ * already holds every Riot tournament id we care about, so the pass is simply
  * "stored Riot events that are due a roster snapshot or a results capture", one
  * page fetch each, at the same polite ~1 req/sec.
+ *
+ * Which stored rows those are is `resultsCandidateTournamentId` (in
+ * playriftbound.ts), and it is two shapes rather than one: a `prb-` externalId,
+ * and a **merged** row whose id is parsed out of its `url`. That second shape
+ * was missing until 2026-10-27 and it was the largest gap in this pipeline -
+ * the merge keeps the UVS identity, so a matched event had no prefix to select
+ * on and was never queued at all (4,052 such rows in the window, 3,424 of them
+ * results-due). The candidate loaders resolve the id, so nothing in this module
+ * can tell the two apart; see scraper/CLAUDE.md, "Which rows are results
+ * candidates".
  *
  * Five things shape this module:
  *
@@ -85,7 +95,43 @@ const REQUEST_TIMEOUT_MS = 20_000;
 
 const DEFAULT_REQUEST_DELAY_MS = 1000; // ~1 req/sec: polite by default
 const DEFAULT_MAX_EVENTS_PER_RUN = 250; // ~0.8s/page + 1s delay => ~8 minutes
-const DEFAULT_LOOKBACK_DAYS = 21; // comfortably inside deleteOldEvents(60)
+/**
+ * How far back a finished event may be and still be a results candidate.
+ *
+ * A capture needs an **event row** to be a candidate, so this is bounded above
+ * by `deleteOldEvents(60)` and below by when `prb-` rows started existing at
+ * all. Both were measured against production on 2026-10-26 rather than assumed:
+ *
+ * | bound | measurement |
+ * |---|---|
+ * | event-row retention | `DATE#` partitions hold rows back to 2026-08-28 (-59d) and **zero** at -60d and beyond |
+ * | earliest `prb-` row | **2026-10-01** (227 rows); September holds 4 rows in total (09-25, 09-26, 09-28) and nothing before 09-25 |
+ * | Riot still serving old pages | 5 of 6 spot-checked 2026-09-25..10-03 pages returned HTTP 200 with the `esportsTournamentId` marker, 3 of them with FINALIZED rounds; the sixth 500s on every attempt (see the 5xx note below) |
+ *
+ * And the effect of the knob itself, `loadEventFactCandidates` against
+ * production on 2026-10-26:
+ *
+ * | lookback | candidates | results-due | candidate load |
+ * |---|---|---|---|
+ * | 21 (the old default) | 21,426 | 15,208 | 27.5s |
+ * | 26 | 22,842 | **16,383** | 26.4s |
+ * | 45 | 22,846 | 16,387 | 29.7s |
+ * | 58 | 22,846 | 16,387 | 28.9s |
+ *
+ * So the whole recoverable gain is 21 -> 26 days: **+1,179 events** whose
+ * results were otherwise unreachable for good, because they aged out of the
+ * window before the oldest-first queue reached them (2026-10-01..03 had 983
+ * `prb-` events and 0 captures). Past 26 days the gain is 4 events, because the
+ * history simply does not go back further - no lookback recovers the bulk of
+ * the Vendetta era (2026-07-31..10-23), which was over before this scraper ever
+ * saw a `prb-` event.
+ *
+ * 45 is therefore chosen for headroom rather than for today's data: it reaches
+ * everything that exists, stays 14 days inside the measured 59-day retention
+ * floor, costs ~3s of extra candidate load out of an ~840s budget, and needs no
+ * further change as the history lengthens over the next two months.
+ */
+export const DEFAULT_LOOKBACK_DAYS = 45;
 /** How far ahead to look for events needing a roster snapshot (see ROSTER_LEAD_MS). */
 const DEFAULT_LOOKAHEAD_DAYS = 2;
 
@@ -729,7 +775,15 @@ export function normalizeRosterFromResults(
   });
 }
 
-/** `prb-117209411862156256` -> `117209411862156256`. */
+/**
+ * `prb-117209411862156256` -> `117209411862156256`.
+ *
+ * **Not the candidate loader's rule, and not a substitute for it.** On a merged
+ * row this returns the UVS id unchanged, which is not a tournament id at all.
+ * Anything deciding "which Riot tournament is this row" wants
+ * `resultsCandidateTournamentId` in playriftbound.ts; this is only the prefix
+ * strip, for a caller that already knows it holds a `prb-` id.
+ */
 export function tournamentIdFromExternalId(externalId: string): string {
   return externalId.startsWith(PLAYRIFTBOUND_ID_PREFIX)
     ? externalId.slice(PLAYRIFTBOUND_ID_PREFIX.length)

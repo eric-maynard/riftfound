@@ -9,8 +9,11 @@ import {
   convertTournamentNode,
   extractQueryHashFromChunk,
   mapEventType,
+  RIOT_TOURNAMENT_TYPES,
   organizerExternalId,
   parseCountry,
+  resultsCandidateTournamentId,
+  tournamentIdFromEventUrl,
   type PrbTournamentNode,
 } from '../sources/playriftbound.js';
 import { formatPrice } from '../api.js';
@@ -28,7 +31,27 @@ describe('mapEventType', () => {
     expect(mapEventType('SUMMONER_SKIRMISH')).toBe('Summoner Skirmish');
   });
 
+  it('maps every value of Riot\'s enum, so no real tier collapses into Other', () => {
+    // The enum was read out of Riot's bundle on 2026-10-26 (11 values). Before
+    // that only three were mapped and the other eight became `Other`, which
+    // made a casual Open Play indistinguishable from a World Championship in
+    // our own data - and therefore made a tier-keyed rating weight impossible
+    // to express. Two of the eight (OPEN_PLAY, LEARN_TO_PLAY) are in the live
+    // feed today.
+    expect(RIOT_TOURNAMENT_TYPES).toHaveLength(11);
+    for (const type of RIOT_TOURNAMENT_TYPES) {
+      expect(mapEventType(type)).not.toBe('Other');
+    }
+    expect(mapEventType('LEARN_TO_PLAY')).toBe('Learn to Play');
+    expect(mapEventType('OPEN_PLAY')).toBe('Open Play');
+    expect(mapEventType('WORLD_CHAMPIONSHIP')).toBe('World Championship');
+    expect(mapEventType('CONTINENTAL')).toBe('Continental');
+    expect(mapEventType('REGIONAL')).toBe('Regional');
+  });
+
   it('falls back to Other for unknown, missing or future enum values', () => {
+    // Riot's enum grows; a record is never dropped for carrying a value we do
+    // not recognise.
     expect(mapEventType('SOME_NEW_FORMAT')).toBe('Other');
     expect(mapEventType(null)).toBe('Other');
     expect(mapEventType(undefined)).toBe('Other');
@@ -455,5 +478,98 @@ describe('convertTournamentNode sanitisation', () => {
 
   it('tags the record with its source', () => {
     expect(convertTournamentNode(poisonedNode)!.sources).toEqual(['playriftbound']);
+  });
+});
+
+describe('tournamentIdFromEventUrl', () => {
+  // The merge keeps the UVS identity, so for a merged event the Riot tournament
+  // id exists in exactly one place: the `url` the merge policy hands to Riot.
+  // This parser is the whole of the results pass's access to those events, so
+  // its rejection half matters as much as its acceptance half.
+  it('reads the id out of the URL this scraper actually writes', () => {
+    // Verified live on 2026-10-26: 62 of 62 merged rows in one day partition.
+    expect(tournamentIdFromEventUrl('https://playriftbound.com/en-us/events/117338779189865706'))
+      .toBe('117338779189865706');
+  });
+
+  it('tolerates everything that legitimately varies', () => {
+    const id = '117338779189865706';
+    // The converter writes `en-us`; the user-facing links elsewhere in this repo
+    // use `en-US`, and Riot serves other locales.
+    expect(tournamentIdFromEventUrl(`https://playriftbound.com/en-US/events/${id}`)).toBe(id);
+    expect(tournamentIdFromEventUrl(`https://playriftbound.com/pt-BR/events/${id}`)).toBe(id);
+    expect(tournamentIdFromEventUrl(`https://playriftbound.com/fr/events/${id}`)).toBe(id);
+    // No locale segment at all.
+    expect(tournamentIdFromEventUrl(`https://playriftbound.com/events/${id}`)).toBe(id);
+    expect(tournamentIdFromEventUrl(`http://playriftbound.com/en-us/events/${id}`)).toBe(id);
+    expect(tournamentIdFromEventUrl(`https://www.playriftbound.com/en-us/events/${id}`)).toBe(id);
+    expect(tournamentIdFromEventUrl(`https://playriftbound.com/en-us/events/${id}/`)).toBe(id);
+    expect(tournamentIdFromEventUrl(`https://playriftbound.com/en-us/events/${id}?utm_source=x`)).toBe(id);
+    expect(tournamentIdFromEventUrl(`https://playriftbound.com/en-us/events/${id}#standings`)).toBe(id);
+    expect(tournamentIdFromEventUrl(`  https://playriftbound.com/en-us/events/${id}  `)).toBe(id);
+    // The search UI's own host names the same tournament.
+    expect(tournamentIdFromEventUrl(`https://events.playriftbound.com/en-US/events/${id}`)).toBe(id);
+  });
+
+  it('rejects a hostname that merely contains ours', () => {
+    // The reason this is a URL parse and not a regex. A substring or endsWith
+    // test waves all three of these through.
+    expect(tournamentIdFromEventUrl('https://playriftbound.com.evil.test/en-us/events/117338779189865706')).toBeNull();
+    expect(tournamentIdFromEventUrl('https://notplayriftbound.com/en-us/events/117338779189865706')).toBeNull();
+    expect(tournamentIdFromEventUrl('https://evil.test/?x=https://playriftbound.com/en-us/events/117338779189865706'))
+      .toBeNull();
+  });
+
+  it('rejects anything that is not a Riot event page', () => {
+    // A UVS locator URL, and a store's own site - both appear in this feed.
+    expect(tournamentIdFromEventUrl('https://locator.riftbound.uvsgames.com/events/48812')).toBeNull();
+    expect(tournamentIdFromEventUrl('https://gamesofmartinez.com/calendar')).toBeNull();
+    // Right host, wrong page.
+    expect(tournamentIdFromEventUrl('https://playriftbound.com/en-us/events')).toBeNull();
+    expect(tournamentIdFromEventUrl('https://playriftbound.com/en-us/news/117338779189865706')).toBeNull();
+    expect(tournamentIdFromEventUrl('https://playriftbound.com/en-us/events/117338779189865706/standings')).toBeNull();
+    // Right shape, unusable id - the fetch asserts digits, so this must not
+    // reach it as if it were real.
+    expect(tournamentIdFromEventUrl('https://playriftbound.com/en-us/events/not-an-id')).toBeNull();
+    expect(tournamentIdFromEventUrl('https://playriftbound.com/en-us/events/117338779189865706abc')).toBeNull();
+    expect(tournamentIdFromEventUrl(`https://playriftbound.com/en-us/events/${'9'.repeat(40)}`)).toBeNull();
+    // Not a fetchable scheme.
+    expect(tournamentIdFromEventUrl('javascript:alert(1)//playriftbound.com/events/117')).toBeNull();
+    expect(tournamentIdFromEventUrl('//playriftbound.com/en-us/events/117338779189865706')).toBeNull();
+  });
+
+  it('rejects the empty and absent cases without throwing', () => {
+    expect(tournamentIdFromEventUrl('')).toBeNull();
+    expect(tournamentIdFromEventUrl('   ')).toBeNull();
+    expect(tournamentIdFromEventUrl(null)).toBeNull();
+    expect(tournamentIdFromEventUrl(undefined)).toBeNull();
+    expect(tournamentIdFromEventUrl('not a url at all')).toBeNull();
+  });
+});
+
+describe('resultsCandidateTournamentId', () => {
+  it('reads a prb- row off its externalId, exactly as before', () => {
+    expect(resultsCandidateTournamentId({ externalId: 'prb-117209411862156256', url: null }))
+      .toBe('117209411862156256');
+    // The URL is not consulted and cannot override the prefix.
+    expect(resultsCandidateTournamentId({
+      externalId: 'prb-117209411862156256',
+      url: 'https://playriftbound.com/en-us/events/999',
+    })).toBe('117209411862156256');
+  });
+
+  it('reads a merged row off its URL, because its externalId is the UVS one', () => {
+    // The shape measured in production: numeric UVS externalId, Riot URL.
+    expect(resultsCandidateTournamentId({
+      externalId: '853410',
+      url: 'https://playriftbound.com/en-us/events/117087016664758142',
+    })).toBe('117087016664758142');
+  });
+
+  it('is not a candidate when the row is UVS-only', () => {
+    // 389 of 389 UVS-only rows in the measured day partition carried no URL.
+    expect(resultsCandidateTournamentId({ externalId: '853410', url: null })).toBeNull();
+    expect(resultsCandidateTournamentId({ externalId: '853410' })).toBeNull();
+    expect(resultsCandidateTournamentId({ externalId: '853410', url: 'https://gamesofmartinez.com' })).toBeNull();
   });
 });

@@ -122,6 +122,102 @@ const DAYS_FORWARD = 90; // match the UVS source / calendar display range
 export const PLAYRIFTBOUND_ID_PREFIX = 'prb-';
 
 /**
+ * Hosts whose `/events/<id>` path is one of Riot's own event pages.
+ *
+ * Compared **exactly**, after dropping a leading `www.` - never by suffix or
+ * substring. `playriftbound.com.evil.test` contains our hostname and ends in
+ * somebody else's, and an `includes`/`endsWith` test would wave it through.
+ * `events.playriftbound.com` is in the list because that is where the search UI
+ * lives (`EVENTS_PAGE_URL` above) and a URL captured from it names the same
+ * tournament; the id is all that is read out either way, and the results pass
+ * then builds its own canonical fetch URL from it.
+ */
+const EVENT_URL_HOSTS = new Set(['playriftbound.com', 'events.playriftbound.com']);
+
+/** A locale path segment: `en-us`, `en-US`, `fr`, `pt-BR`. */
+const LOCALE_SEGMENT = /^[a-z]{2}(-[a-z]{2})?$/i;
+
+/** Riot's tournament ids are 18-digit snowflakes; the length cap is a sanity bound. */
+const TOURNAMENT_ID_PATTERN = /^[0-9]{1,32}$/;
+
+/**
+ * Riot's tournament id out of an event-page URL, or null when the URL is not one.
+ *
+ * This is the **only** route to a tournament id for a *merged* event. A matched
+ * cross-source pair keeps the UVS identity (see merge.ts), so the surviving
+ * row's `externalId` is the UVS number and carries no `prb-` prefix - but `url`
+ * is Riot-owned in the merge policy, so Riot's event page URL survives on it.
+ * Measured against production on 2026-10-26, one day partition
+ * (`DATE#2026-10-18`, 2,977 stored rows): 62 rows were merged
+ * (`sources: [uvs, playriftbound]`, numeric externalId) and **62 of 62** carried
+ * a `https://playriftbound.com/en-us/events/<id>` URL, while all 389 UVS-only
+ * rows carried no URL at all. So on today's data a parseable URL and a merged
+ * row are the same set.
+ *
+ * Parsed with the URL class rather than a regex, because the one thing that must
+ * not happen is accepting a hostname that merely *contains* `playriftbound.com`.
+ * What legitimately varies, and is therefore tolerated: the scheme, a `www.`
+ * prefix, the locale segment and its case (the converter above writes `en-us`
+ * while the user-facing links elsewhere in this repo use `en-US`), a trailing
+ * slash, and a query string or fragment.
+ */
+export function tournamentIdFromEventUrl(url: string | null | undefined): string | null {
+  if (typeof url !== 'string' || url.trim() === '') return null;
+
+  let parsed: URL;
+  try {
+    parsed = new URL(url.trim());
+  } catch {
+    return null;
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null;
+
+  const host = parsed.hostname.toLowerCase().replace(/^www\./, '');
+  if (!EVENT_URL_HOSTS.has(host)) return null;
+
+  // `/events/<id>` or `/<locale>/events/<id>`, and nothing deeper: a longer path
+  // is some other page about the event, not the event page itself.
+  const segments = parsed.pathname.split('/').filter(segment => segment.length > 0);
+  const path = segments.length === 3 && LOCALE_SEGMENT.test(segments[0]) ? segments.slice(1) : segments;
+  if (path.length !== 2 || path[0].toLowerCase() !== 'events') return null;
+
+  // Not decoded: a run of digits never needs it, and anything percent-escaped
+  // fails the pattern, which is the right answer.
+  return TOURNAMENT_ID_PATTERN.test(path[1]) ? path[1] : null;
+}
+
+/**
+ * The Riot tournament id a stored event row is a results candidate for, or null
+ * when it is not one.
+ *
+ * Two row shapes qualify, and the results pass cannot tell them apart once this
+ * has run - which is the point:
+ *
+ * 1. a `prb-` externalId: a Riot event the UVS feed never duplicated. The slice
+ *    is returned verbatim, including the pathological case of a prefix with
+ *    nothing numeric after it, because `fetchEventFacts` already rejects that
+ *    loudly and narrowing it here would be a silent behaviour change on the
+ *    path that works today.
+ * 2. a row whose `url` is a Riot event page: a **merged** row, whose externalId
+ *    is the UVS one. Before this existed those rows were structurally invisible
+ *    to the results pass - 4,052 of them inside the 45-day lookback on
+ *    2026-10-27, 3,424 results-due, and not one of them carrying a capture.
+ *
+ * The capture itself is still keyed on the row's own `externalId`
+ * (`RESULTS#<externalId>`), so a merged event's facts land under its UVS id -
+ * which is the id the calendar and the backend's availability lookup already
+ * ask about. See scraper/CLAUDE.md, "Which rows are results candidates".
+ */
+export function resultsCandidateTournamentId(
+  row: { externalId: string; url?: string | null }
+): string | null {
+  if (row.externalId.startsWith(PLAYRIFTBOUND_ID_PREFIX)) {
+    return row.externalId.slice(PLAYRIFTBOUND_ID_PREFIX.length);
+  }
+  return tournamentIdFromEventUrl(row.url);
+}
+
+/**
  * Offset applied to synthesised shop external ids. UVS store ids are small
  * integers; keeping Riot organizers in their own numeric band avoids collisions.
  */
@@ -595,17 +691,98 @@ export async function rediscoverQueryHash(requestDelayMs: number, deadline?: num
 // ---------------------------------------------------------------------------
 
 /**
+ * Riot's complete `tournamentType` enum, read out of their web bundle.
+ *
+ * Measured 2026-10-26 from chunk `0zmnko3-hmh1v.js` (787,431 bytes, 9th of the
+ * 36 chunks the events page references), which carries the generated TypeScript
+ * enum verbatim. **Eleven values**, in the bundle's own order:
+ *
+ * ```
+ * CHALLENGE_SERIES  CONTINENTAL  LEARN_TO_PLAY  NEXUS_CUP  NEXUS_NIGHT
+ * OPEN_PLAY  PRE_RIFT  REGIONAL  SHOWDOWN_SERIES  SUMMONER_SKIRMISH
+ * WORLD_CHAMPIONSHIP
+ * ```
+ *
+ * Two things worth knowing before building on it:
+ *
+ * - **There is no `RC` or `RQ`.** The championship and qualifier tiers are
+ *   spelled `WORLD_CHAMPIONSHIP`, `CONTINENTAL` and `REGIONAL`, with
+ *   `CHALLENGE_SERIES`, `SHOWDOWN_SERIES` and `NEXUS_CUP` as the series tiers
+ *   between those and `SUMMONER_SKIRMISH`. Any weighting table keyed on
+ *   invented literals would silently match nothing.
+ * - **Riot's own filter UI exposes only five of the eleven**, grouped as
+ *   *Local* (`LEARN_TO_PLAY`, `NEXUS_NIGHT`, `OPEN_PLAY`, `PRE_RIFT`) and
+ *   *Premier* (`SUMMONER_SKIRMISH`). The six competitive tiers above that are
+ *   in the schema and not yet filterable, which is consistent with no such
+ *   event having been scheduled.
+ *
+ * This list rotates like everything else in Riot's bundle. Re-derive it the
+ * same way (crawl the chunks the events page names and grep for
+ * `NEXUS_NIGHT`); the enum sits beside the `CONSTRUCTED` / `LIMITED_DRAFT` /
+ * `LIMITED_SEALED` format enum in the same object literal.
+ */
+export const RIOT_TOURNAMENT_TYPES = [
+  'CHALLENGE_SERIES',
+  'CONTINENTAL',
+  'LEARN_TO_PLAY',
+  'NEXUS_CUP',
+  'NEXUS_NIGHT',
+  'OPEN_PLAY',
+  'PRE_RIFT',
+  'REGIONAL',
+  'SHOWDOWN_SERIES',
+  'SUMMONER_SKIRMISH',
+  'WORLD_CHAMPIONSHIP',
+] as const;
+
+/**
  * Riot's tournamentType enum -> the human strings the UVS source produces and
  * the frontend event-type filter expects.
+ *
+ * All eleven enum values are mapped. Before 2026-10-26 only three were, and
+ * the other eight collapsed into `Other` - which made a casual Open Play
+ * indistinguishable from a World Championship in our own data, and therefore
+ * made any tier-keyed rating weight impossible to express. Two live measurements
+ * fixed the vocabulary: 200 upcoming events across San Francisco and New York
+ * returned `NEXUS_NIGHT` 188, `OPEN_PLAY` 9, `LEARN_TO_PLAY` 3, so two of the
+ * previously-unmapped values are in the feed *today*.
+ *
+ * The labels are Riot's own, from the filter UI, except that `NEXUS_NIGHT`
+ * keeps the singular `Nexus Night` this codebase and the frontend filter have
+ * always used rather than Riot's plural "Nexus Nights".
+ *
+ * An unknown value still falls through to `Other`, and must: the enum
+ * demonstrably grows, and a record is never dropped for carrying a value we do
+ * not recognise.
  */
 export function mapEventType(tournamentType: string | null | undefined): string {
   switch (tournamentType) {
+    // Local tiers, as Riot's own filter groups them.
+    case 'LEARN_TO_PLAY':
+      return 'Learn to Play';
+    case 'OPEN_PLAY':
+      return 'Open Play';
     case 'NEXUS_NIGHT':
       return 'Nexus Night';
     case 'PRE_RIFT':
       return 'Pre-Rift';
+    // Premier.
     case 'SUMMONER_SKIRMISH':
       return 'Summoner Skirmish';
+    // Competitive tiers: in the schema, not yet in Riot's filter and not yet
+    // observed in the feed.
+    case 'NEXUS_CUP':
+      return 'Nexus Cup';
+    case 'CHALLENGE_SERIES':
+      return 'Challenge Series';
+    case 'SHOWDOWN_SERIES':
+      return 'Showdown Series';
+    case 'REGIONAL':
+      return 'Regional';
+    case 'CONTINENTAL':
+      return 'Continental';
+    case 'WORLD_CHAMPIONSHIP':
+      return 'World Championship';
     default:
       return 'Other';
   }

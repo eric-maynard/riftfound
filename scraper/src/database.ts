@@ -10,7 +10,7 @@ import {
   sanitizeStoreInfo,
 } from './sanitize.js';
 // Value import, but the chain back here is type-only, so there is no cycle.
-import { PLAYRIFTBOUND_ID_PREFIX } from './sources/playriftbound.js';
+import { PLAYRIFTBOUND_ID_PREFIX, resultsCandidateTournamentId } from './sources/playriftbound.js';
 import {
   startScrapeRunDynamoDB,
   completeScrapeRunDynamoDB,
@@ -38,8 +38,10 @@ import {
   loadEventFactsByDateDynamoDB,
   loadEventNamesDynamoDB,
   loadMatchLogMarkersDynamoDB,
+  loadSceneAssignmentDynamoDB,
   loadShopLabelsDynamoDB,
   saveRankingSnapshotDynamoDB,
+  saveSceneAssignmentDynamoDB,
   getLastRankingRefitDynamoDB,
   setLastRankingRefitDynamoDB,
   getPlayerProfileDynamoDB,
@@ -54,6 +56,7 @@ import type {
   RankingRow,
   RankingSnapshot,
 } from './ranking/items.js';
+import type { SceneAssignment } from './ranking/scenes.js';
 import type { MergeOwnedFields } from './merge.js';
 import type { ScrapeCycle } from './cancellations.js';
 import type { ShopCandidate } from './shopMatch.js';
@@ -476,6 +479,26 @@ function initSqliteSchema(db: Database.Database) {
 
     CREATE TABLE IF NOT EXISTS ranking_sets (
       set_id TEXT PRIMARY KEY,
+      payload TEXT NOT NULL
+    );
+
+    -- Per-store aggregates and the scene directory: the SQLite mirror of the
+    -- VENUE#<shopExternalId> / SCENE#<sceneId> items.
+    CREATE TABLE IF NOT EXISTS ranking_venues (
+      shop_external_id INTEGER PRIMARY KEY,
+      scene_id TEXT,
+      payload TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS ranking_scenes (
+      scene_id TEXT PRIMARY KEY,
+      payload TEXT NOT NULL
+    );
+
+    -- The persisted venue -> scene assignment: one row, rewritten only when an
+    -- operator re-clusters. This is the rating pass's only cross-refit state.
+    CREATE TABLE IF NOT EXISTS ranking_scene_assignment (
+      key TEXT PRIMARY KEY,
       payload TEXT NOT NULL
     );
 
@@ -1243,10 +1266,17 @@ function resultsPayload(results: EventResults): string {
 }
 
 /**
- * Stored `prb-` events in the window, with whatever we have already captured.
+ * Stored events in the window that identify a Riot tournament, with whatever we
+ * have already captured.
  *
  * `daysBack` covers finished events awaiting a results capture, `daysForward`
  * the ones close enough to their start to be worth a roster snapshot.
+ *
+ * Two row shapes are candidates - a `prb-` externalId, and a **merged** row
+ * whose Riot tournament id survives on `url` - so the SQL below is a cheap
+ * pre-filter and `resultsCandidateTournamentId` is the actual test. The LIKE on
+ * the URL deliberately over-matches (a store's own site could mention the
+ * domain); the parser rejects anything that is not an event page.
  */
 export async function loadEventFactCandidates(
   window: { daysBack: number; daysForward: number }
@@ -1260,7 +1290,7 @@ export async function loadEventFactCandidates(
 
   const rows = db.prepare(`
     SELECT
-      e.external_id, e.start_date, e.event_type, e.play_format, e.latitude, e.longitude,
+      e.external_id, e.url, e.start_date, e.event_type, e.play_format, e.latitude, e.longitude,
       s.external_id AS shop_external_id,
       r.status AS results_status, r.attempts AS results_attempts, r.last_checked_at,
       ro.external_id AS roster_external_id
@@ -1268,9 +1298,11 @@ export async function loadEventFactCandidates(
     LEFT JOIN shops s ON s.id = e.shop_id
     LEFT JOIN event_results r ON r.external_id = e.external_id
     LEFT JOIN event_rosters ro ON ro.external_id = e.external_id
-    WHERE e.external_id LIKE ? AND e.start_date >= ? AND e.start_date <= ?
-  `).all(`${PLAYRIFTBOUND_ID_PREFIX}%`, since, until) as Array<{
+    WHERE (e.external_id LIKE ? OR e.url LIKE ?)
+      AND e.start_date >= ? AND e.start_date <= ?
+  `).all(`${PLAYRIFTBOUND_ID_PREFIX}%`, '%playriftbound.com/%', since, until) as Array<{
     external_id: string;
+    url: string | null;
     start_date: string;
     event_type: string | null;
     play_format: string | null;
@@ -1283,26 +1315,33 @@ export async function loadEventFactCandidates(
     roster_external_id: string | null;
   }>;
 
-  return rows.map(row => ({
-    externalId: row.external_id,
-    tournamentId: row.external_id.slice(PLAYRIFTBOUND_ID_PREFIX.length),
-    eventStartDate: new Date(row.start_date),
-    eventType: row.event_type,
-    // Null for every event stored before this column existed - permanent, and
-    // never an error (see EventFactContext.playFormat).
-    playFormat: row.play_format ?? null,
-    shopExternalId: row.shop_external_id,
-    latitude: row.latitude,
-    longitude: row.longitude,
-    results: row.results_status
-      ? {
-          status: row.results_status,
-          attempts: row.results_attempts ?? 0,
-          lastCheckedAt: row.last_checked_at ? new Date(row.last_checked_at) : null,
-        }
-      : null,
-    hasRoster: row.roster_external_id !== null,
-  }));
+  return rows.flatMap(row => {
+    const tournamentId = resultsCandidateTournamentId({
+      externalId: row.external_id,
+      url: row.url,
+    });
+    if (tournamentId === null) return [];
+    return [{
+      externalId: row.external_id,
+      tournamentId,
+      eventStartDate: new Date(row.start_date),
+      eventType: row.event_type,
+      // Null for every event stored before this column existed - permanent, and
+      // never an error (see EventFactContext.playFormat).
+      playFormat: row.play_format ?? null,
+      shopExternalId: row.shop_external_id,
+      latitude: row.latitude,
+      longitude: row.longitude,
+      results: row.results_status
+        ? {
+            status: row.results_status,
+            attempts: row.results_attempts ?? 0,
+            lastCheckedAt: row.last_checked_at ? new Date(row.last_checked_at) : null,
+          }
+        : null,
+      hasRoster: row.roster_external_id !== null,
+    }];
+  });
 }
 
 /**
@@ -1617,6 +1656,16 @@ export async function saveRankingSnapshot(
     INSERT INTO ranking_sets (set_id, payload) VALUES (?, ?)
     ON CONFLICT(set_id) DO UPDATE SET payload = excluded.payload
   `);
+  const upsertVenue = db.prepare(`
+    INSERT INTO ranking_venues (shop_external_id, scene_id, payload) VALUES (?, ?, ?)
+    ON CONFLICT(shop_external_id) DO UPDATE SET
+      scene_id = excluded.scene_id,
+      payload = excluded.payload
+  `);
+  const upsertScene = db.prepare(`
+    INSERT INTO ranking_scenes (scene_id, payload) VALUES (?, ?)
+    ON CONFLICT(scene_id) DO UPDATE SET payload = excluded.payload
+  `);
   const upsertMarker = db.prepare(`
     INSERT INTO ranking_log_markers (event_external_id, version, written_at) VALUES (?, ?, ?)
     ON CONFLICT(event_external_id) DO UPDATE SET version = excluded.version, written_at = excluded.written_at
@@ -1630,6 +1679,8 @@ export async function saveRankingSnapshot(
     metas: snapshot.metas.length,
     components: snapshot.components.length,
     sets: snapshot.sets.length,
+    venues: snapshot.venues.length,
+    scenes: snapshot.scenes.length,
     markers: snapshot.matchLogEvents.length,
     deletedRows: 0,
     deletedScopes: 0,
@@ -1677,6 +1728,19 @@ export async function saveRankingSnapshot(
     for (const row of db.prepare('SELECT set_id FROM ranking_sets').all() as { set_id: string }[]) {
       if (!setIds.has(row.set_id)) db.prepare('DELETE FROM ranking_sets WHERE set_id = ?').run(row.set_id);
     }
+    const venueIds = new Set(snapshot.venues.map(venue => venue.shopExternalId));
+    for (const row of db.prepare('SELECT shop_external_id FROM ranking_venues').all() as
+      { shop_external_id: number }[]) {
+      if (!venueIds.has(row.shop_external_id)) {
+        db.prepare('DELETE FROM ranking_venues WHERE shop_external_id = ?').run(row.shop_external_id);
+      }
+    }
+    const sceneIds = new Set(snapshot.scenes.map(scene => scene.sceneId));
+    for (const row of db.prepare('SELECT scene_id FROM ranking_scenes').all() as { scene_id: string }[]) {
+      if (!sceneIds.has(row.scene_id)) {
+        db.prepare('DELETE FROM ranking_scenes WHERE scene_id = ?').run(row.scene_id);
+      }
+    }
 
     for (const profile of snapshot.profiles) {
       upsertProfile.run(
@@ -1707,12 +1771,51 @@ export async function saveRankingSnapshot(
     for (const set of snapshot.sets) {
       upsertSet.run(set.setId, JSON.stringify(set));
     }
+    for (const venue of snapshot.venues) {
+      upsertVenue.run(venue.shopExternalId, venue.sceneId, JSON.stringify(venue));
+    }
+    for (const scene of snapshot.scenes) {
+      upsertScene.run(scene.sceneId, JSON.stringify(scene));
+    }
     for (const eventExternalId of snapshot.matchLogEvents) {
       upsertMarker.run(eventExternalId, matchLogVersion, now);
     }
   })();
 
   return summary;
+}
+
+/**
+ * The persisted venue -> scene assignment.
+ *
+ * The rating pass only ever **reads** this; it is written by the re-clustering
+ * CLI (`ranking/recluster.ts`). That split is the whole design: a scene has to
+ * be stable between deliberate re-clusterings, and a partition recomputed every
+ * refit moves 12-18% of its labels (see ranking/scenes.ts).
+ */
+export async function loadSceneAssignment(): Promise<SceneAssignment | null> {
+  if (useDynamoDB()) return loadSceneAssignmentDynamoDB();
+  if (!useSqlite()) return null;
+  const row = getSqliteDb()
+    .prepare("SELECT payload FROM ranking_scene_assignment WHERE key = 'current'")
+    .get() as { payload: string } | undefined;
+  if (!row) return null;
+  try {
+    return JSON.parse(row.payload) as SceneAssignment;
+  } catch {
+    return null;
+  }
+}
+
+export async function saveSceneAssignment(assignment: SceneAssignment): Promise<void> {
+  if (useDynamoDB()) return saveSceneAssignmentDynamoDB(assignment);
+  if (!useSqlite()) throw new Error('saveSceneAssignment is not implemented for PostgreSQL');
+  getSqliteDb()
+    .prepare(`
+      INSERT INTO ranking_scene_assignment (key, payload) VALUES ('current', ?)
+      ON CONFLICT(key) DO UPDATE SET payload = excluded.payload
+    `)
+    .run(JSON.stringify(assignment));
 }
 
 /** When the rating pass last completed. Gates the refit interval. */
