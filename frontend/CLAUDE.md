@@ -21,6 +21,7 @@ src/
 │   ├── FormStrip.tsx     # Recent form as lettered result pips
 │   ├── DayEventsModal.tsx  # The "+N more" day list on phones
 │   ├── EventTrophyLink.tsx # The trophy on an event chip
+│   ├── RatingMoveNote.tsx  # A day's rating movement, with what it is made of
 │   └── RatingChart.tsx   # Inline-SVG rating-over-time chart
 ├── pages/
 │   ├── CalendarPage.tsx  # Main view with FullCalendar
@@ -274,6 +275,57 @@ round trip.
   announcing it again would only repeat the row.
 - The player page's record is computed from *loaded* matches, so the bar always
   carries a caption saying which ("All 6 loaded matches", "First 25 of 40").
+- **The match log reports a rating movement per day, and there is no per-match
+  one to report.** The engine is Whole-History Rating, not Elo: it is one global
+  fit over every recorded match, its time axis is the **day** (one curve point
+  per day played, tied to the next by a Wiener prior), and it never credits a
+  match with a share of a result. So the log is grouped by day
+  (`matchDays`), the day header carries the movement (`ratingMoves` →
+  `RatingMoveNote`), and a day of four matches shows **one** figure rather than
+  the same figure four times, which would be a four-fold overstatement a reader
+  could not see through.
+  - **Both ends of it are published, dated ratings** - the very points the chart
+    above draws, already rounded by the engine - so the figure is arithmetic on
+    numbers the reader can see, the log cannot disagree with the chart, and no
+    API call was added. The join needs no date arithmetic either:
+    `PlayerMatch.eventDate` and `RatingPoint.date` are both the engine's UTC day
+    of the event's start.
+  - **The house rule holds on a movement too.** The chip prints the rating
+    *with* its margin, the breakdown prints the margin at both ends, and it says
+    when the movement is smaller than the margin - a `+18` under a `±98` has
+    separated nothing, which is the most useful thing there is to say about it.
+    The first recorded day is measured from the 1,200 anchor and labelled as
+    such, because that is a starting point rather than a day that was played.
+  - **Three factors are deliberately not shown**, each on a measurement rather
+    than on taste. An **event-tier multiplier**: the mechanism exists and ships
+    neutral (every tier counts 1; zero matches exist above Nexus Night), so a
+    line reading "×1.00" on every row is furniture. A **cross-scene
+    adjustment**: a scene is a connected component of the co-play graph, so 0 of
+    56,257 recorded games cross one and the term is zero for every match on the
+    site. The **drift allowance** between two play days: real, but its knob is
+    not identifiable from this data (held-out log loss is flat from 0.5 to 16),
+    so publishing it would dress a prior belief as a measurement. `RatingMove`
+    in `lib/ranking.ts` carries the full argument, and a test asserts the copy
+    names none of them.
+  - **A day with no point says nothing** - no dash. An unrated player has no
+    published curve at all (the engine writes history only for rated players),
+    and a dash would read as "the rating stood still". The chart above already
+    says why in words.
+  - **The breakdown is a disclosure, not a `title`.** A `title` does not exist
+    on a phone and is not reliably keyboard-reachable, and this breakdown is the
+    part that stops the figure being read as an Elo award. So it is a 44px
+    button - tap, Enter/Space, hover or focus, Escape to dismiss - and the panel
+    opens *inline*, because at 390px a positioned popover is what drags a page
+    sideways. `EventTooltip` was not reused: it takes a calendar `Event` and a
+    mouse position and is hover-only, so it fits neither the data nor the rule.
+- **The event name in a match row links to that event's page**, in the site's own
+  link colour rather than a quieter one of its own invention - there is no quiet
+  link idiom here, and a link nobody can see is not a link. It is never a dead
+  end by construction: the row exists because the engine replayed a *results
+  capture* for that event, which is the same condition `hasTournament` tests
+  before the calendar shows a trophy, so the `status: 'none'` events that would
+  open an empty page can never appear in a match log. The date left the row
+  when the day header took it.
 - **The player page reads absence off the profile, not off an error.**
   `/api/players/:id` used to 404 for a player the engine has never seen, and
   the page turned that into its message; it answers 200 now, so the branch is
