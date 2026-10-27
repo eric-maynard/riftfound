@@ -43,7 +43,7 @@ import { NavLink } from 'react-router-dom';
  * to this mark appeared not to have shipped for hours. Bump the suffix rather
  * than overwrite.
  */
-const RANKING_MARK = '/logo-rankings-v4.png';
+const RANKING_MARK = '/logo-rankings-v5.png';
 
 interface ModeSwitchProps {
   eventsSearch: string;

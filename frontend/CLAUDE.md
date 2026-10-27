@@ -65,16 +65,19 @@ lens is unsaturated) and strokes a trophy over the result, so the two marks
 share one swirl by construction and cannot drift apart again.
 
 The trophy is placed on the lens's own measurements: 58px wide, centred
-(100.5, 95), which is 41% of the 142px swirl at +14, +4 from its centre. It is
-also drawn the way the glass is drawn, which matters more than the geometry
-did - the lens is an **unfilled** ~3px `#CCCCCC` ring with the swirl showing
-straight through it, so the trophy is an outline in the same grey over a solid
-`#C87137` foot, echoing the glass's light lens over its solid brown handle. The
-version that filled and shaded the cup in gold matched every measurement and
-still read as a different logo. Rebuild with:
+(100.5, 95), which is 41% of the 142px swirl at +14, +4 from its centre. **The composition is shared; the material is not.** A version that also
+borrowed the lens's *drawing* - an unfilled grey outline - read as a trophy
+made of glass, which is right for a spyglass and wrong for a cup. What the two
+marks owe each other is placement and weight, not palette. The cup is solid
+`#F2C230` with a `#C8891F` plinth, and every shape carries a `#4A2608`
+contour: gold sits 15 degrees of hue from the swirl's `#EF7D01` and both are
+fully saturated, so without that contour the cup dissolves into the blades at
+36px. It is drawn at 68px, 48% of the swirl rather than the lens's 41%,
+because a cup has handles, a stem and a plinth to keep legible where a lens
+has one circle. Rebuild with:
 
 ```bash
-cd frontend && python3 scripts/build-rankings-mark.py public/logo.png public/logo-rankings-v4.png
+cd frontend && python3 scripts/build-rankings-mark.py public/logo.png public/logo-rankings-v5.png
 ```
 
 The asset filename is **versioned** because `deploy.sh frontend` only
