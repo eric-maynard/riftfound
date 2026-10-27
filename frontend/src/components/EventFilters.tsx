@@ -1,6 +1,7 @@
-import { useState, useEffect, useRef } from 'react';
-import { getLocationSuggestions, geocodeCity, reverseGeocode } from '../services/api';
+import { useState, useEffect, useId, useRef } from 'react';
+import { getLocationSuggestions, geocodeCity } from '../services/api';
 import type { GeocodeSuggestion } from '../types/event';
+import { MY_LOCATION_NAME, type LocationControl } from '../lib/geolocation';
 import TypeSelect from './TypeSelect';
 
 export interface EventFilters {
@@ -22,6 +23,14 @@ interface EventFiltersProps {
   useKilometers?: boolean;
   showFullEvents: boolean;
   onToggleShowFullEvents: () => void;
+  /**
+   * What the "use my current location" control says right now. Decided by
+   * `locationControl` in `lib/geolocation.ts` and owned by `CalendarPage`,
+   * because the same geolocation state drives the page-load default - there
+   * used to be a second, divergent copy of it in this file.
+   */
+  currentLocationControl: LocationControl;
+  onUseCurrentLocation: () => void;
 }
 
 const DISTANCE_VALUES = [5, 10, 25, 50, 100];
@@ -47,8 +56,9 @@ function filtersEqual(a: EventFilters, b: EventFilters): boolean {
   );
 }
 
-function EventFiltersComponent({ filters, appliedFilters, onFiltersChange, onSearch, availableFormats, useKilometers = false, showFullEvents, onToggleShowFullEvents }: EventFiltersProps) {
+function EventFiltersComponent({ filters, appliedFilters, onFiltersChange, onSearch, availableFormats, useKilometers = false, showFullEvents, onToggleShowFullEvents, currentLocationControl, onUseCurrentLocation }: EventFiltersProps) {
   const distanceOptions = getDistanceOptions(useKilometers);
+  const hintId = useId();
   const [cityInput, setCityInput] = useState(filters.location?.displayName || '');
   const [suggestions, setSuggestions] = useState<GeocodeSuggestion[]>([]);
   const [showSuggestions, setShowSuggestions] = useState(false);
@@ -190,65 +200,32 @@ function EventFiltersComponent({ filters, appliedFilters, onFiltersChange, onSea
     }
   };
 
-  const handleUseMyLocation = () => {
-    if (!navigator.geolocation) {
-      setError('Geolocation not supported');
-      return;
-    }
+  /**
+   * The location button cannot act right now - a fix is in flight, or a
+   * geocode is.
+   *
+   * Carried as `aria-disabled` and a guard rather than the `disabled`
+   * attribute: a disabled element loses focus, and "Locating..." can last ten
+   * seconds, so a keyboard reader who pressed the button would be dumped back
+   * on `<body>` and have to tab in again to find out what happened. The state
+   * is still announced, and the press is still inert.
+   */
+  const locationButtonInert = currentLocationControl.disabled || loading;
 
-    setLoading(true);
+  // Pressing the button clears a stale geocoding error: whatever the current
+  // location turns out to be, "Location not found" is no longer the answer to
+  // the question on screen.
+  const handleUseCurrentLocationClick = () => {
+    if (locationButtonInert) return;
     setError(null);
-
-    navigator.geolocation.getCurrentPosition(
-      async (position) => {
-        const lat = position.coords.latitude;
-        const lng = position.coords.longitude;
-
-        // Try to reverse geocode to get city name
-        try {
-          const response = await reverseGeocode(lat, lng);
-          if (response.data) {
-            setCityInput(response.data.displayName);
-            onFiltersChange({
-              ...filters,
-              location: {
-                lat: response.data.latitude,
-                lng: response.data.longitude,
-                displayName: response.data.displayName,
-              },
-            });
-          } else {
-            // Reverse geocoding failed, use 'My Location' as fallback
-            setCityInput('My Location');
-            onFiltersChange({
-              ...filters,
-              location: {
-                lat,
-                lng,
-                displayName: 'My Location',
-              },
-            });
-          }
-        } catch {
-          // Reverse geocoding failed, use 'My Location' as fallback
-          setCityInput('My Location');
-          onFiltersChange({
-            ...filters,
-            location: {
-              lat,
-              lng,
-              displayName: 'My Location',
-            },
-          });
-        }
-        setLoading(false);
-      },
-      () => {
-        setError('Unable to get location');
-        setLoading(false);
-      }
-    );
+    setShowSuggestions(false);
+    onUseCurrentLocation();
   };
+
+  // A geocoding failure is about the thing the reader just typed, so it takes
+  // the status line ahead of whatever the location control had to say.
+  const statusMessage = error ?? currentLocationControl.status;
+  const statusTone = error ? 'error' : currentLocationControl.tone;
 
   const handleDistanceChange = (value: number) => {
     onFiltersChange({
@@ -379,8 +356,10 @@ function EventFiltersComponent({ filters, appliedFilters, onFiltersChange, onSea
               onFocus={() => {
                 // Re-enable suggestions when user focuses input again
                 suppressSuggestionsRef.current = false;
-                // Clear "My Location" placeholder when user clicks in to type a new location
-                if (cityInput === 'My Location') {
+                // Clear the "My Location" stand-in when the reader clicks in
+                // to type a place. It only appears when reverse geocoding
+                // could not name the fix, and it is not a search term.
+                if (cityInput === MY_LOCATION_NAME) {
                   setCityInput('');
                 }
                 if (suggestions.length > 0) {
@@ -408,16 +387,45 @@ function EventFiltersComponent({ filters, appliedFilters, onFiltersChange, onSea
             )}
           </div>
           <div className="location-options-row">
-            <a
-              href="#"
-              className="use-location-link"
-              onClick={(e) => {
-                e.preventDefault();
-                if (!loading) handleUseMyLocation();
-              }}
-            >
-              Use my current location
-            </a>
+            {/* A real <button>, not the `<a href="#">` this used to be. It acts
+                on this page rather than going anywhere: a link announces itself
+                as navigation, answers Enter but not Space, and - the reason it
+                matters here - has an href that `carryPreview` would have to
+                keep the preview flag on. A button has nothing to carry.
+
+                Withheld entirely where geolocation cannot work at all (no API,
+                or an insecure origin); the live region below then carries the
+                reason, because a control that can never do anything is
+                furniture and a disabled one is unfocusable. Everywhere else it
+                stays pressable - including when the permission is blocked,
+                where the label says so and the press explains how to undo it.
+                See lib/geolocation.ts. */}
+            {currentLocationControl.available && (
+              <button
+                type="button"
+                className="use-location-button"
+                onClick={handleUseCurrentLocationClick}
+                aria-disabled={locationButtonInert || undefined}
+                aria-busy={currentLocationControl.busy || undefined}
+                aria-describedby={currentLocationControl.hint ? hintId : undefined}
+                title={currentLocationControl.hint || undefined}
+              >
+                <svg width="13" height="13" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+                  <circle cx="8" cy="8" r="5.5" fill="none" stroke="currentColor" strokeWidth="1.5" />
+                  <circle cx="8" cy="8" r="1.75" fill="currentColor" />
+                  <path
+                    d="M8 0.5v2.5M8 13v2.5M0.5 8h2.5M13 8h2.5"
+                    stroke="currentColor"
+                    strokeWidth="1.5"
+                    strokeLinecap="round"
+                  />
+                </svg>
+                {currentLocationControl.label}
+              </button>
+            )}
+            {currentLocationControl.hint && (
+              <span id={hintId} className="sr-only">{currentLocationControl.hint}</span>
+            )}
             <label className="hide-full-toggle">
               <input
                 type="checkbox"
@@ -442,7 +450,20 @@ function EventFiltersComponent({ filters, appliedFilters, onFiltersChange, onSea
         </div>
       </div>
 
-      {error && <div className="filter-error">{error}</div>}
+      {/* One live region for both kinds of news - a failed geocode and the
+          state of the location control - and it is **always in the DOM**,
+          empty or not. A `role="status"` element that appears at the same
+          moment as its text is an insertion rather than an update, and screen
+          readers routinely miss those; an empty block box has no line box, so
+          it costs no height while it waits. A geocode error wins the slot,
+          because it answers the thing the reader just did. */}
+      <p
+        className={`filter-status${statusTone === 'error' ? ' filter-status-error' : ''}`}
+        role="status"
+        aria-live="polite"
+      >
+        {statusMessage}
+      </p>
     </div>
   );
 }

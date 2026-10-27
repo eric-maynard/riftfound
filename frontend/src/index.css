@@ -622,22 +622,82 @@ select:disabled {
   text-transform: capitalize;
 }
 
-/* Row containing "Use my location" and "Hide full events" */
+/* Row containing "Use my current location" and "Hide full events".
+   It wraps: the location button relabels itself in several states and the
+   longest of them ("Location blocked - how to allow", measured at 226px) no
+   longer fits beside the toggle inside a 390px viewport. Wrapping puts it on
+   its own line there instead of pushing the panel sideways. */
 .event-filters .location-options-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.5rem;
   margin-top: 0.375rem;
 }
 
-/* Use my location link */
-.event-filters .use-location-link {
-  display: inline-block;
-  margin-left: 0.25rem;
-  font-size: 0.75rem;
+/* "Use my current location".
+   A real button, so it is styled as one rather than as the link it used to be:
+   a quiet bordered control reads as something to press, which matters more
+   than usual here because the thing it does is not undoable by going "back".
+   Ink is --color-cyan, 6.61:1 on this panel's #44475a. */
+.event-filters .use-location-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  min-height: 32px;
+  padding: 0.25rem 0.5rem;
+  background-color: transparent;
+  border: 1px solid var(--color-border);
+  border-radius: 0.375rem;
   color: var(--color-cyan);
-  text-decoration: none;
+  font-family: inherit;
+  font-size: 0.75rem;
+  line-height: 1.2;
+  text-align: left;
   cursor: pointer;
+  transition: border-color 0.15s ease;
+}
+
+/* Not the site's pink link hover: #ff79c6 on this panel is 3.84:1, which fails
+   AA for 12px text. The border carries the hover instead, with the underline
+   for anyone who reads hover as "this is pressable". */
+.event-filters .use-location-button:hover:not([aria-disabled='true']) {
+  border-color: var(--color-cyan);
+  text-decoration: underline;
+}
+
+.event-filters .use-location-button:focus-visible {
+  outline: 2px solid var(--color-cyan);
+  outline-offset: 2px;
+}
+
+/* Inert means "Locating..." - text a reader actively wants to read - so not
+   .btn-search's opacity: 0.5, which composites the cyan to 2.91:1 over this
+   panel. The lifted muted step is 5.25:1 here. It is aria-disabled rather than
+   disabled so the keyboard focus survives the wait; see EventFilters.tsx. */
+.event-filters .use-location-button[aria-disabled='true'] {
+  color: var(--color-text-muted-lifted);
+  cursor: default;
+}
+
+/* The filters' one live region. Empty most of the time, and an empty block has
+   no line box, so it occupies no height until it has something to say. */
+.event-filters .filter-status {
+  margin: 0;
+  font-size: 0.75rem;
+  line-height: 1.5;
+  color: var(--color-text-muted-lifted);
+}
+
+.event-filters .filter-status:not(:empty) {
+  margin-top: 0.5rem;
+}
+
+/* Red as text: --color-error (#ff5555) is 2.91:1 on this panel, where this
+   step is 5.12:1. (The old .filter-error used the saturated value.) */
+.event-filters .filter-status-error {
+  color: var(--color-red-text);
 }
 
 /* Hide full events toggle */
@@ -690,17 +750,6 @@ select:disabled {
 
 .event-filters .filter-group .hide-full-toggle input:checked + .toggle-switch::after {
   left: 15px;
-}
-
-.event-filters .use-location-link:hover {
-  color: var(--color-pink);
-  text-decoration: underline;
-}
-
-.event-filters .filter-error {
-  margin-top: 0.5rem;
-  color: var(--color-error);
-  font-size: 0.875rem;
 }
 
 /* Search button group */
@@ -1332,6 +1381,14 @@ select:disabled {
   .event-filters .location-options-row {
     margin-top: 0.25rem;
     margin-bottom: 0.25rem;
+  }
+
+  /* A real touch target, and never wider than the panel: the button's label
+     changes with its state and the longest one must wrap inside the filters
+     rather than drag the page sideways. */
+  .event-filters .use-location-button {
+    min-height: 44px;
+    max-width: 100%;
   }
 
   /* Fix calendar toolbar - stack vertically on mobile */

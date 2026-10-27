@@ -49,8 +49,11 @@ riftfound/
 
 ## Default Behavior
 
-- Calendar defaults to San Francisco, CA with 25mi radius
-- Tries browser geolocation on load, falls back to SF if denied
+- Calendar defaults to **the reader's current location**, 25mi radius, with San
+  Francisco, CA as the fallback. A shared `?lat=&lng=` link outranks both.
+- The automatic permission prompt fires **once per browser**; after that only
+  the explicit "Use my current location" button asks. See
+  `frontend/src/lib/geolocation.ts`.
 - Scraper runs every 60 minutes via EventBridge
 
 ## Environment Variables

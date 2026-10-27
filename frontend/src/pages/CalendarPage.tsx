@@ -11,20 +11,23 @@ import type {
   MoreLinkArg,
 } from '@fullcalendar/core';
 import type { DateClickArg } from '@fullcalendar/interaction';
-import { MAX_AVAILABILITY_IDS, getEvents, getTournamentAvailability, reverseGeocode } from '../services/api';
+import { MAX_AVAILABILITY_IDS, getEvents, getTournamentAvailability } from '../services/api';
 import type { Event } from '../types/event';
 import { dateMarkerToLocalDate, localDateKey } from '../lib/calendarDates';
 import { eventColor } from '../lib/eventColors';
 import EventFilters, { type EventFilters as Filters } from '../components/EventFilters';
 import EventTooltip from '../components/EventTooltip';
 import { isRankingsPreview } from '../lib/preview';
+import { locationControl, sameSpot, shouldAutoLocate } from '../lib/geolocation';
+import { useCurrentLocation } from '../hooks/useCurrentLocation';
 import DayEventsModal from '../components/DayEventsModal';
 import EventTrophyLink from '../components/EventTrophyLink';
 
 // Miles to km conversion
 const MILES_TO_KM = 1.60934;
 
-// Default location: San Francisco, CA
+// The fallback, not the default: current location is tried first and this is
+// where a reader lands when it cannot be had. See the init effect below.
 const DEFAULT_LOCATION = {
   lat: 37.7749,
   lng: -122.4194,
@@ -157,6 +160,14 @@ interface Settings {
   };
   distanceMiles?: number;
   metricId?: string;
+  /**
+   * This browser has been asked for its location automatically, once, whatever
+   * it answered. A dismissed prompt is indistinguishable from one that was
+   * never shown - both leave the permission in `prompt` - so without this flag
+   * "try current location first" becomes "prompt on every single load". See
+   * `shouldAutoLocate`.
+   */
+  geoAutoAsked?: boolean;
 }
 
 const DEFAULT_SETTINGS: Settings = {
@@ -316,7 +327,6 @@ function CalendarPage({ active = true }: CalendarPageProps) {
     format: initialFormat,
   }));
 
-  const [locationInitialized, setLocationInitialized] = useState(false);
   const [tooltipEvent, setTooltipEvent] = useState<Event | null>(null);
   const [tooltipPosition, setTooltipPosition] = useState({ x: 0, y: 0 });
   const [dayEventsModal, setDayEventsModal] = useState<{ date: Date; events: Event[] } | null>(null);
@@ -332,6 +342,16 @@ function CalendarPage({ active = true }: CalendarPageProps) {
   const isUserSearchRef = useRef(false); // Track if search was user-initiated
   const isMobile = useIsMobile();
 
+  // "Use my current location" - one owner for the page-load default and the
+  // button in the filters, which used to be two separate implementations.
+  const geo = useCurrentLocation();
+  // Mount effects run twice under StrictMode in development, and this one
+  // prompts for a permission, so it is guarded by a ref rather than by state.
+  const locationInitializedRef = useRef(false);
+  // The reader has picked a place by hand. A fix that arrives afterwards - the
+  // prompt can sit open for as long as they like - must not land on top of it.
+  const readerPickedLocationRef = useRef(false);
+
   // Track current visible date range for incremental fetching
   const [visibleDateRange, setVisibleDateRange] = useState<{ start: Date; end: Date } | null>(null);
 
@@ -339,108 +359,6 @@ function CalendarPage({ active = true }: CalendarPageProps) {
   const eventsCacheRef = useRef<Map<string, { events: Event[]; tooMany: boolean }>>(new Map());
 
   const { minDate, maxDate } = useMemo(() => getValidDateRange(), []);
-
-  // Try to get user's location on mount, unless we have URL params or a saved location
-  useEffect(() => {
-    if (locationInitialized) return;
-
-    // If we have URL params, use them and skip geolocation
-    if (urlFilters?.location) {
-      setLocationInitialized(true);
-      setSearchTrigger(t => t + 1); // Trigger search with URL params
-      return;
-    }
-
-    // If we have a saved location, use it and skip geolocation
-    if (settings.location) {
-      setLocationInitialized(true);
-      setSearchTrigger(t => t + 1); // Trigger search with saved location
-      return;
-    }
-
-    // No URL params or saved location - try geolocation, fallback to San Francisco
-    if (navigator.geolocation) {
-      navigator.geolocation.getCurrentPosition(
-        async (position) => {
-          const lat = position.coords.latitude;
-          const lng = position.coords.longitude;
-
-          // Try to reverse geocode to get city name
-          let displayName = 'My Location';
-          try {
-            const response = await reverseGeocode(lat, lng);
-            if (response.data) {
-              displayName = response.data.displayName;
-            }
-          } catch {
-            // Reverse geocoding failed, use 'My Location' as fallback
-          }
-
-          const newLocation = {
-            lat,
-            lng,
-            displayName,
-          };
-          setStagedFilters(prev => ({
-            ...prev,
-            location: newLocation,
-          }));
-          setAppliedFilters(prev => ({
-            ...prev,
-            location: newLocation,
-          }));
-          // Save location to localStorage so we don't prompt again on next visit
-          setSettings(prev => {
-            const updated = {
-              ...prev,
-              location: newLocation,
-              distanceMiles: initialDistance,
-            };
-            saveSettings(updated);
-            return updated;
-          });
-          setLocationInitialized(true);
-          setSearchTrigger(t => t + 1); // Trigger search after geolocation
-        },
-        () => {
-          // Geolocation denied or failed - save default location so we don't prompt again
-          // But don't overwrite if user already searched for something
-          setSettings(prev => {
-            if (prev.location) {
-              return prev; // Keep existing location
-            }
-            const updated = {
-              ...prev,
-              location: DEFAULT_LOCATION,
-              distanceMiles: initialDistance,
-            };
-            saveSettings(updated);
-            return updated;
-          });
-          setLocationInitialized(true);
-          setSearchTrigger(t => t + 1); // Trigger initial search
-        },
-        { timeout: 5000 }
-      );
-    } else {
-      // No geolocation support - save default location so we don't keep checking
-      // But don't overwrite if user already has a saved location
-      setSettings(prev => {
-        if (prev.location) {
-          return prev; // Keep existing location
-        }
-        const updated = {
-          ...prev,
-          location: DEFAULT_LOCATION,
-          distanceMiles: initialDistance,
-        };
-        saveSettings(updated);
-        return updated;
-      });
-      setLocationInitialized(true);
-      setSearchTrigger(t => t + 1); // Trigger initial search
-    }
-  }, [locationInitialized, urlFilters?.location, settings.location]);
 
   // Fetch events when search is triggered or visible date range changes
   useEffect(() => {
@@ -592,7 +510,12 @@ function CalendarPage({ active = true }: CalendarPageProps) {
 
   // Handle search button click
   // Accepts optional filters to apply directly (avoids race condition when geocoding)
-  const handleSearch = useCallback((filtersOverride?: Filters) => {
+  //
+  // `userInitiated` is false for the one search nobody asked for: the automatic
+  // current-location fix on load. A user search blanks the grid and raises the
+  // loading overlay, which is right when someone pressed Search and wrong when
+  // a fix quietly arrives behind events that are already drawn.
+  const handleSearch = useCallback((filtersOverride?: Filters, userInitiated = true) => {
     const filtersToApply = filtersOverride ?? stagedFilters;
     setAppliedFilters(filtersToApply);
     if (filtersOverride) {
@@ -611,9 +534,133 @@ function CalendarPage({ active = true }: CalendarPageProps) {
         return updated;
       });
     }
-    isUserSearchRef.current = true; // Mark as user-initiated search
+    if (userInitiated) {
+      isUserSearchRef.current = true;
+      readerPickedLocationRef.current = true;
+    }
     setSearchTrigger(t => t + 1);
   }, [stagedFilters]);
+
+  // Read at press time rather than closed over, because a press is async: the
+  // reader can change the distance or the type while the fix is in flight.
+  const stagedFiltersRef = useRef(stagedFilters);
+  stagedFiltersRef.current = stagedFilters;
+
+  // Search near a fix, keeping every other staged filter as it stands.
+  const applyPlace = useCallback((place: Filters['location'], userInitiated: boolean) => {
+    handleSearch({ ...stagedFiltersRef.current, location: place }, userInitiated);
+  }, [handleSearch]);
+
+  /**
+   * Where to look, on load.
+   *
+   * **Current location is the default.** The order is: a shared URL, then the
+   * reader's own position, then the last place they looked, then San Francisco.
+   * Only the first of those outranks the position - the calendar's filters are
+   * shareable, and a `?lat=&lng=` link is a deliberate statement about where to
+   * look that a permission prompt has no business interrupting.
+   *
+   * `shouldAutoLocate` decides whether asking is allowed at all; it is pure and
+   * tested, and the reasons are written down there - chiefly that the automatic
+   * prompt fires once per browser and never again, so a reader who said no is
+   * not asked on every visit.
+   *
+   * The fetch is **not** held behind the fix when there is already a place to
+   * draw. A returning reader would otherwise sit in front of a blank calendar
+   * for as long as the permission prompt stayed open, which is a worse first
+   * paint than the city they were looking at yesterday; the fix re-searches
+   * when it lands, and `sameSpot` drops that second request when they have not
+   * actually moved.
+   */
+  useEffect(() => {
+    if (locationInitializedRef.current) return;
+    locationInitializedRef.current = true;
+
+    const sharedLocation = Boolean(urlFilters?.location);
+    const savedLocation = settings.location ?? null;
+
+    const run = async () => {
+      const permission = await geo.probe();
+      const auto = shouldAutoLocate({
+        support: geo.support,
+        sharedLocation,
+        permission,
+        autoAsked: Boolean(settings.geoAutoAsked),
+      });
+
+      // Draw something straight away unless the fix is the only place we have.
+      if (!auto || sharedLocation || savedLocation) {
+        setSearchTrigger(t => t + 1);
+      }
+
+      if (!auto) return;
+
+      // Remember that we asked, before the prompt rather than after it: a
+      // reader who closes the tab on the open prompt has still been asked.
+      // `granted` needs no prompt to read, so it is not spent on this.
+      if (permission !== 'granted') {
+        setSettings(prev => {
+          if (prev.geoAutoAsked) return prev;
+          const updated = { ...prev, geoAutoAsked: true };
+          saveSettings(updated);
+          return updated;
+        });
+      }
+
+      const place = await geo.locate('auto');
+
+      if (!place) {
+        // Denied, timed out, or the device could not say. The filters already
+        // hold the saved location or San Francisco, so there is nothing to
+        // correct - only a first search to start if we were waiting on this.
+        if (!sharedLocation && !savedLocation) setSearchTrigger(t => t + 1);
+        return;
+      }
+
+      // The reader searched for somewhere while the prompt was open: that is a
+      // choice, and it outranks a fix they never asked for.
+      if (readerPickedLocationRef.current) return;
+      if (sameSpot(place, appliedFilters.location)) return;
+
+      applyPlace(place, false);
+    };
+
+    run();
+    // Deliberately one-shot: this is the load-time decision, and every input it
+    // reads is settled by first render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  /**
+   * The button in the filters.
+   *
+   * `locate` is called **even when the permission is known to be denied**, and
+   * that is the point rather than an oversight: a denied permission makes
+   * `getCurrentPosition` fail immediately with `PERMISSION_DENIED` without
+   * showing anybody a prompt, so the call is free - and a reader who has just
+   * allowed us in their browser's site settings gets located instead of
+   * lectured. When it does fail, the failure is what puts the "here is how to
+   * allow it" line in the live region. See `lib/geolocation.ts`, which holds
+   * the reasoning for the whole denied state.
+   */
+  const handleUseCurrentLocation = useCallback(async () => {
+    const place = await geo.locate('user');
+    if (place) applyPlace(place, true);
+  }, [geo, applyPlace]);
+
+  // What the control says, in every state. Pure, and tested.
+  const currentLocationControl = useMemo(
+    () =>
+      locationControl({
+        support: geo.support,
+        permission: geo.permission,
+        outcome: geo.outcome,
+        attempt: geo.attempt,
+        atCurrentLocation: sameSpot(geo.fix, appliedFilters.location),
+        locationName: geo.fix?.displayName ?? null,
+      }),
+    [geo.support, geo.permission, geo.outcome, geo.attempt, geo.fix, appliedFilters.location],
+  );
 
   // Upstream sometimes has duplicate events (same store+name+time, different IDs).
   // Collapse them, keeping the most recently created.
@@ -907,6 +954,8 @@ function CalendarPage({ active = true }: CalendarPageProps) {
           useKilometers={settings.useKilometers}
           showFullEvents={settings.showFullEvents}
           onToggleShowFullEvents={handleToggleShowFullEvents}
+          currentLocationControl={currentLocationControl}
+          onUseCurrentLocation={handleUseCurrentLocation}
         />
       </div>
 

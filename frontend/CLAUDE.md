@@ -31,7 +31,10 @@ src/
 │   ├── ranking.ts        # Pure helpers (scope, formatting, record, chart geometry)
 │   ├── tournament.ts     # Pure helpers for the event page
 │   ├── calendarDates.ts  # FullCalendar date markers -> local dates
-│   └── eventColors.ts    # One chip colour per event type, measured
+│   ├── eventColors.ts    # One chip colour per event type, measured
+│   └── geolocation.ts    # "Use my current location" as a pure state machine
+├── hooks/
+│   └── useCurrentLocation.ts  # The browser half of it (permission, fix, name)
 ├── services/
 │   └── api.ts            # API client functions
 └── types/
@@ -419,8 +422,19 @@ round trip.
 
 ### CalendarPage
 - Uses FullCalendar with `dayGridPlugin`
-- Defaults to San Francisco, CA 25mi on load
-- Tries browser geolocation, falls back to SF if denied
+- **Current location is the default**, 25mi, with San Francisco as the
+  fallback it always was. The order on load is: a shared `?lat=&lng=` URL, then
+  the reader's own position, then the last place they looked, then SF - and
+  only the first of those outranks the position, because a shared link is a
+  deliberate statement about where to look and a permission prompt firing over
+  someone else's link is both a surprise and wrong. The decision is
+  `shouldAutoLocate` in `lib/geolocation.ts`, pure and tested.
+- **The fetch is not held behind the fix** when there is already a place to
+  draw. A returning reader would otherwise sit in front of a blank calendar for
+  as long as the prompt stayed open; the fix re-searches when it lands, and
+  `sameSpot` drops that second request when they have not actually moved.
+  `sameSpot` rounds to the share URL's own four decimal places, so a link
+  shared from "near me" still reads as "near me" when its author reopens it.
 - Events displayed as "Time | Shop Name"
 - Navigation restricted to 3-month window via `validRange`
 - `fixedWeekCount={false}` prevents extra rows
@@ -447,8 +461,69 @@ round trip.
 ### EventFilters
 - Format: dropdown (All, Constructed, Sealed, Draft, Multiplayer)
 - Distance: dropdown (Any, 5mi, 10mi, 25mi, 50mi, 100mi)
-- Location: text input + "Use my current location" link
+- Location: text input + a **"Use my current location" button**
 - Active filter shown as pill with Clear button
+
+#### "Use my current location"
+
+A real `<button>`, not the `<a href="#">` it used to be: it acts on this page
+rather than going anywhere, so it answers Space as well as Enter, announces
+itself as a control, and has no href for `carryPreview` to keep the preview
+flag on. The wording for every state is decided by `locationControl` in
+`lib/geolocation.ts` - pure, tested, and the only place any of these strings
+live - while `hooks/useCurrentLocation.ts` owns the three impure things
+(the permission store, `getCurrentPosition`, the reverse geocode). `CalendarPage`
+holds the one copy of that state and feeds both the page-load default and this
+button. There used to be **two** implementations, one per file, and they had
+already drifted: the filters' copy searched from the coordinates reverse
+geocoding handed *back* - the centre of the named city, not the reader, which
+in a large metro moves them tens of miles on a control labelled "my current
+location". The fix decides where to search; the lookup only decides what to
+call it.
+
+- **Denied is the state to get right.** A refused permission cannot be
+  re-prompted from JavaScript, so a button that keeps saying "Use my current
+  location" is a button that does nothing, repeatedly. The label therefore
+  says **"Location blocked - how to allow"** before it is pressed, the button
+  stays **pressable** anyway - only the browser's own site settings can undo
+  it, and a reader who has just used them needs something to press; a disabled
+  button is also skipped by a screen reader - and pressing it prints the
+  instruction rather than failing silently. The press still calls
+  `getCurrentPosition` first, which is free, prompts nobody, and locates
+  outright anyone who has already unblocked us. `PermissionStatus.onchange` is
+  watched too, so the label heals without a reload.
+- **The one-click way back.** With a fix in hand and the filters pointing at a
+  city the reader searched for, the label reads "Back to my current location".
+  Before this there was no way back without a reload.
+- **No prompt spam.** The automatic prompt fires once per browser
+  (`geoAutoAsked` in settings) and never again; a granted permission is exempt,
+  because reading one shows no prompt. How long "blocked" survives a reload
+  depends on the browser, and the reasoning for not persisting it ourselves -
+  a *dismissed* prompt is indistinguishable from a refusal - is in
+  `lib/geolocation.ts`.
+- **Withheld entirely where it could never work**: no `navigator.geolocation`,
+  or `isSecureContext` false. The note then carries the reason, named by its
+  cause - plain http fails with `PERMISSION_DENIED`, the same code a refusal
+  gives, so without the secure-context check we would send that reader after a
+  browser setting that is not the problem.
+- **One live region** (`role="status"`, `aria-live="polite"`) carries both a
+  failed geocode and the location control's news, and it is always in the DOM:
+  a status element that appears with its text is an insertion, not an update,
+  and screen readers routinely miss those. An empty block has no line box, so
+  it costs no height while it waits. A geocode error wins the slot, because it
+  answers what the reader just did.
+- **In flight it is `aria-disabled`, not `disabled`**: "Locating..." can last
+  ten seconds, and a disabled element loses focus, which would dump a keyboard
+  reader back on `<body>` exactly when they are waiting for an answer.
+- Measured: cyan ink `6.61:1` on the `#44475a` filter panel, the inert step
+  `5.25:1`, the error line's `--color-red-text` `5.12:1` (the old
+  `.filter-error` used `#ff5555`, which is **2.91:1** there). The site's pink
+  link hover is **3.84:1** at this size and is not used; the border and an
+  underline carry the hover instead. `.btn-search`'s `opacity: 0.5` is not used
+  either - it composites the cyan to 2.91:1.
+- At 390px the options row wraps, the button is a 44px target, and the longest
+  label measures 226px inside a 268px row. Verified in Chromium across all
+  eight states: no page-level horizontal scroll in any of them.
 
 ## Styling
 
