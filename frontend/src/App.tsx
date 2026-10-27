@@ -1,4 +1,5 @@
 import { Routes, Route, Navigate, useLocation } from 'react-router-dom';
+import { carryPreview } from './lib/preview';
 import Layout from './components/Layout';
 import EventDetailPage from './pages/EventDetailPage';
 import RankingPage from './pages/RankingPage';
@@ -16,8 +17,9 @@ function CalendarSlot() {
  * The section used to live at the singular `/ranking`, which was handed out as
  * a live link before the rename. Those URLs keep resolving: this forwards the
  * whole tail - `/ranking/players/:id`, the query string and the hash - to the
- * plural path, so a shared scene selection or a `#how-ranking-works` anchor
- * survives the hop.
+ * plural path, so a shared scene or set selection survives the hop. The hash
+ * is forwarded too, though the one anchor that used to be worth naming
+ * (`#how-ranking-works`) went with the section it headed.
  */
 function LegacyRankingRedirect() {
   const location = useLocation();
@@ -30,6 +32,20 @@ function LegacyRankingRedirect() {
   );
 }
 
+/**
+ * Anything unrecognised goes back to the calendar.
+ *
+ * It keeps the preview flag and nothing else: the rest of an unmatched URL's
+ * query string is as likely to be junk as the path was, but the flag is what
+ * decides whether the mode switch exists. Landing someone on a calendar with
+ * the section they were reading silently switched off is the same stranding
+ * every other link here guards against (lib/preview.ts).
+ */
+function NotFoundRedirect() {
+  const { search } = useLocation();
+  return <Navigate to={carryPreview('/', search)} replace />;
+}
+
 function App() {
   return (
     <Routes>
@@ -39,7 +55,7 @@ function App() {
         <Route path="rankings" element={<RankingPage />} />
         <Route path="rankings/players/:playerId" element={<PlayerPage />} />
         <Route path="ranking/*" element={<LegacyRankingRedirect />} />
-        <Route path="*" element={<Navigate to="/" replace />} />
+        <Route path="*" element={<NotFoundRedirect />} />
       </Route>
     </Routes>
   );

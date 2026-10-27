@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react';
-import { useHref, useNavigate } from 'react-router-dom';
+import { useHref, useLocation, useNavigate } from 'react-router-dom';
+import { carryPreview } from '../lib/preview';
 
 /**
  * The trophy on an event row: "this event has standings".
@@ -38,7 +39,17 @@ interface EventTrophyLinkProps {
 
 function EventTrophyLink({ externalId, label, variant = 'inline' }: EventTrophyLinkProps) {
   const navigate = useNavigate();
-  const to = `/events/${encodeURIComponent(externalId)}`;
+  const { search } = useLocation();
+  /*
+   * The flag rides the destination, not just the `href`.
+   *
+   * This affordance exists only inside the Rankings preview, and the event
+   * page it opens is the reader's entry into the section. Both routes out of
+   * here go through `to`: the hand-rolled `navigate` below and the real
+   * `href` a modified click follows. Dropping the flag on either one would
+   * open a page whose mode switch is gone (lib/preview.ts).
+   */
+  const to = carryPreview(`/events/${encodeURIComponent(externalId)}`, search);
   const href = useHref(to);
   const ref = useRef<HTMLAnchorElement>(null);
 

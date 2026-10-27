@@ -11,14 +11,37 @@ import { NavLink } from 'react-router-dom';
  * Each side remembers the query string its section was last on, so switching
  * away and back does not throw away a shared calendar filter URL or the set and
  * scene a reader picked in Rankings.
+ *
+ * **The names are visible on phones.** Two 36px marks with the inactive one
+ * desaturated is a legible toggle on a pointer device, where the sliding thumb
+ * animates and hover lifts the other side. On touch there is no hover, the
+ * thumb reads as decoration at that size, and the whole control sits centred
+ * at the top of the page looking like a logo - so a first-time phone reader
+ * could not tell it was a control at all, let alone which half was live. The
+ * targets were never the problem (both measure 44x44 and nothing overlaps
+ * them); the affordance was. Under 600px the switch is already out of the
+ * fixed corner and in the page flow, where it is not competing with the
+ * calendar for width, so the names can simply be shown - and the lavender
+ * wash moves from the sliding pseudo-element onto the active option itself,
+ * because once the two sides have different widths a fixed `translateX` is
+ * pointing at the wrong place. CSS carries all of that; the markup is the
+ * same control either way.
  */
 
 /**
- * Which trophy treatment the Rankings mark uses. `compact` keeps the swirl's
- * open centre - the most recognisable part of the rift motif - which `classic`
- * crosses with the trophy's left handle. Swapping variants is this line.
+ * The Rankings mark, built to the same composition as the Events mark: Riot's
+ * Riftbound swirl, inset in the canvas, with a small object over its open
+ * centre pushed down and to the right. The offsets are measured off `logo.png`
+ * so the two read as siblings; `public/logo-rankings-v3.svg` carries the
+ * numbers and the reasoning.
+ *
+ * **The filename is versioned because `deploy.sh frontend` only invalidates
+ * `index.html`.** A changed asset that keeps its name is served from browser
+ * and edge caches long after the deploy, which is exactly how an earlier fix
+ * to this mark appeared not to have shipped for hours. Bump the suffix rather
+ * than overwrite.
  */
-const RANKING_MARK = '/logo-ranking-compact.png';
+const RANKING_MARK = '/logo-rankings-v3.png';
 
 interface ModeSwitchProps {
   eventsSearch: string;
@@ -34,10 +57,10 @@ function ModeSwitch({ eventsSearch, rankingSearch, active }: ModeSwitchProps) {
         to={{ pathname: '/', search: eventsSearch }}
         end
         className="mode-switch-option"
-        title="Event View"
+        title="Events"
       >
         <img src="/logo.png" alt="" aria-hidden="true" />
-        <span className="sr-only">Event View</span>
+        <span className="mode-switch-label">Events</span>
       </NavLink>
       <NavLink
         to={{ pathname: '/rankings', search: rankingSearch }}
@@ -45,7 +68,7 @@ function ModeSwitch({ eventsSearch, rankingSearch, active }: ModeSwitchProps) {
         title="Rankings"
       >
         <img src={RANKING_MARK} alt="" aria-hidden="true" />
-        <span className="sr-only">Rankings</span>
+        <span className="mode-switch-label">Rankings</span>
       </NavLink>
     </nav>
   );

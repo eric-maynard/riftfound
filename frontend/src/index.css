@@ -287,6 +287,22 @@ a:hover {
   outline-offset: 2px;
 }
 
+/* The section names. Hidden to the eye on a pointer device, where the thumb
+   and the hover state carry the control; shown under 600px, where neither
+   does. Same properties as .sr-only, but its own class so the mobile rule can
+   simply undo them. */
+.mode-switch-label {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .mode-switch::before,
   .mode-switch-option img {
@@ -925,12 +941,17 @@ select:disabled {
    and the title already ellipsises, so it loses 16px of label rather than
    wrapping. In the popover the chips are a list with room to spare, so the
    target grows to 24px. */
+/* Not on the calendar grid. One `eventContent` renders both the grid chip and
+   the "+N more" popover, so the popover - the only way into FullCalendar's own
+   day list - is reached by hiding it everywhere and showing it back there. The
+   cost is real and worth knowing: a day with three or fewer events has no
+   "+N more" link, so those events have no trophy on desktop at all. */
 .fc .event-trophy {
-  min-width: 15px;
-  min-height: 15px;
+  display: none;
 }
 
 .fc .fc-popover .event-trophy {
+  display: inline-flex;
   min-width: 24px;
   min-height: 24px;
 }
@@ -1207,11 +1228,84 @@ select:disabled {
   }
 
   /* The mode switch is navigation, so it stays - but it leaves the fixed
-     corner and sits in the page flow, where it costs no horizontal room. */
+     corner and sits in the page flow, where it costs no horizontal room.
+
+     And because it costs none, it can afford its names. Two unlabelled marks
+     read as a logo on a phone: there is no hover to lift the inactive side and
+     the 44px thumb reads as decoration, so nothing says "tap the other half".
+     With the names shown, the active side is unambiguous and the inactive one
+     is visibly a place to go. The targets are unchanged - each option is still
+     at least 44x44, now wider. */
   .mode-switch {
     position: static;
-    margin: 6px auto 2px;
+    margin: 6px auto 4px;
     width: max-content;
+    max-width: calc(100% - 32px);
+    gap: 3px;
+    padding: 3px;
+  }
+
+  /* The sliding thumb is a fixed 44px moved by a fixed 46px, which is wrong
+     the moment the two options stop being square. The same wash goes on the
+     active option instead, so it cannot drift out of register. */
+  .mode-switch::before {
+    display: none;
+  }
+
+  /* Short and wide, not tall. The 44px touch floor belongs on the *target*,
+     not on the painted pill: the row is 36px like a text input, and each
+     option's tap area is extended to 44px with padding that costs no height.
+     The marks lose their generous square padding for the same reason. */
+  .mode-switch-option {
+    width: auto;
+    /* `height` not `min-height`: the base rule is a hard 44px square, and a
+       min- only loses to it. */
+    height: 36px;
+    min-width: 0;
+    gap: 5px;
+    padding: 0 9px 0 5px;
+  }
+
+  .mode-switch-option.active,
+  .mode-switch-option[aria-current='page'] {
+    background: rgba(189, 147, 249, 0.22);
+    box-shadow: inset 0 0 0 1px rgba(189, 147, 249, 0.55);
+  }
+
+  /* The marks shrink a little to buy the names their room: two labelled
+     options come to ~270px, inside 390px with the 16px gutters to spare. */
+  .mode-switch-option img {
+    width: 22px;
+    height: 22px;
+  }
+
+  /* Inactive, not disabled: it has to look worth tapping. */
+  .mode-switch-option img {
+    opacity: 0.6;
+  }
+
+  /* Composited over the real ancestors, not guessed from the token:
+     rgba(68,71,90,.55) on --color-bg #363b43 gives the track #3e4250, and the
+     active option's rgba(189,147,249,.22) on that gives #5a5475.
+       inactive --color-text-muted-lifted #b8c3ec on #3e4250  5.74:1
+       active   --color-text              #f8f8f2 on #5a5475  6.66:1 */
+  .mode-switch-label {
+    position: static;
+    width: auto;
+    height: auto;
+    margin: 0;
+    overflow: visible;
+    clip: auto;
+    font-size: 0.8125rem;
+    font-weight: 500;
+    line-height: 1;
+    color: var(--color-text-muted-lifted);
+  }
+
+  .mode-switch-option.active .mode-switch-label,
+  .mode-switch-option[aria-current='page'] .mode-switch-label {
+    color: var(--color-text);
+    font-weight: 600;
   }
 
   /* No fixed element to clear any more */
@@ -1996,6 +2090,44 @@ select:disabled {
   font-variant-numeric: tabular-nums;
 }
 
+/* ---------------------------------------------------------------
+   An unsettled rating
+   ---------------------------------------------------------------
+   A real number, printed quieter and carrying no position.
+
+   This replaced a column of the word `Unranked`, which read as a broken page
+   and threw away a figure the engine was willing to stand behind. What
+   carries the honesty now is the **margin**: a ±156 beside a ±95 says "not
+   settled" better than the word did, and it is a comparison a reader makes
+   rather than a verdict they have to take on trust. The margin bar draws the
+   same fact at a glance, which is why unsettled rows are in its scale now.
+
+   Muted, never colour-coded: `--color-text-muted` is the token for exactly
+   this role and clears AA on every surface a ladder row sits on - 7.22:1 on
+   the panel, 6.23:1 on a hovered row, 4.64:1 on `.row-emphasis`, 7.75:1 on
+   the header band. And the de-emphasis is never the only signal: the position
+   cell is a dash, the margin is visibly wider, the per-set table prints the
+   status as a word, and every one of them carries the reason on hover. */
+tr.is-unsettled .rating-value,
+td.is-unsettled .rating-value,
+.rating-cell-unsettled .rating-value {
+  color: var(--color-text-muted);
+  font-weight: 600;
+}
+
+/* No position for an unsettled rating: the number is the engine's, the place
+   is not. A dash rather than an empty cell, so the column reads as "no
+   position" rather than as something that failed to render. */
+.rank-none {
+  display: inline-block;
+  min-width: 1.5rem;
+  font-size: var(--t-figure);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-muted);
+  cursor: help;
+}
+
 .player-link {
   font-weight: 500;
 }
@@ -2214,8 +2346,18 @@ select:disabled {
   color: var(--color-text-muted);
 }
 
+/* The headline rating of a player who is still settling. It stays a figure at
+   display size - it is a real number - and goes muted, with the ± beside it
+   doing the explaining. 7.22:1 on the panel. */
+.headline-value.is-unsettled {
+  color: var(--color-text-muted);
+  cursor: help;
+}
+
 /* "Unranked" is a word, so it is set as one - not at display size pretending
-   to be a figure, and never with a number beside it. */
+   to be a figure, and never with a number beside it. This is now only the
+   genuinely-empty case: too few recorded games for the engine to quote
+   anything at all. */
 .headline-value.is-withheld {
   font-size: 1.3rem;
   font-weight: 600;
@@ -2247,16 +2389,27 @@ select:disabled {
   margin: 0.1rem 0 0.35rem;
 }
 
-/* The record is the headline and the rate is the gloss, not the other way
-   round: at this sample size a bold "100%" usually means one win. */
+/* The record still leads and the rate is still the gloss - at this sample size
+   a bold "100%" usually means one win - but it leads as a *figure*, not as a
+   shout. It was three coloured chunks at 1.35rem/700 reading "2W 1L"; it is
+   one hyphenated triple now, `2-1` or `2-1-1`, which is the notation a card
+   player already reads and which survives greyscale without needing letters,
+   because numerals are not colour. The spoken name spells it out (see
+   `recordSpoken`), since a screen reader would otherwise announce "two dash
+   one dash one". */
 .record-counts {
   display: inline-flex;
+  align-items: baseline;
   gap: 0.6rem;
-  font-size: 1.35rem;
-  font-weight: 700;
-  line-height: 1.1;
-  letter-spacing: -0.01em;
+}
+
+.record-value {
+  font-size: 1.05rem;
+  font-weight: 600;
+  line-height: 1.2;
+  color: var(--color-text);
   font-variant-numeric: tabular-nums;
+  letter-spacing: 0.01em;
 }
 
 .record-rate {
@@ -2264,19 +2417,6 @@ select:disabled {
   font-weight: 600;
   color: var(--color-text-muted);
   font-variant-numeric: tabular-nums;
-}
-
-/* Each count carries its own letter, so the pair is legible without colour. */
-.record-count-win {
-  color: var(--color-green-text);
-}
-
-.record-count-loss {
-  color: var(--color-red-text);
-}
-
-.record-count-draw {
-  color: var(--color-text-muted);
 }
 
 /* The 2px gaps expose the track between segments: win green and loss red are
@@ -3215,14 +3355,6 @@ select:disabled {
    "Unranked": that word means a player who has a record and has not cleared
    the gate, and telling someone at their first event they are unranked claims
    they failed a bar they never stood at. */
-.no-record {
-  color: var(--color-text-muted);
-  font-size: 0.8rem;
-  cursor: help;
-  text-decoration: underline dotted;
-  text-underline-offset: 2px;
-}
-
 .roster-table .gate {
   margin-left: 0.4rem;
 }
@@ -3336,6 +3468,13 @@ select:disabled {
   font-variant-numeric: tabular-nums;
 }
 
+/* On a pairing the rating is already muted meta text, so an unsettled one is
+   marked by weight rather than by going quieter still - there is nowhere
+   quieter to go that would still clear AA. */
+.pairing-rating-unsettled {
+  font-style: italic;
+}
+
 .pairing-rating-withheld {
   font-size: 0.75rem;
 }
@@ -3430,4 +3569,20 @@ select:disabled {
   .pairing-row {
     padding: 0.55rem 0.75rem 0.55rem 0.95rem;
   }
+}
+
+/* The hover card's route to an event page, now that the grid carries no
+   trophy. Reads as a link, not a chip. */
+.event-tooltip-standings {
+  display: inline-block;
+  margin-top: 0.5rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--color-cyan);
+  text-decoration: none;
+}
+
+.event-tooltip-standings:hover,
+.event-tooltip-standings:focus-visible {
+  text-decoration: underline;
 }

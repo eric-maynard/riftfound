@@ -1,3 +1,4 @@
+import { Link } from 'react-router-dom';
 import type { Event } from '../types/event';
 import { eventColor } from '../lib/eventColors';
 
@@ -6,6 +7,18 @@ interface EventTooltipProps {
   position: { x: number; y: number };
   isMobile?: boolean;
   onClose?: () => void;
+  /**
+   * Whether this event has standings or a roster worth linking to. The hover
+   * card is where the link lives now: the trophy was taken off the grid, and
+   * FullCalendar only draws its "+N more" popover from four events up, so
+   * events on quieter days had no route to their page at all.
+   *
+   * Already gated on the Rankings preview flag by the caller - the set is
+   * empty without it - so an unflagged reader never sees this.
+   */
+  hasTournament?: boolean;
+  /** Carried through so the link keeps the preview flag alive. */
+  linkSearch?: string;
 }
 
 function formatDate(dateString: string): string {
@@ -58,7 +71,7 @@ function formatLocation(event: Event): string | null {
   return null;
 }
 
-function EventTooltip({ event, position, isMobile, onClose }: EventTooltipProps) {
+function EventTooltip({ event, position, isMobile, onClose, hasTournament, linkSearch }: EventTooltipProps) {
   const location = formatLocation(event);
   const time = formatTime(new Date(event.startDate));
   const visitUrl = `/api/events/${event.id}/visit`;
@@ -133,6 +146,15 @@ function EventTooltip({ event, position, isMobile, onClose }: EventTooltipProps)
             </span>
           )}
         </div>
+
+        {hasTournament && (
+          <Link
+            to={{ pathname: `/events/${event.externalId}`, search: linkSearch ?? '' }}
+            className="event-tooltip-standings"
+          >
+            Standings and roster &rsaquo;
+          </Link>
+        )}
       </div>
     </div>
   );

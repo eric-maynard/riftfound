@@ -17,6 +17,7 @@ import { dateMarkerToLocalDate, localDateKey } from '../lib/calendarDates';
 import { eventColor } from '../lib/eventColors';
 import EventFilters, { type EventFilters as Filters } from '../components/EventFilters';
 import EventTooltip from '../components/EventTooltip';
+import { isRankingsPreview } from '../lib/preview';
 import DayEventsModal from '../components/DayEventsModal';
 import EventTrophyLink from '../components/EventTrophyLink';
 
@@ -742,10 +743,16 @@ function CalendarPage({ active = true }: CalendarPageProps) {
   // One sweep per set of loaded events, so the trophies are already in place
   // when the grid is drawn. `displayEvents` is memoised, and loadAvailability
   // drops ids it has already asked about, so a re-render costs nothing.
+  // Gated on the same flag as the mode switch. Rankings is unlisted, so a
+  // reader without the parameter sees no trace of it - which also means we do
+  // not spend the requests asking which events have standings they cannot
+  // reach.
+  const rankingsPreview = isRankingsPreview(searchParams.toString());
+
   useEffect(() => {
-    if (displayEvents.length === 0) return;
+    if (!rankingsPreview || displayEvents.length === 0) return;
     loadAvailability(displayEvents);
-  }, [displayEvents, loadAvailability]);
+  }, [rankingsPreview, displayEvents, loadAvailability]);
 
   // Handle date click (on mobile, show day events modal)
   const handleDateClick = useCallback((info: DateClickArg) => {
@@ -808,7 +815,7 @@ function CalendarPage({ active = true }: CalendarPageProps) {
   const renderEventContent = useCallback((arg: EventContentArg) => {
     const eventData = arg.event.extendedProps.event as Event | undefined;
     const hasTournament =
-      !isMobile && eventData ? tournamentIds.has(eventData.externalId) : false;
+      rankingsPreview && !isMobile && eventData ? tournamentIds.has(eventData.externalId) : false;
     return (
       // `has-trophy` lets the title shrink and ellipsise rather than shoving
       // the trophy out past the chip's clip - see index.css.
@@ -822,7 +829,7 @@ function CalendarPage({ active = true }: CalendarPageProps) {
         )}
       </div>
     );
-  }, [tournamentIds, isMobile]);
+  }, [tournamentIds, isMobile, rankingsPreview]);
 
   const handleDayEventsClose = useCallback(() => {
     setDayEventsModal(null);
@@ -1030,6 +1037,8 @@ function CalendarPage({ active = true }: CalendarPageProps) {
 
       {tooltipEvent && (
         <EventTooltip
+          hasTournament={rankingsPreview && tournamentIds.has(tooltipEvent.externalId)}
+          linkSearch={searchParams.toString()}
           event={tooltipEvent}
           position={tooltipPosition}
           isMobile={isMobile}

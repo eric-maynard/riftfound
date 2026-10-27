@@ -1,6 +1,7 @@
 import { useRef } from 'react';
 import { Link, Outlet, useLocation } from 'react-router-dom';
 import CalendarPage from '../pages/CalendarPage';
+import { carryPreview, isRankingsPreview } from '../lib/preview';
 import ModeSwitch from './ModeSwitch';
 
 /**
@@ -14,7 +15,7 @@ import ModeSwitch from './ModeSwitch';
  * mode switch is not rendered, so the section is reachable only by URL
  * (`/rankings`). Flip this to true to surface it to everyone - that is the
  * whole launch switch. Until then `?preview=rankings` shows the switch to
- * whoever follows that link, without a rebuild (see readTabsOverride).
+ * whoever follows that link, without a rebuild (see lib/preview.ts).
  */
 const SHOW_SECTION_TABS = false;
 
@@ -30,41 +31,6 @@ const HOW_RANKINGS_WORK =
   'A player needs 8 recorded games before a rating is published; until then ' +
   'they read Unranked. The \u00b1 is how uncertain the number still is.';
 
-const TABS_STORAGE_KEY = 'riftfoundRankingTabs';
-
-/**
- * Whether to show the mode switch while Rankings is still unlisted.
- *
- * `?preview=rankings` turns it on and is remembered, so a single link is
- * enough to hand someone the preview - they do not have to type anything into
- * a console, and it survives navigating between the sections. `?preview=off`
- * clears it again. The singular `?preview=ranking` is still honoured: that
- * link was handed out before the section was renamed.
- */
-function readTabsOverride(search: string): boolean {
-  let stored: string | null = null;
-  // Browser storage is unavailable in private windows and can throw outright.
-  try {
-    stored = localStorage.getItem(TABS_STORAGE_KEY);
-  } catch {
-    stored = null;
-  }
-
-  const requested = new URLSearchParams(search).get('preview');
-  if (requested === 'rankings' || requested === 'ranking' || requested === 'off') {
-    const on = requested !== 'off';
-    try {
-      if (on) localStorage.setItem(TABS_STORAGE_KEY, 'on');
-      else localStorage.removeItem(TABS_STORAGE_KEY);
-    } catch {
-      // Storage blocked: honour the parameter for this page view anyway.
-    }
-    return on;
-  }
-
-  return stored === 'on';
-}
-
 function Layout() {
   const location = useLocation();
   const pathname = location.pathname;
@@ -76,12 +42,21 @@ function Layout() {
 
   // Remember each section's query string so a tab switch keeps a shared
   // calendar filter URL and the Rankings set/scene selection.
+  //
+  // Both start out empty, and both therefore have to have the preview flag
+  // put back on them before they become link targets - `carryPreview` below.
+  // Rankings' was the reported bug: a reader on `/?preview=rankings` clicked
+  // the Rankings half of this very switch, landed on a bare `/rankings`, and
+  // the switch unmounted under them, leaving no control on the page and no
+  // way back out of an unlisted section. Events' side is the same bug one hop
+  // later, for anyone who arrived on `/rankings` directly. The flag has to
+  // ride every link, because one surface that drops it strands the reader.
   const eventsSearch = useRef('');
   const rankingSearch = useRef('');
   if (isCalendar) eventsSearch.current = location.search;
   if (isRanking) rankingSearch.current = location.search;
 
-  const showTabs = SHOW_SECTION_TABS || readTabsOverride(location.search);
+  const showTabs = SHOW_SECTION_TABS || isRankingsPreview(location.search);
 
   return (
     <div className="layout">
@@ -91,8 +66,8 @@ function Layout() {
           back from the unlisted Rankings pages. */}
       {showTabs ? (
         <ModeSwitch
-          eventsSearch={eventsSearch.current}
-          rankingSearch={rankingSearch.current}
+          eventsSearch={carryPreview(eventsSearch.current, location.search)}
+          rankingSearch={carryPreview(rankingSearch.current, location.search)}
           active={isRanking ? 'rankings' : 'events'}
         />
       ) : (
