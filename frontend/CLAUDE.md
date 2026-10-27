@@ -52,11 +52,32 @@ The switch *is* the site mark: the looking glass for Event View, the trophy for
 Rankings, on one track with a thumb sliding under the active side and the other
 desaturated. Both marks are one composition - Riot's Riftbound swirl, inset in
 a 174 canvas, with a small object laid over its open centre and pushed down and
-to the right. The Rankings trophy is sized and placed off measurements taken
-from `logo.png` (swirl 142px centred (86.5, 90.5); glass lens 58px centred
-(100.5, 97), i.e. 41% of the mark at +14, +6.5), so the pair reads as siblings
-rather than two unrelated drawings. `public/logo-rankings-v3.svg` carries the
-numbers. The asset filename is **versioned** because `deploy.sh frontend` only
+to the right.
+
+**The Rankings mark is generated from the Events mark**, by
+`scripts/build-rankings-mark.py`, and that is the point rather than a
+convenience. Three earlier versions redrew the swirl from Riot's published
+artwork, and each one came out visibly different from `logo.png`'s - denser
+blades, a nearly closed ring - while sitting next to it inside the same
+control. The script instead lifts the swirl out of `logo.png` by hue and
+saturation (blades are hue 31 at sat 1.0; the handle is hue 24 at 0.72; the
+lens is unsaturated) and strokes a trophy over the result, so the two marks
+share one swirl by construction and cannot drift apart again.
+
+The trophy is placed on the lens's own measurements: 58px wide, centred
+(100.5, 95), which is 41% of the 142px swirl at +14, +4 from its centre. It is
+also drawn the way the glass is drawn, which matters more than the geometry
+did - the lens is an **unfilled** ~3px `#CCCCCC` ring with the swirl showing
+straight through it, so the trophy is an outline in the same grey over a solid
+`#C87137` foot, echoing the glass's light lens over its solid brown handle. The
+version that filled and shaded the cup in gold matched every measurement and
+still read as a different logo. Rebuild with:
+
+```bash
+cd frontend && python3 scripts/build-rankings-mark.py public/logo.png public/logo-rankings-v4.png
+```
+
+The asset filename is **versioned** because `deploy.sh frontend` only
 invalidates `index.html`: an asset that changes without changing its name stays
 cached at the edge and in browsers, which is why an earlier fix to this mark
 looked like it had never shipped.

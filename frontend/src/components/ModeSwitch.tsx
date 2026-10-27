@@ -29,11 +29,13 @@ import { NavLink } from 'react-router-dom';
  */
 
 /**
- * The Rankings mark, built to the same composition as the Events mark: Riot's
- * Riftbound swirl, inset in the canvas, with a small object over its open
- * centre pushed down and to the right. The offsets are measured off `logo.png`
- * so the two read as siblings; `public/logo-rankings-v3.svg` carries the
- * numbers and the reasoning.
+ * The Rankings mark, built **out of** the Events mark rather than alongside it.
+ * `scripts/build-rankings-mark.py` lifts the swirl straight off `logo.png` by
+ * colour and strokes a trophy over its open centre, at the lens's size, offset
+ * and palette. Three earlier versions redrew the swirl from Riot's published
+ * artwork and each produced a visibly different one - denser blades, a closed
+ * ring - sitting next to the original in the same control. Compositing cannot
+ * drift: there is one swirl, and it is the one already on the page.
  *
  * **The filename is versioned because `deploy.sh frontend` only invalidates
  * `index.html`.** A changed asset that keeps its name is served from browser
@@ -41,7 +43,7 @@ import { NavLink } from 'react-router-dom';
  * to this mark appeared not to have shipped for hours. Bump the suffix rather
  * than overwrite.
  */
-const RANKING_MARK = '/logo-rankings-v3.png';
+const RANKING_MARK = '/logo-rankings-v4.png';
 
 interface ModeSwitchProps {
   eventsSearch: string;

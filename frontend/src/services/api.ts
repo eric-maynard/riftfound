@@ -152,7 +152,12 @@ export const MAX_AVAILABILITY_IDS = 50;
 export async function getTournamentAvailability(
   externalIds: string[]
 ): Promise<TournamentAvailabilityResponse> {
-  const ids = externalIds.slice(0, MAX_AVAILABILITY_IDS).join(',');
+  // Sorted so the URL is a function of the *set* of ids, not the order the
+  // calendar happened to lay them out in. The same day re-rendered in a
+  // different order is the same question, and an unsorted key asked the edge a
+  // brand new one each time - a guaranteed miss on a route whose miss is a
+  // 100-key BatchGet.
+  const ids = [...externalIds].slice(0, MAX_AVAILABILITY_IDS).sort().join(',');
   return fetchApi<TournamentAvailabilityResponse>(
     `/events/tournament-availability?ids=${encodeURIComponent(ids)}`
   );

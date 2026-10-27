@@ -363,7 +363,15 @@ async function queryEventsByShopAndDateRange(
   return events;
 }
 
-// Query events by date range using GSI1 (legacy - slower, used as fallback)
+/**
+ * Every event in a date range, via GSI1's per-day partitions.
+ *
+ * **It paginates.** A Query returns at most 1MB, and at current volume a single
+ * busy day already exceeds that, so the version that read one page per day was
+ * silently dropping events off the end of the busiest days - the calendar's
+ * non-location path showed a short day and nothing said so. `getScrapeInfo`
+ * hit the same bug and was fixed first; this is the other half.
+ */
 async function queryEventsByDateRange(startDate: string, endDate: string): Promise<DynamoEventItem[]> {
   const client = getDynamoClient();
   const tableName = getTableName();
@@ -385,15 +393,22 @@ async function queryEventsByDateRange(startDate: string, endDate: string): Promi
   for (let i = 0; i < dates.length; i += batchSize) {
     const batch = dates.slice(i, i + batchSize);
     const promises = batch.map(async (date) => {
-      const response = await client.send(new QueryCommand({
-        TableName: tableName,
-        IndexName: 'GSI1',
-        KeyConditionExpression: 'GSI1PK = :pk',
-        ExpressionAttributeValues: {
-          ':pk': `DATE#${date}`,
-        },
-      }));
-      return (response.Items || []) as DynamoEventItem[];
+      const dayEvents: DynamoEventItem[] = [];
+      let startKey: Record<string, unknown> | undefined;
+      do {
+        const response: QueryCommandOutput = await client.send(new QueryCommand({
+          TableName: tableName,
+          IndexName: 'GSI1',
+          KeyConditionExpression: 'GSI1PK = :pk',
+          ExpressionAttributeValues: {
+            ':pk': `DATE#${date}`,
+          },
+          ExclusiveStartKey: startKey,
+        }));
+        dayEvents.push(...(response.Items || []) as DynamoEventItem[]);
+        startKey = response.LastEvaluatedKey;
+      } while (startKey);
+      return dayEvents;
     });
 
     const results = await Promise.all(promises);
@@ -421,10 +436,9 @@ async function queryEventsByDateRange(startDate: string, endDate: string): Promi
  * 1MB whatever the `Select`, so a day busier than ~1MB of rows is truncated
  * unless `LastEvaluatedKey` is followed. At current volume a single day
  * already exceeds that, which means the old count was not merely expensive but
- * silently low - and `queryEventsByDateRange` still has that bug on the
- * calendar's non-location path (`getEventsDynamoDB`, two call sites). Fixing
- * that one changes how many events the calendar returns, so it is left alone
- * here and reported rather than quietly altered.
+ * silently low. `queryEventsByDateRange` had the same bug on the calendar's
+ * non-location path and now paginates too - that one changes how many events
+ * the calendar returns, so it was reported before it was changed.
  *
  * Read capacity is unchanged - a COUNT still reads what it counts - so this is
  * a latency and memory fix, not a cost one. The cost fix is the edge cache in
