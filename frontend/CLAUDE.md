@@ -313,6 +313,17 @@ names one scene.
   is otherwise silently wrong about the world. The API sends the two
   populations as separate lists, so this is not a null check the page can
   forget.
+- **A scene too spread out to have a centre has no pin either**, and this is
+  the larger case. The API withholds a centroid that sits more than 100km from
+  the scene's own nearest venue - measured, 20 of 1,302 production scenes, and
+  they hold **40% of all recorded players**, including the two biggest, whose
+  centres fall 360km into the Gulf of Thailand and 2,080km into the Pacific.
+  Those arrive `dispersed: true` and are flagged `spans several regions` rather
+  than `not on the map`, because the two are different facts: one is a gap in
+  our geocoding, the other is a true statement about the scene. Selecting one
+  draws its **venues** - the only honest picture of where it plays - and the
+  coverage line names the count, since otherwise a reader sees "1,282 of 1,302
+  scenes, 60% of players" and has no way to find the other 40%.
 - **Two radii, two quantities, and they are never swapped.** Each scene is
   drawn twice: a **ground disc** whose radius is the scene's real `spreadKm`,
   which scales with zoom because it is a distance and is absent entirely for a

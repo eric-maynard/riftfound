@@ -100,6 +100,7 @@ export function unlocatedPlace(): ScenePlace {
     latitude: null,
     longitude: null,
     spreadKm: null,
+    nearestVenueKm: null,
     locatedVenues: 0,
     locatedMatches: 0,
     topVenues: [],
@@ -159,8 +160,11 @@ export function scenePlace(venues: ComponentVenue[], options: ScenePlaceOptions 
   const longitude = toDegrees(Math.atan2(y, x));
 
   let spreadWeighted = 0;
+  let nearest = Infinity;
   for (const venue of located) {
-    spreadWeighted += weight(venue) * haversineKm(latitude, longitude, venue.latitude, venue.longitude);
+    const distance = haversineKm(latitude, longitude, venue.latitude, venue.longitude);
+    spreadWeighted += weight(venue) * distance;
+    if (distance < nearest) nearest = distance;
   }
 
   return {
@@ -170,6 +174,7 @@ export function scenePlace(venues: ComponentVenue[], options: ScenePlaceOptions 
     latitude: round(latitude, 6),
     longitude: round(longitude, 6),
     spreadKm: round(spreadWeighted / totalWeight, 1),
+    nearestVenueKm: round(nearest, 1),
     locatedVenues: located.length,
     locatedMatches: located.reduce((total, venue) => total + venue.matchCount, 0),
     topVenues: located.slice(0, Math.max(0, topCount)).map(venue => ({

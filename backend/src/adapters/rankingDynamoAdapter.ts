@@ -300,6 +300,7 @@ function toSceneCatalogueEntry(item: Item): SceneCatalogueEntry | null {
     latitude: located ? latitude : null,
     longitude: located ? longitude : null,
     spreadKm: located ? readNumber(item, ['spreadKm']) : null,
+    nearestVenueKm: located ? readNumber(item, ['nearestVenueKm']) : null,
     locatedVenues: readNumber(item, ['locatedVenues']),
     locatedMatches: readNumber(item, ['locatedMatches']),
     topVenues,

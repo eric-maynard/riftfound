@@ -64,8 +64,10 @@ interface FixtureVenueTally {
  */
 function fixtureCentroid(
   venues: { latitude: number; longitude: number; matchCount: number }[]
-): { latitude: number | null; longitude: number | null; spreadKm: number | null } {
-  if (venues.length === 0) return { latitude: null, longitude: null, spreadKm: null };
+): { latitude: number | null; longitude: number | null; spreadKm: number | null; nearestVenueKm: number | null } {
+  if (venues.length === 0) {
+    return { latitude: null, longitude: null, spreadKm: null, nearestVenueKm: null };
+  }
 
   const rad = (degrees: number) => (degrees * Math.PI) / 180;
   let x = 0;
@@ -95,8 +97,15 @@ function fixtureCentroid(
     venues.reduce((total, venue) => total + Math.max(1, venue.matchCount) * distance(venue.latitude, venue.longitude), 0) /
     weight;
 
+  const nearest = Math.min(...venues.map((venue) => distance(venue.latitude, venue.longitude)));
+
   const round = (value: number, places: number) => Math.round(value * 10 ** places) / 10 ** places;
-  return { latitude: round(latitude, 6), longitude: round(longitude, 6), spreadKm: round(spread, 1) };
+  return {
+    latitude: round(latitude, 6),
+    longitude: round(longitude, 6),
+    spreadKm: round(spread, 1),
+    nearestVenueKm: round(nearest, 1),
+  };
 }
 
 // --- the sparse launch dataset ---------------------------------------------

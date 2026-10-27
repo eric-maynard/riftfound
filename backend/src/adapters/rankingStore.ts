@@ -170,6 +170,8 @@ export interface SceneCatalogueEntry {
   latitude: number | null;
   longitude: number | null;
   spreadKm: number | null;
+  /** Distance from the centroid to the scene's nearest venue, km. */
+  nearestVenueKm: number | null;
   locatedVenues: number | null;
   locatedMatches: number | null;
   topVenues: SceneCatalogueVenue[];

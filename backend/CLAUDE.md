@@ -258,12 +258,39 @@ answer onto the catalogue item - see scraper/CLAUDE.md, "Giving a connected
 component a place on a map", for the derivation and for why it is a
 match-weighted *spherical* centroid with a spread published beside it.
 
+**A centroid is arithmetic; a place is a claim, and they are not the same
+thing.** This is the part of the endpoint that cost the most to get right.
+A scene's pin is the match-weighted centre of its venues, which for 1,282 of
+1,302 production scenes is a city and for the rest is **open country or open
+sea** - the largest scene in the corpus (5,254 players, 325 venues) centres
+360km out in the Gulf of Thailand, and a 2,138-player one centres 2,080km into
+the Pacific. Publishing those would assert that a scene is somewhere it has
+never played.
+
+`spreadKm` does **not** separate those cases, which is the trap: a 448km spread
+centred on Germany is a national scene whose centre has stores all around it,
+while a 1,858km spread centred on water is not a location. The figure that does
+separate them is the distance from the centroid to the scene's **nearest own
+venue**, and `SCENE_CENTROID_MAX_KM` (100) is the gate - measured, with the
+whole distribution in its comment in `models/ranking.ts`. The histogram has its
+gap exactly there: 4 scenes in the 50-100km band against 10 in the 100-250km
+band with ten times the players.
+
+Be clear about the price, because it is not small: **20 scenes holding 40% of
+recorded players come off the map.** They are `dispersed: true` in `unlocated`,
+keeping `spreadKm`, `nearestVenueKm` and `topVenues`, so the page lists them,
+explains them with the distance that caused it, and the map draws their actual
+venues when one is selected. A pin in the Pacific would not have been a better
+answer.
+
 **Located and unlocated are separate lists, and neither is an error.**
 `scenes` is what a map draws; `unlocated` is every scene whose own venues carry
-no coordinates. They are split rather than mixed-with-nulls so a caller cannot
-render an unlocated scene by forgetting a null check. Nothing is placed at a
-guessed point, and the two tempting fallbacks are both refused in
-`getSceneMap`:
+no coordinates **or** whose centroid failed the gate above. They are split
+rather than mixed-with-nulls so a caller cannot render an unlocated scene by
+forgetting a null check, and `dispersed` tells the two reasons apart - "we do
+not know where this is" and "this is not in one place" read completely
+differently. Nothing is placed at a guessed point, and the two tempting
+fallbacks are both refused in `getSceneMap`:
 
 - *the region label's city.* `regionLabel` is a modal city name - a production
   component reads `Rockhampton, Australia` with no geocoded event behind it -

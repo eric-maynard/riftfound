@@ -113,6 +113,19 @@ export function sceneSummary(scene: SceneMapEntry): string {
  *   the scene and one that describes a corner of it.
  */
 export function scenePlaceHint(scene: SceneMapEntry): string {
+  if (scene.dispersed) {
+    // The scene is real, well mapped, and genuinely not in one place. Say the
+    // number, because "spans several regions" is vague where "the centre of
+    // its play is 2,080 km from the nearest store" is a fact a reader can
+    // weigh - and it is the fact that explains the missing pin.
+    const away = scene.nearestVenueKm === null ? null : formatSpread(scene.nearestVenueKm);
+    return (
+      `This scene plays across ${formatCount(scene.venueCount)} venues too far apart to have one place on the map` +
+      (away === null ? '. ' : `: the centre of its play is ${away} from the nearest of them. `) +
+      'Its busiest venues are shown instead.'
+    );
+  }
+
   if (scene.latitude === null || scene.longitude === null) {
     return 'No venue of this scene has been geocoded, so it has no place on the map.';
   }
@@ -247,6 +260,7 @@ export function sceneBounds(
 export function sceneCoverageSentence(coverage: {
   totalScenes: number;
   locatedScenes: number;
+  dispersedScenes: number;
   locatedPlayers: number;
   totalPlayers: number;
   catalogueUnavailable: boolean;
@@ -261,8 +275,17 @@ export function sceneCoverageSentence(coverage: {
     coverage.totalPlayers > 0
       ? Math.round((coverage.locatedPlayers / coverage.totalPlayers) * 100)
       : 0;
+  // The dispersed count is named rather than folded into "not on the map",
+  // because it is the surprising half of the ratio: measured on production,
+  // 20 of 1,302 scenes are dispersed and they hold 40% of the players, so a
+  // reader seeing "1,282 of 1,302 scenes, 60% of players" would otherwise be
+  // left to wonder where the other 40% went.
+  const dispersed =
+    coverage.dispersedScenes > 0
+      ? ` ${formatCount(coverage.dispersedScenes)} more play across too many regions to pin.`
+      : '';
   return (
     `${formatCount(coverage.locatedScenes)} of ${formatCount(coverage.totalScenes)} scenes on the map, ` +
-    `holding ${playerShare}% of recorded players.`
+    `holding ${playerShare}% of recorded players.${dispersed}`
   );
 }

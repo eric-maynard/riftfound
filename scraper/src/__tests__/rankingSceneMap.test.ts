@@ -146,6 +146,37 @@ describe('scenePlace', () => {
     expect(place.spreadKm).toBeLessThan(130);
   });
 
+  it('reports how far the pin is from the nearest venue, which is not the spread', () => {
+    // This is the figure the API gates the pin on, and the two genuinely
+    // differ. Both scenes below are wide; only one has its centre near a
+    // store, and `spreadKm` cannot tell them apart.
+    const corridor = scenePlace([
+      // Two stores 120km apart, equal play: the midpoint is 60km from each.
+      venue({ venue: 'shop:1', shopExternalId: 1, matchCount: 100, latitude: 37.7749, longitude: -122.4194 }),
+      venue({ venue: 'shop:2', shopExternalId: 2, matchCount: 100, latitude: 38.5816, longitude: -121.4944 }),
+    ]);
+    expect(corridor.nearestVenueKm).toBeGreaterThan(50);
+    expect(corridor.nearestVenueKm).toBeLessThan(70);
+
+    // A busy hub with a distant outlier: the centroid is pulled a little way
+    // off the hub but is still right beside it, while the spread is large.
+    const hubAndSpoke = scenePlace([
+      venue({ venue: 'shop:1', shopExternalId: 1, matchCount: 1000, latitude: 51.5074, longitude: -0.1278 }),
+      venue({ venue: 'shop:2', shopExternalId: 2, matchCount: 10, latitude: 55.9533, longitude: -3.1883 }),
+    ]);
+    expect(hubAndSpoke.spreadKm!).toBeGreaterThan(10);
+    // ...and yet the pin is a few kilometres from the busy store, so it *is*
+    // a place.
+    expect(hubAndSpoke.nearestVenueKm!).toBeLessThan(10);
+  });
+
+  it('is zero for a single-venue scene', () => {
+    const place = scenePlace([
+      venue({ venue: 'shop:1', shopExternalId: 1, matchCount: 5, latitude: 1.3475, longitude: 103.71 }),
+    ]);
+    expect(place.nearestVenueKm).toBe(0);
+  });
+
   it('publishes the spread a corridor really has', () => {
     // San Francisco and Sacramento, equal play: ~120km apart, so each is
     // ~60km from the midpoint. A map drawing this as a dot over either city

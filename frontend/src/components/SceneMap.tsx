@@ -98,12 +98,21 @@ const COLOR_SELECTED = '#8be9fd';
 const COLOR_VENUE = '#ff79c6';
 
 interface SceneMapProps {
+  /** Scenes with a publishable pin. These are the only ones that get a dot. */
   scenes: SceneMapEntry[];
+  /**
+   * The selected scene, whichever list it came from.
+   *
+   * Passed in rather than looked up in `scenes`, because a **dispersed** scene
+   * is deliberately not in `scenes` - it has no honest pin - and yet its
+   * venues are exactly what the map should show when a reader asks about it.
+   */
+  selected: SceneMapEntry | null;
   selectedId: string | null;
   onSelect: (componentId: string | null) => void;
 }
 
-function SceneMap({ scenes, selectedId, onSelect }: SceneMapProps) {
+function SceneMap({ scenes, selected, selectedId, onSelect }: SceneMapProps) {
   const container = useRef<HTMLDivElement | null>(null);
   const map = useRef<L.Map | null>(null);
   const sceneLayer = useRef<L.LayerGroup | null>(null);
@@ -120,15 +129,14 @@ function SceneMap({ scenes, selectedId, onSelect }: SceneMapProps) {
     const instance = L.map(container.current, {
       center: [WORLD_VIEW.lat, WORLD_VIEW.lng],
       zoom: WORLD_VIEW.zoom,
-      // The corpus spans three continents, so wrapping is wanted; a vertical
-      // drag past the poles is not.
+      // The corpus spans three continents - California to Singapore to
+      // Australia - so a reader panning west out of the Pacific should arrive
+      // in Asia rather than at the edge of the world.
       worldCopyJump: true,
-      maxBounds: [
-        [-85, -Infinity],
-        [85, Infinity],
-      ],
-      // Leaflet's default is a link to its own homepage in the corner; the
-      // basemap's attribution is a licence condition and is set below.
+      // Deliberately no `maxBounds`. Clamping latitude to the Mercator range
+      // means an infinite longitude bound, which Leaflet projects to NaN and
+      // which breaks panning rather than limiting it. Over-dragging past the
+      // poles is a cosmetic annoyance; a map that will not pan is not.
       attributionControl: true,
     });
 
@@ -242,12 +250,17 @@ function SceneMap({ scenes, selectedId, onSelect }: SceneMapProps) {
   }, [scenes, selectedId, onSelect]);
 
   // The venue layer: the selected scene's actual stores, and nothing else.
+  //
+  // This is the whole picture for a **dispersed** scene, not a detail of it.
+  // Such a scene has no dot and no disc, because its centroid is further from
+  // every one of its venues than a place can be - measured, the largest is
+  // 2,080km out into the Pacific - so these pins are the only true thing the
+  // map can say about where it plays.
   useEffect(() => {
     const layer = venueLayer.current;
     if (!layer) return;
 
     layer.clearLayers();
-    const selected = scenes.find((scene) => scene.componentId === selectedId);
     if (!selected) return;
 
     for (const venue of selected.topVenues) {
@@ -263,7 +276,7 @@ function SceneMap({ scenes, selectedId, onSelect }: SceneMapProps) {
         .bindTooltip(`${venue.matchCount.toLocaleString('en-US')} matches here`, { direction: 'top' })
         .addTo(layer);
     }
-  }, [scenes, selectedId]);
+  }, [selected]);
 
   return (
     <div

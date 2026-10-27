@@ -479,14 +479,62 @@ export interface SceneMapVenue {
 }
 
 /**
+ * How far a scene's pin may sit from the nearest venue of that scene, km,
+ * before this API stops publishing it as a location.
+ *
+ * **A centroid is arithmetic; a place is a claim.** Both are real, and for
+ * most scenes they are the same thing - but for a scene spanning a continent
+ * the match-weighted centre of its venues is open country or open sea, and
+ * putting a pin there asserts that the scene is *somewhere it has never
+ * played*. `spreadKm` does not separate those cases: a 448km spread centred on
+ * Germany is a national scene whose centre has stores all around it, while a
+ * 1,858km spread centred in the Gulf of Thailand is an Asia-Pacific scene
+ * whose centre is water. The distance to the **nearest** venue does separate
+ * them, and that is what this threshold is applied to.
+ *
+ * 100km is measured, not chosen. Distance from the centroid to the scene's own
+ * nearest venue, over the 1,302 scenes of a 60-day production replay
+ * (2026-10-27, 69,308 matches, 2,414 venues, every one of them geocoded):
+ *
+ * | pin to nearest venue | scenes | players | largest scene |
+ * |---|---|---|---|
+ * | 0-10 km | 1,211 | 15,168 | 191 |
+ * | 10-25 km | 56 | 2,698 | 356 |
+ * | 25-50 km | 11 | 892 | 259 |
+ * | 50-100 km | 4 | 280 | 185 |
+ * | **100-250 km** | 10 | 2,963 | 1,259 |
+ * | **250-500 km** | 6 | 7,151 | 5,254 |
+ * | **500+ km** | 4 | 2,741 | 2,138 |
+ *
+ * The gap is at 100: the band below it holds 4 scenes and the band above it
+ * holds 10 with ten times the players. Below the line are scenes like a
+ * 356-player one centred on Mannheim (65km spread, 13km to a store) and a
+ * 259-player one centred near Roermond (131km spread, **26km** to a store) -
+ * wide scenes whose centre is still a place. Above it are a 1,259-player scene
+ * pinned 163km into central Germany, a 5,254-player one pinned 360km out in
+ * the Gulf of Thailand, and a 2,138-player one pinned **2,080km** into the
+ * Pacific.
+ *
+ * Note what the threshold costs, because it is not small: 20 scenes holding
+ * **12,855 of 31,893 players (40%)** come off the map. They are not hidden -
+ * they are listed, flagged, and their actual venues are drawn when one is
+ * selected - but the map genuinely cannot show where they are, because there
+ * is no one place where they are. That is the honest answer, and a pin in the
+ * Pacific is not a better one.
+ */
+export const SCENE_CENTROID_MAX_KM = 100;
+
+/**
  * One scene on the map.
  *
  * A **located** scene (`latitude`/`longitude` non-null) is one whose venues
- * carried coordinates; an **unlocated** one is not an error and not a gap in
- * the data model - it is a scene none of whose stores has been geocoded, or
- * one written by an engine that predates the place fields. The two are served
- * in separate lists (`SceneMapResult`) precisely so a caller cannot render an
- * unlocated scene by forgetting a null check.
+ * carried coordinates *and* whose centroid is near enough to one of them to be
+ * a place (`SCENE_CENTROID_MAX_KM`). An **unlocated** one is not an error and
+ * not a gap in the data model - it is a scene none of whose stores has been
+ * geocoded, one written by an engine that predates the place fields, or one
+ * too dispersed to have a centre at all. The two are served in separate lists
+ * (`SceneMapResult`) precisely so a caller cannot render an unlocated scene by
+ * forgetting a null check.
  *
  * Why there is no fallback coordinate: the honest answers available for an
  * unlocated scene are its region label's city centre (a different and weaker
@@ -519,6 +567,25 @@ export interface SceneMapEntry {
    * corridor. A map should draw this, not hide it.
    */
   spreadKm: number | null;
+  /**
+   * Distance from the centroid to this scene's nearest venue, km.
+   *
+   * Carried on a dispersed scene too - there it is the *reason* the scene has
+   * no pin, and "the nearest store is 2,080 km away" is the one sentence that
+   * explains it. Null only when there was no centroid to measure from.
+   */
+  nearestVenueKm: number | null;
+  /**
+   * True when a centroid exists but is too far from any of the scene's own
+   * venues to be published as a location (`SCENE_CENTROID_MAX_KM`).
+   *
+   * Distinguishes the two reasons a scene is unlocated, which read completely
+   * differently: `dispersed: false` means nothing about this scene has been
+   * geocoded, and `dispersed: true` means the scene is real, well mapped, and
+   * genuinely not in one place. A dispersed scene still carries `topVenues`,
+   * so a map can draw where it actually plays.
+   */
+  dispersed: boolean;
   /** Venues the centroid was computed from, against `venueCount`. */
   locatedVenues: number;
   /** Matches at a located venue, against `matchCount`. */
@@ -543,8 +610,14 @@ export interface SceneMapResult {
 export interface SceneMapCoverage {
   /** Scenes in the engine's catalogue. */
   totalScenes: number;
-  /** Of those, the ones with a centroid. */
+  /** Of those, the ones with a publishable pin. */
   locatedScenes: number;
+  /**
+   * Of the rest, the ones that have a centroid but are too dispersed to
+   * publish it. Counted separately from the never-geocoded, because "we do not
+   * know where this is" and "this is not in one place" are different answers.
+   */
+  dispersedScenes: number;
   /** Players and matches in located scenes, and in all of them. */
   locatedPlayers: number;
   totalPlayers: number;

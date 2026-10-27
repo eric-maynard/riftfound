@@ -39,6 +39,8 @@ function scene(overrides: Partial<SceneMapEntry> & { componentId: string }): Sce
     latitude: 38.0194,
     longitude: -122.1341,
     spreadKm: 12.5,
+    nearestVenueKm: 3.1,
+    dispersed: false,
     locatedVenues: 4,
     locatedMatches: 300,
     topVenues: [],
@@ -240,6 +242,7 @@ describe('sceneCoverageSentence', () => {
     const cannotTell = sceneCoverageSentence({
       totalScenes: 0,
       locatedScenes: 0,
+      dispersedScenes: 0,
       locatedPlayers: 0,
       totalPlayers: 0,
       catalogueUnavailable: true,
@@ -247,6 +250,7 @@ describe('sceneCoverageSentence', () => {
     const noneLocated = sceneCoverageSentence({
       totalScenes: 1235,
       locatedScenes: 0,
+      dispersedScenes: 0,
       locatedPlayers: 0,
       totalPlayers: 27318,
       catalogueUnavailable: false,
@@ -265,6 +269,7 @@ describe('sceneCoverageSentence', () => {
       sceneCoverageSentence({
         totalScenes: 1235,
         locatedScenes: 1180,
+        dispersedScenes: 0,
         locatedPlayers: 26500,
         totalPlayers: 27318,
         catalogueUnavailable: false,
@@ -272,15 +277,79 @@ describe('sceneCoverageSentence', () => {
     ).toBe('1,180 of 1,235 scenes on the map, holding 97% of recorded players.');
   });
 
+  it('names the dispersed scenes, because they hold the missing players', () => {
+    // The production shape: 1,282 of 1,302 scenes are pinned and they hold
+    // only 60% of the players, because the 20 that are not hold the other
+    // 40%. Without the second clause a reader is left wondering where they
+    // went.
+    const sentence = sceneCoverageSentence({
+      totalScenes: 1302,
+      locatedScenes: 1282,
+      dispersedScenes: 20,
+      locatedPlayers: 19038,
+      totalPlayers: 31893,
+      catalogueUnavailable: false,
+    });
+    expect(sentence).toContain('1,282 of 1,302 scenes');
+    expect(sentence).toContain('60%');
+    expect(sentence).toContain('20 more play across too many regions to pin');
+  });
+
   it('does not divide by zero on an empty but readable catalogue', () => {
     expect(
       sceneCoverageSentence({
         totalScenes: 1,
         locatedScenes: 1,
+        dispersedScenes: 0,
         locatedPlayers: 0,
         totalPlayers: 0,
         catalogueUnavailable: false,
       })
     ).toContain('0%');
+  });
+});
+
+describe('a dispersed scene', () => {
+  it('explains the missing pin with the distance that caused it', () => {
+    // The measured worst case: 2,138 players across 103 venues, centroid
+    // 2,080km out in the Pacific. "Spans several regions" is vague; the
+    // number is a fact a reader can weigh.
+    const hint = scenePlaceHint(
+      scene({
+        componentId: 'c-pacific',
+        dispersed: true,
+        latitude: null,
+        longitude: null,
+        spreadKm: 5871.6,
+        nearestVenueKm: 2079.7,
+        venueCount: 103,
+      })
+    );
+
+    expect(hint).toContain('103 venues');
+    expect(hint).toContain('2,080 km');
+    expect(hint).toContain('busiest venues are shown instead');
+    // Never the sentence for a scene nobody has geocoded: this one is mapped
+    // perfectly well, it is simply not in one place.
+    expect(hint).not.toContain('geocoded');
+  });
+
+  it('still explains itself when the distance is missing', () => {
+    const hint = scenePlaceHint(
+      scene({ componentId: 'c', dispersed: true, latitude: null, longitude: null, nearestVenueKm: null })
+    );
+    expect(hint).toContain('too far apart');
+    expect(hint).not.toContain('null');
+  });
+
+  it('is told apart from a scene with no geography at all', () => {
+    const dispersed = scenePlaceHint(
+      scene({ componentId: 'a', dispersed: true, latitude: null, longitude: null, nearestVenueKm: 900 })
+    );
+    const ungeocoded = scenePlaceHint(
+      scene({ componentId: 'b', dispersed: false, latitude: null, longitude: null, nearestVenueKm: null })
+    );
+    expect(dispersed).not.toBe(ungeocoded);
+    expect(ungeocoded).toContain('geocoded');
   });
 });

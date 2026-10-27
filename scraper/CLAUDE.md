@@ -1952,6 +1952,7 @@ last" wobbles). `scenePlace` turns that into five fields on the item:
 |---|---|
 | `latitude` / `longitude` | match-weighted **spherical** centroid of the located venues |
 | `spreadKm` | match-weighted mean great-circle distance from that centroid |
+| `nearestVenueKm` | distance from that centroid to the **nearest** venue of the scene - the figure that says whether the pin is anywhere anything happens |
 | `locatedVenues` / `locatedMatches` | the evidence it was computed from, to read against `venueCount` / `matchCount` |
 | `topVenues` | the busiest venues, capped at `RANKING_SCENE_MAP_TOP_VENUES` (5), position and match count only - **no name**, so no new free-text surface |
 
@@ -1969,6 +1970,29 @@ Three things that are deliberate:
   community had a **133km mean venue spread** - a corridor, not a city - so a
   map drawing it as a dot would assert a precision it does not have. The UI
   draws the spread as a real ground disc beside the dot.
+- **`nearestVenueKm` is what decides whether the pin is published at all**, and
+  it is a different question from the spread. Measured over the 1,302 scenes of
+  a 60-day production replay (2026-10-27, 69,308 matches, 2,414 venues, every
+  one of them geocoded), the centroid-to-nearest-venue distance is:
+
+  | pin to nearest venue | scenes | players | largest scene |
+  |---|---|---|---|
+  | 0-10 km | 1,211 | 15,168 | 191 |
+  | 10-25 km | 56 | 2,698 | 356 |
+  | 25-50 km | 11 | 892 | 259 |
+  | 50-100 km | 4 | 280 | 185 |
+  | 100-250 km | 10 | 2,963 | 1,259 |
+  | 250-500 km | 6 | 7,151 | 5,254 |
+  | 500+ km | 4 | 2,741 | 2,138 |
+
+  The largest scene in the corpus - 5,254 players over 325 venues - has a
+  1,858km spread and a centroid **360km out in the Gulf of Thailand**; a
+  2,138-player one sits **2,080km** into the Pacific. Meanwhile a 259-player
+  scene with a *131km* spread has its centre 26km from a store and is a real
+  place. So the gate is the nearest-venue distance, not the spread, and the API
+  applies it at `SCENE_CENTROID_MAX_KM` (100km, the gap in that table). The
+  engine publishes the number and takes no view; see backend/CLAUDE.md, "The
+  scene map".
 
 #### It refuses to guess, in three specific ways
 

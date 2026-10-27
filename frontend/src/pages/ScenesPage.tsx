@@ -171,7 +171,15 @@ function ScenesPage() {
           )}
 
           {mapScenes.length > 0 && (
-            <SceneMap scenes={mapScenes} selectedId={selectedId} onSelect={select} />
+            // `selected` is passed whole rather than looked up inside the map,
+            // because a dispersed scene is not in `mapScenes` at all and its
+            // venues are the only thing the map can honestly draw for it.
+            <SceneMap
+              scenes={mapScenes}
+              selected={selected}
+              selectedId={selectedId}
+              onSelect={select}
+            />
           )}
 
           {selected && (
@@ -279,7 +287,9 @@ function SceneDetail({
               : formatCount(scene.venueCount)}
           </dd>
         </div>
-        {located && scene.spreadKm !== null && scene.spreadKm > 0 && (
+        {/* The spread is shown for a dispersed scene too, and matters more
+            there: it is the figure that says why the scene has no pin. */}
+        {(located || scene.dispersed) && scene.spreadKm !== null && scene.spreadKm > 0 && (
           <div>
             <dt>
               <abbr className="col-hint" title={HINTS.spread}>
@@ -334,12 +344,21 @@ function SceneRow({
       >
         <span className="scene-row-name">
           {sceneLabel(scene)}
-          {/* Not colour alone: an unlocated scene says so in words, and a
-              scene too small to order says why in its hint. */}
-          {!located && (
+          {/* Not colour alone: a scene off the map says so in words, and the
+              two reasons are different sentences rather than one. "Not
+              geocoded" is a gap in our data; "spans several regions" is a fact
+              about the scene, and it is the one that applies to the biggest
+              scenes in the corpus. */}
+          {scene.dispersed ? (
             <span className="scene-flag" title={scenePlaceHint(scene)}>
-              not on the map
+              spans several regions
             </span>
+          ) : (
+            !located && (
+              <span className="scene-flag" title={scenePlaceHint(scene)}>
+                not on the map
+              </span>
+            )
           )}
           {tooSmall && (
             <span className="scene-flag" title={tooSmall}>

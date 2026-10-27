@@ -254,6 +254,15 @@ export interface SceneMapEntry {
   longitude: number | null;
   /** Match-weighted mean distance from the centroid, km. The pin's honesty. */
   spreadKm: number | null;
+  /** Distance from the centroid to this scene's nearest venue, km. */
+  nearestVenueKm: number | null;
+  /**
+   * True for a scene that has a centroid the API will not publish as a
+   * location, because it is further from every one of the scene's own venues
+   * than a place can be. It arrives in `unlocated` with null coordinates and
+   * its `topVenues` intact, so the map can draw where it actually plays.
+   */
+  dispersed: boolean;
   locatedVenues: number;
   locatedMatches: number;
   topVenues: SceneMapVenue[];
@@ -262,6 +271,8 @@ export interface SceneMapEntry {
 export interface SceneMapCoverage {
   totalScenes: number;
   locatedScenes: number;
+  /** Scenes with a centroid too far from their own venues to publish. */
+  dispersedScenes: number;
   locatedPlayers: number;
   totalPlayers: number;
   comparableScenes: number;

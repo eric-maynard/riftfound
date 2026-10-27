@@ -9,6 +9,7 @@ import {
   isComparable,
   publishesRating,
   CONFIDENCE,
+  SCENE_CENTROID_MAX_KM,
   type ComponentSummary,
   type LeaderboardEntry,
   type PlayerMatch,
@@ -343,7 +344,16 @@ export async function getSceneMap(): Promise<SceneMapResult> {
     // `componentSize` and `playerCount` are the same number under the two
     // names the contract allows; take whichever the item carries.
     const playerCount = scene.playerCount ?? scene.componentSize ?? 0;
-    const located = scene.latitude !== null && scene.longitude !== null;
+    const hasCentroid = scene.latitude !== null && scene.longitude !== null;
+    // A centroid that sits further than this from every venue of its own
+    // scene is arithmetic rather than a place - see SCENE_CENTROID_MAX_KM for
+    // the measurement, and note it costs 40% of the players. A missing
+    // `nearestVenueKm` is treated as near rather than far: an item written
+    // before that field existed should not have its pin withdrawn by a
+    // deploy.
+    const dispersed =
+      hasCentroid && scene.nearestVenueKm !== null && scene.nearestVenueKm > SCENE_CENTROID_MAX_KM;
+    const located = hasCentroid && !dispersed;
     return {
       componentId: scene.componentId,
       regionLabel: scene.regionLabel,
@@ -358,10 +368,19 @@ export async function getSceneMap(): Promise<SceneMapResult> {
       comparable: isComparable(scene.componentSize ?? playerCount),
       latitude: located ? scene.latitude : null,
       longitude: located ? scene.longitude : null,
-      spreadKm: located ? scene.spreadKm : null,
+      // The spread and the distance to the nearest venue travel on a
+      // dispersed scene too: there they are not a detail of the pin, they are
+      // the reason there is none, and "the nearest store is 2,080 km away" is
+      // what the page says instead of a coordinate.
+      spreadKm: hasCentroid ? scene.spreadKm : null,
+      nearestVenueKm: hasCentroid ? scene.nearestVenueKm : null,
+      dispersed,
       locatedVenues: scene.locatedVenues ?? 0,
       locatedMatches: scene.locatedMatches ?? 0,
-      topVenues: located ? scene.topVenues : [],
+      // Kept on a dispersed scene, dropped on one with no geography at all: a
+      // scene that is real and well mapped but not in one place can still be
+      // shown *as its venues*, which is the honest picture of it.
+      topVenues: hasCentroid ? scene.topVenues : [],
     };
   });
 
@@ -382,6 +401,7 @@ export async function getSceneMap(): Promise<SceneMapResult> {
     coverage: {
       totalScenes: entries.length,
       locatedScenes: located.length,
+      dispersedScenes: entries.filter((scene) => scene.dispersed).length,
       locatedPlayers: located.reduce((total, scene) => total + scene.playerCount, 0),
       totalPlayers: entries.reduce((total, scene) => total + scene.playerCount, 0),
       comparableScenes: entries.filter((scene) => scene.comparable).length,
@@ -402,6 +422,7 @@ function emptySceneCoverage(catalogueUnavailable: boolean) {
   return {
     totalScenes: 0,
     locatedScenes: 0,
+    dispersedScenes: 0,
     locatedPlayers: 0,
     totalPlayers: 0,
     comparableScenes: 0,

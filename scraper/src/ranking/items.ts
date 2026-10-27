@@ -345,6 +345,19 @@ export interface ScenePlace {
    * inflate a city scene into a region.
    */
   spreadKm: number | null;
+  /**
+   * Great-circle distance from the centroid to the **nearest** venue of the
+   * scene, km. Null when there is no centroid.
+   *
+   * This is the field that answers "is the pin anywhere anything happens",
+   * which `spreadKm` does not. A 448km spread centred on Germany is a national
+   * scene and its centre is a real place with stores around it; a 1,858km
+   * spread centred in the Gulf of Thailand is an Asia-Pacific scene and its
+   * centre is open sea. Both are large; only one is a location. The
+   * difference is how far the centroid sits from the closest store, and the
+   * API refuses to publish a pin past a measured threshold.
+   */
+  nearestVenueKm: number | null;
   /** Venues with coordinates. Read against `venueCount`: the ratio is the caveat. */
   locatedVenues: number;
   /** Matches played at a located venue. Read against `matchCount`. */

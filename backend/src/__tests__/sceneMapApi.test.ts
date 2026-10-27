@@ -66,6 +66,7 @@ function scene(overrides: Partial<SceneCatalogueEntry> & { componentId: string }
     latitude: null,
     longitude: null,
     spreadKm: null,
+    nearestVenueKm: null,
     locatedVenues: 0,
     locatedMatches: 0,
     topVenues: [],
@@ -184,6 +185,75 @@ describe('GET /api/rankings/map', () => {
         expect(entry.latitude).toBeNull();
         expect(entry.longitude).toBeNull();
       }
+    });
+
+    it('withholds a pin that is nowhere near the scene it claims to locate', async () => {
+      // The measured production case: the largest scene is 5,254 players
+      // across 325 venues, and the match-weighted centre of all that play is
+      // 360km out in the Gulf of Thailand. The arithmetic is right and the
+      // place is not - so the coordinate is not published, and the reason is.
+      setRankingStore(
+        catalogueStore([
+          scene({
+            componentId: 'c-asia',
+            playerCount: 5254,
+            componentSize: 5254,
+            venueCount: 325,
+            latitude: 8.9689,
+            longitude: 104.0092,
+            spreadKm: 1858.2,
+            nearestVenueKm: 360.3,
+            topVenues: [{ shopExternalId: 56036, latitude: 1.3475, longitude: 103.71, matchCount: 281 }],
+          }),
+          // A wide scene whose centre is still a place: 131km of spread but
+          // only 26km to the nearest store. `spreadKm` alone would have
+          // thrown this one away too, which is why the gate reads the
+          // distance to the nearest venue instead.
+          scene({
+            componentId: 'c-roermond',
+            playerCount: 259,
+            componentSize: 259,
+            venueCount: 11,
+            latitude: 51.2254,
+            longitude: 5.9204,
+            spreadKm: 131.2,
+            nearestVenueKm: 26.1,
+          }),
+        ])
+      );
+
+      const { body } = await get('/api/rankings/map');
+      expect(body.data.scenes.map((entry: { componentId: string }) => entry.componentId)).toEqual([
+        'c-roermond',
+      ]);
+
+      const [away] = body.data.unlocated;
+      expect(away.componentId).toBe('c-asia');
+      expect(away.latitude).toBeNull();
+      expect(away.longitude).toBeNull();
+      expect(away.dispersed).toBe(true);
+      // The figures that explain it survive, and so do the venues - a scene
+      // that is not in one place can still be shown *as its places*.
+      expect(away.spreadKm).toBe(1858.2);
+      expect(away.nearestVenueKm).toBe(360.3);
+      expect(away.topVenues).toHaveLength(1);
+
+      expect(body.data.coverage.dispersedScenes).toBe(1);
+    });
+
+    it('does not withdraw a pin from an item written before the field existed', async () => {
+      // A deploy must not blank the map. An item with no `nearestVenueKm` is
+      // read as near rather than far, so the worst case is a pin that stays
+      // until the next refit corrects it - not a map that empties out.
+      setRankingStore(
+        catalogueStore([
+          scene({ componentId: 'c-old', latitude: 51.5, longitude: -0.12, nearestVenueKm: null }),
+        ])
+      );
+
+      const { body } = await get('/api/rankings/map');
+      expect(body.data.scenes).toHaveLength(1);
+      expect(body.data.scenes[0].dispersed).toBe(false);
     });
 
     it('drops venue pins from a scene it will not draw', async () => {
