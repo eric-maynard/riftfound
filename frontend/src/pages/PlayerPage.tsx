@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Link, useParams, useSearchParams } from 'react-router-dom';
-import { getPlayer, getPlayerMatches, getPlayerRatings, getSets } from '../services/api';
+import { Link, useLocation, useParams, useSearchParams } from 'react-router-dom';
+import { ApiError, getPlayer, getPlayerMatches, getPlayerRatings, getSets } from '../services/api';
 import type { PlayerMatch, PlayerProfile, RatingPoint, SetInfo } from '../types/ranking';
 import RatingChart from '../components/RatingChart';
 import RecordBar from '../components/RecordBar';
@@ -15,17 +15,17 @@ import {
   formatUncertainty,
   gameScore,
   gateProgress,
-  hasNoRecord,
   matchRecord,
   outcomeLetter,
   outcomeWord,
-  provisionalExplanation,
   provisionalShortReason,
+  ratingDisplay,
+  ratingExplanation,
   setLabel,
-  NO_RECORD_EXPLANATION,
-  NO_RECORD_LABEL,
   UNRANKED_LABEL,
+  UNRANKED_NO_GAMES_EXPLANATION,
 } from '../lib/ranking';
+import { carryPreview } from '../lib/preview';
 
 /**
  * One player: their rating over time, their per-set breakdown, and every game
@@ -56,8 +56,19 @@ const FORM_LENGTH = 10;
 
 function PlayerPage() {
   const { playerId } = useParams<{ playerId: string }>();
+  const location = useLocation();
   const [searchParams, setSearchParams] = useSearchParams();
   const setId = searchParams.get('set') ?? ALL_SETS;
+  /*
+   * The back-link, once, for all five of this page's states.
+   *
+   * While Rankings is unlisted the preview flag has to ride every link inside
+   * the section: it gates the mode switch, so the one link that drops it takes
+   * the reader somewhere with no visible way back (lib/preview.ts). The
+   * `setSearchParams` call below rewrites *this* URL and copies the existing
+   * params, so the flag survives a set change by the same rule.
+   */
+  const backToRankings = carryPreview('/rankings', location.search);
 
   const [profile, setProfile] = useState<PlayerProfile | null>(null);
   const [points, setPoints] = useState<RatingPoint[]>([]);
@@ -107,7 +118,12 @@ function PlayerPage() {
       })
       .catch((caught: unknown) => {
         if (cancelled) return;
-        if (caught instanceof Error && /not found/i.test(caught.message)) setNotFound(true);
+        // Absence is read off the profile now, not off a thrown error - see
+        // the `unseen` branch below. A 404 is still honoured, because an
+        // older API deploy answers that way for the same player, and a
+        // malformed id is a 400 and a real error.
+        if (caught instanceof ApiError && caught.status === 404) setNotFound(true);
+        else if (caught instanceof Error && /not found/i.test(caught.message)) setNotFound(true);
         else setError('Could not load this player.');
       })
       .finally(() => {
@@ -135,8 +151,37 @@ function PlayerPage() {
   if (notFound) {
     return (
       <div className="player-page">
-        <Link to="/rankings" className="back-link">&larr; Back to rankings</Link>
+        <Link to={backToRankings} className="back-link">&larr; Back to rankings</Link>
         <p>No player with that id. They may not have appeared at a recorded event yet.</p>
+      </div>
+    );
+  }
+
+  /*
+   * A player the engine has never seen.
+   *
+   * `/api/players/:id` used to 404 for these, and the catch above turned that
+   * into the message. It answers 200 now - every number null, `known: false` -
+   * so without this branch a typed or bookmarked URL would render a shell of
+   * dashes, an empty chart and an empty match list. The event page still links
+   * only `known` players, so no normal navigation arrives here.
+   *
+   * One line, like the event page's empty states, with the reason as the hover
+   * hint rather than prose. It says `Unranked`, not "No record yet": that
+   * distinction was collapsed once a stale engine proved it could not be
+   * trusted to be true.
+   */
+  if (profile && profile.known === false) {
+    return (
+      <div className="player-page">
+        <Link to={backToRankings} className="back-link">&larr; Back to rankings</Link>
+        <section className="panel empty-state">
+          <p title={UNRANKED_NO_GAMES_EXPLANATION}>
+            {UNRANKED_LABEL} &mdash; no games by {profile.displayName ?? 'this player'}
+            {profile.tagLine ? `#${profile.tagLine}` : ''} have been recorded yet. A rating appears
+            once they have played at an event whose organiser recorded it.
+          </p>
+        </section>
       </div>
     );
   }
@@ -144,7 +189,7 @@ function PlayerPage() {
   if (loading && !profile) {
     return (
       <div className="player-page">
-        <Link to="/rankings" className="back-link">&larr; Back to rankings</Link>
+        <Link to={backToRankings} className="back-link">&larr; Back to rankings</Link>
         <p className="muted">Loading player...</p>
       </div>
     );
@@ -153,7 +198,7 @@ function PlayerPage() {
   if (!profile) {
     return (
       <div className="player-page">
-        <Link to="/rankings" className="back-link">&larr; Back to rankings</Link>
+        <Link to={backToRankings} className="back-link">&larr; Back to rankings</Link>
         {error && <div className="error-banner">{error}</div>}
       </div>
     );
@@ -174,25 +219,24 @@ function PlayerPage() {
       };
   const record = matchRecord(matches);
 
-  // Three rating states here as on the event page, not two. `/api/players/:id`
-  // currently 404s for a player the engine has never seen, so this branch is
-  // unreachable today - but it must not be a dead end if the endpoint starts
-  // answering with a profile whose numbers are all null. "Unranked" would tell
-  // a first-time player they failed a bar they never stood at, and a 0/8 games
-  // meter is not evidence of anything.
-  // Read off the whole profile, not the scoped slice: a known player who did
-  // not play a particular set is still "Unranked" in that set, not unseen.
-  const noRecord = hasNoRecord(profile) && matches.length === 0;
-
+  // The same three states as every other surface, from the same rule. The
+  // headline prints the number whenever the engine will quote one - muted and
+  // without a position when it is unsettled - and the word only when there is
+  // no number at all. It reads `rating`, so an older API deploy that sends an
+  // all-null profile lands in exactly the same branch.
+  const display = ratingDisplay(scoped);
   const minGames = seriesProvisional?.minGames ?? 8;
-  // The reason, for the tooltip on the withheld word - never as inline prose.
-  const unrankedWhy = noRecord
-    ? NO_RECORD_EXPLANATION
-    : scoped
-      ? provisionalExplanation(scoped.provisionalReason, profile.gamesUntilRated, minGames)
-      : '';
-  const gate = scoped?.provisional && !noRecord
-    ? gateProgress(scoped.gamesPlayed, minGames, scoped.provisionalReason)
+  // The reason, as a tooltip - never as inline prose.
+  const unrankedWhy = ratingExplanation(
+    display,
+    scoped?.provisionalReason ?? null,
+    profile.gamesUntilRated,
+    minGames
+  );
+  // How close they are, which is the one question an unsettled rating leaves
+  // open. Driven by the game count rather than by the reason string.
+  const gate = display === 'unsettled' || display === 'none'
+    ? gateProgress(scoped?.gamesPlayed ?? profile.gamesPlayed, minGames, scoped?.provisionalReason ?? null)
     : null;
   // The record only covers matches we have actually loaded, so say which.
   const recordCaption = hasMore
@@ -201,7 +245,7 @@ function PlayerPage() {
 
   return (
     <div className="player-page">
-      <Link to="/rankings" className="back-link">&larr; Back to rankings</Link>
+      <Link to={backToRankings} className="back-link">&larr; Back to rankings</Link>
 
       {error && <div className="error-banner">{error}</div>}
 
@@ -241,15 +285,18 @@ function PlayerPage() {
             </abbr>{' '}
             &middot; {scopeLabel}
           </span>
-          {scoped && !scoped.provisional ? (
-            <p className="headline-value">
-              {formatRating(scoped.rating)}
-              <span className="headline-margin">{formatUncertainty(scoped.uncertainty)}</span>
+          {display !== 'none' ? (
+            // The margin is what carries the honesty: a wide ± beside a narrow
+            // one says "not settled" without a label, and the muted treatment
+            // says the same thing again for anyone scanning the page.
+            <p className={`headline-value${display === 'unsettled' ? ' is-unsettled' : ''}`} title={unrankedWhy || undefined}>
+              {formatRating(scoped?.rating ?? null)}
+              <span className="headline-margin">{formatUncertainty(scoped?.uncertainty ?? null)}</span>
             </p>
           ) : (
             <p className="headline-value is-withheld">
               <span className="unranked" title={unrankedWhy || undefined}>
-                {noRecord ? NO_RECORD_LABEL : UNRANKED_LABEL}
+                {UNRANKED_LABEL}
               </span>
             </p>
           )}
@@ -333,20 +380,17 @@ function PlayerPage() {
                 <tr className="row-emphasis">
                   <th scope="row">{ALL_SETS_LABEL}</th>
                   <td className="muted">&mdash;</td>
-                  <td className="numeric">
-                    {profile.provisional ? (
-                      <span className="unranked" title={unrankedWhy || undefined}>{UNRANKED_LABEL}</span>
-                    ) : (
-                      <span className="rating-value">{formatRating(profile.rating)}</span>
-                    )}
-                    {!profile.provisional && <span className="rating-margin">{formatUncertainty(profile.uncertainty)}</span>}
-                  </td>
-                  <td className="numeric">{profile.gamesPlayed ?? 0}</td>
-                  <td title={profile.provisional ? provisionalShortReason(profile.provisionalReason) : undefined}>
-                    {profile.provisional ? UNRANKED_LABEL : 'Rated'}
-                  </td>
+                  <SetRatingCells
+                    rating={profile.rating}
+                    uncertainty={profile.uncertainty}
+                    gamesPlayed={profile.gamesPlayed}
+                    provisional={profile.provisional}
+                    provisionalReason={profile.provisionalReason}
+                    gamesUntilRated={profile.gamesUntilRated}
+                    minGames={minGames}
+                  />
                 </tr>
-                {profile.setRatings.map((setRating) => (
+                {(profile.setRatings ?? []).map((setRating) => (
                   <tr key={setRating.setId}>
                     <th scope="row">{setRating.setName ?? setRating.setId}</th>
                     {/* An em-dash for an unknown boundary, matching the "All
@@ -356,25 +400,15 @@ function PlayerPage() {
                     <td className="muted">
                       {setRating.releaseDate ? formatDate(setRating.releaseDate) : <>&mdash;</>}
                     </td>
-                    <td className="numeric">
-                      {setRating.provisional ? (
-                        <span
-                          className="unranked"
-                          title={provisionalExplanation(setRating.provisionalReason, setRating.gamesUntilRated, minGames) || undefined}
-                        >
-                          {UNRANKED_LABEL}
-                        </span>
-                      ) : (
-                        <>
-                          <span className="rating-value">{formatRating(setRating.rating)}</span>
-                          <span className="rating-margin">{formatUncertainty(setRating.uncertainty)}</span>
-                        </>
-                      )}
-                    </td>
-                    <td className="numeric">{setRating.gamesPlayed ?? 0}</td>
-                    <td title={setRating.provisional ? provisionalShortReason(setRating.provisionalReason) : undefined}>
-                      {setRating.provisional ? UNRANKED_LABEL : 'Rated'}
-                    </td>
+                    <SetRatingCells
+                      rating={setRating.rating}
+                      uncertainty={setRating.uncertainty}
+                      gamesPlayed={setRating.gamesPlayed}
+                      provisional={setRating.provisional}
+                      provisionalReason={setRating.provisionalReason}
+                      gamesUntilRated={setRating.gamesUntilRated}
+                      minGames={minGames}
+                    />
                   </tr>
                 ))}
               </tbody>
@@ -417,6 +451,60 @@ function PlayerPage() {
 }
 
 /**
+ * The rating, games and status cells of one row of the per-set table.
+ *
+ * Shared by the "All sets" row and each set's row, because they are the same
+ * three facts and used to be two copies of the same JSX carrying the same rule
+ * written twice.
+ *
+ * Status is a *word*, so the table still says in text what the muted treatment
+ * says in colour. This table is the one place on the page where a reader
+ * compares a settled slice against an unsettled one side by side, and colour
+ * is never the only signal here either.
+ */
+function SetRatingCells({
+  rating,
+  uncertainty,
+  gamesPlayed,
+  provisional,
+  provisionalReason,
+  gamesUntilRated,
+  minGames,
+}: {
+  rating: number | null;
+  uncertainty: number | null;
+  gamesPlayed: number | null;
+  provisional: boolean;
+  provisionalReason: PlayerProfile['provisionalReason'];
+  gamesUntilRated: number;
+  minGames: number;
+}) {
+  const display = ratingDisplay({ rating, provisional });
+  const why = ratingExplanation(display, provisionalReason, gamesUntilRated, minGames);
+  return (
+    <>
+      <td
+        className={`numeric${display === 'unsettled' ? ' is-unsettled' : ''}`}
+        title={why || undefined}
+      >
+        {display === 'none' ? (
+          <span className="unranked">{UNRANKED_LABEL}</span>
+        ) : (
+          <>
+            <span className="rating-value">{formatRating(rating)}</span>
+            <span className="rating-margin">{formatUncertainty(uncertainty)}</span>
+          </>
+        )}
+      </td>
+      <td className="numeric">{gamesPlayed ?? 0}</td>
+      <td title={display === 'rated' ? undefined : provisionalShortReason(provisionalReason)}>
+        {display === 'rated' ? 'Rated' : UNRANKED_LABEL}
+      </td>
+    </>
+  );
+}
+
+/**
  * One match, read left to right off a result stripe on the leading edge.
  *
  * The order is op.gg's - verdict, then what was played, then against whom,
@@ -429,6 +517,9 @@ function PlayerPage() {
  * the next thing this section wants, and it will want to address these rows.
  */
 function MatchRow({ match }: { match: PlayerMatch }) {
+  // The opponent link reads the query string here rather than taking it as a
+  // prop: one row of many, and the only thing it wants is the preview flag.
+  const { search } = useLocation();
   return (
     <li className={`match-row match-${match.outcome}`} data-shop-id={match.shopId ?? undefined}>
       <span className="match-stripe" aria-hidden="true" />
@@ -458,7 +549,10 @@ function MatchRow({ match }: { match: PlayerMatch }) {
       <span className="match-opponent">
         <span className="versus" aria-hidden="true">vs</span>
         {match.opponentId ? (
-          <Link to={`/rankings/players/${encodeURIComponent(match.opponentId)}`} className="player-link">
+          <Link
+            to={carryPreview(`/rankings/players/${encodeURIComponent(match.opponentId)}`, search)}
+            className="player-link"
+          >
             {match.opponentDisplayName ?? 'Unknown player'}
           </Link>
         ) : (

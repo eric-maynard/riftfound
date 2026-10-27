@@ -27,10 +27,21 @@ const get = (path: string) => getJson(server.url, path);
 
 describe('GET /api/rankings', () => {
   it('serves the all-sets scope by default', async () => {
-    const { status, body } = await get('/api/rankings');
+    const { status, body, headers } = await get('/api/rankings');
     expect(status).toBe(200);
     expect(body.data.scope).toEqual({ raw: 'all', setId: null, componentId: null });
     expect(body.data.entries.length).toBeGreaterThan(0);
+
+    // The cache header is the whole caching mechanism: CloudFront's /api/*
+    // policies carry `default_ttl = 0` on purpose, so a route that stops
+    // sending `s-maxage` quietly goes back to one Lambda invocation and four
+    // DynamoDB round trips per visitor. An hour at the edge against a daily
+    // refit; the reader's own copy is deliberately shorter than the shared one.
+    // Asserted here rather than in a block of its own because the general rate
+    // limiter is per-process and this suite already sits near its ceiling.
+    expect(headers.get('cache-control')).toBe(
+      'public, max-age=300, s-maxage=3600, stale-while-revalidate=86400'
+    );
   });
 
   it('reports coverage honestly instead of implying a full ladder', async () => {
@@ -163,8 +174,11 @@ describe('GET /api/rankings with no data at all', () => {
 
 describe('GET /api/players/:playerId', () => {
   it('returns a profile with per-set ratings and component info', async () => {
-    const { status, body } = await get('/api/players/p-kira');
+    const { status, body, headers } = await get('/api/players/p-kira');
     expect(status).toBe(200);
+    // Same freshness as the ladder - a profile comes out of the same refit, so
+    // a page loading both must not be able to show two generations of it.
+    expect(headers.get('cache-control')).toContain('s-maxage=3600');
     expect(body.data).toMatchObject({
       playerId: 'p-kira',
       displayName: 'Kirabosc',
@@ -384,7 +398,20 @@ describe('GET /api/players/search', () => {
   it('carries no personal data beyond what the contract holds', async () => {
     const { body } = await get('/api/players/search?q=kira');
     expect(Object.keys(body.data[0]).sort()).toEqual(
-      ['displayName', 'gamesPlayed', 'playerId', 'provisional', 'rating', 'regionLabel', 'tagLine'].sort()
+      [
+        'displayName',
+        'gamesPlayed',
+        'gamesUntilRated',
+        'playerId',
+        'provisional',
+        'provisionalReason',
+        'rating',
+        'regionLabel',
+        'tagLine',
+        // The margin travels with the number here too - a hit that showed a
+        // rating without one would be the single unqualified rating in the API.
+        'uncertainty',
+      ].sort()
     );
   });
 
@@ -405,8 +432,9 @@ describe('GET /api/players/search', () => {
 
 describe('GET /api/sets', () => {
   it('lists the sets the engine has data for, newest dated set first', async () => {
-    const { status, body } = await get('/api/sets');
+    const { status, body, headers } = await get('/api/sets');
     expect(status).toBe(200);
+    expect(headers.get('cache-control')).toContain('s-maxage=3600');
     expect(body.data.map((set: { setId: string }) => set.setId)).toEqual(['radiance', 'ogn']);
     expect(body.data[0]).toMatchObject({ setId: 'radiance', name: 'Radiance', releaseDate: '2026-10-23' });
     expect(body.data[1]).toMatchObject({ setId: 'ogn', releaseDate: '2025-10-31' });
@@ -436,12 +464,13 @@ describe('GET /api/sets', () => {
 describe('the confidence gate is enforced server-side', () => {
   const SCOPES = ['all', 'set:radiance', 'set:ogn', 'component:c-bay', 'component:c-sea'];
 
-  it('never puts a provisional rating on a leaderboard row, in any scope', async () => {
+  it('publishes every leaderboard rating with its margin, and ranks only the rated, in any scope', async () => {
     for (const scope of SCOPES) {
       const { body } = await get(`/api/rankings?scope=${encodeURIComponent(scope)}&limit=100`);
       const entries = body.data.entries as Array<{
         playerId: string;
         rating: number | null;
+        uncertainty: number | null;
         provisional: boolean;
         provisionalReason: string | null;
         rank: number | null;
@@ -449,46 +478,58 @@ describe('the confidence gate is enforced server-side', () => {
       expect(entries.length).toBeGreaterThan(0);
 
       for (const entry of entries) {
-        // The one invariant: withheld and null are the same thing.
-        expect(entry.rating === null).toBe(entry.provisional);
+        // The invariant is no longer "provisional means no number". A
+        // provisional player shows a rating and holds no *position*.
         if (entry.provisional) {
           expect(entry.provisionalReason).not.toBeNull();
           expect(entry.rank).toBeNull();
+        } else {
+          expect(typeof entry.rating).toBe('number');
+          expect(entry.rank).not.toBeNull();
+        }
+        // The load-bearing one: a number never travels without its margin.
+        if (entry.rating !== null) {
+          expect(typeof entry.uncertainty).toBe('number');
         }
       }
     }
   });
 
-  it('keeps the margin and the counts on a withheld row - a width is not a position', async () => {
+  it('publishes a provisional rating with its margin, and no position', async () => {
     const { body } = await get('/api/rankings?limit=100');
     const juno = (body.data.entries as Array<Record<string, unknown>>).find(
       (entry) => entry.playerId === 'p-juno'
     );
 
-    expect(juno).toMatchObject({ rating: null, provisional: true, provisionalReason: 'too-few-games' });
+    // The number is the answer; the margin is what qualifies it. "Unranked"
+    // withheld the figure and told the reader nothing they could weigh.
+    expect(juno).toMatchObject({ provisional: true, provisionalReason: 'too-few-games', rank: null });
+    expect(typeof juno!.rating).toBe('number');
     expect(juno!.uncertainty).toBeGreaterThan(0);
     expect(juno!.gamesPlayed).toBeGreaterThan(0);
     expect(juno!.matchesPlayed).toBeGreaterThan(0);
     expect(juno!.gamesUntilRated).toBeGreaterThan(0);
   });
 
-  it('withholds the number on the profile too, and reads the same as the tournament endpoint', async () => {
+  it('publishes the same number on the profile as on the tournament endpoint', async () => {
     const { body } = await get('/api/players/p-juno');
-    expect(body.data).toMatchObject({
-      rating: null,
-      provisional: true,
-      provisionalReason: 'too-few-games',
-    });
+    expect(body.data).toMatchObject({ provisional: true, provisionalReason: 'too-few-games' });
+    expect(typeof body.data.rating).toBe('number');
     expect(body.data.uncertainty).toBeGreaterThan(0);
     expect(body.data.gamesPlayed).toBeGreaterThan(0);
     expect(body.data.gamesUntilRated).toBeGreaterThan(0);
 
     // The two endpoints must not contradict each other about one player: this
-    // is the inconsistency the gate was unified to remove.
+    // is the inconsistency the gate was unified to remove, and it holds the
+    // same way now that the number is published rather than withheld.
     const tournament = await get('/api/events/48812/tournament');
-    const fromEvent = (tournament.body.data.players as Array<{ playerId: string; rating: number | null; provisional: boolean }>)
+    const fromEvent = (tournament.body.data.players as Array<{ playerId: string; rating: number | null; uncertainty: number | null; provisional: boolean }>)
       .find((player) => player.playerId === 'p-juno');
-    expect(fromEvent).toMatchObject({ rating: null, provisional: true });
+    expect(fromEvent).toMatchObject({
+      rating: body.data.rating,
+      uncertainty: body.data.uncertainty,
+      provisional: true,
+    });
   });
 
   it('gates every per-set entry on its own evidence, independently of the all-time one', async () => {
@@ -504,46 +545,54 @@ describe('the confidence gate is enforced server-side', () => {
     }>;
 
     for (const set of sets) {
-      expect(set.rating === null).toBe(set.provisional);
       if (set.provisional) expect(set.provisionalReason).not.toBeNull();
+      // One rule everywhere: a number never without its margin.
+      if (set.rating !== null) expect(typeof set.uncertainty).toBe('number');
     }
 
     // The case that makes per-set gating necessary rather than cosmetic: this
     // player is rated all-time and provisional inside a set, because a set
-    // slice holds fewer games and so carries a wider sigma.
+    // slice holds fewer games and so carries a wider sigma. The verdict still
+    // differs per era - what no longer differs is whether a number appears.
     expect(body.data.provisional).toBe(false);
-    const withheld = sets.find((set) => set.provisional);
-    expect(withheld).toBeTruthy();
-    expect(withheld!.rating).toBeNull();
-    // Still explainable: the slice's own margin and counts survive.
-    expect(withheld!.uncertainty).toBeGreaterThan(0);
-    expect(withheld!.gamesPlayed).toBeGreaterThan(0);
+    const provisionalSet = sets.find((set) => set.provisional);
+    expect(provisionalSet).toBeTruthy();
+    expect(typeof provisionalSet!.rating).toBe('number');
+    // Still explainable: the slice's own margin and counts travel with it.
+    expect(provisionalSet!.uncertainty).toBeGreaterThan(0);
+    expect(provisionalSet!.gamesPlayed).toBeGreaterThan(0);
   });
 
-  it('withholds the series for a scope the player is provisional in', async () => {
+  it('charts a provisional scope now that its rating is published', async () => {
     const profile = await get('/api/players/p-kira');
-    const withheldSet = (profile.body.data.setRatings as Array<{ setId: string; provisional: boolean }>)
+    const provisionalSet = (profile.body.data.setRatings as Array<{ setId: string; provisional: boolean }>)
       .find((set) => set.provisional)!;
 
-    const series = await get(`/api/players/p-kira/ratings?scope=set:${withheldSet.setId}`);
-    expect(series.body.data.points).toEqual([]);
+    // The series used to be withheld because its last point reconstructed the
+    // withheld headline. The headline is published, so there is nothing left
+    // to reconstruct and the chart is just a chart.
+    const series = await get(`/api/players/p-kira/ratings?scope=set:${provisionalSet.setId}`);
+    expect(series.body.data.points.length).toBeGreaterThan(0);
     expect(series.body.data.provisional).toBe(true);
-    expect(series.body.data.pointsWithheld).toBe(true);
+    expect(series.body.data.pointsWithheld).toBe(false);
 
-    // ...while the scope they *are* rated in still charts.
     const allTime = await get('/api/players/p-kira/ratings');
     expect(allTime.body.data.points.length).toBeGreaterThan(1);
     expect(allTime.body.data.provisional).toBe(false);
     expect(allTime.body.data.pointsWithheld).toBe(false);
   });
 
-  it('withholds the number in player search too', async () => {
+  it('publishes the number in player search too, with its margin', async () => {
     const provisional = await get('/api/players/search?q=juno');
-    expect(provisional.body.data[0]).toMatchObject({ playerId: 'p-juno', provisional: true, rating: null });
+    expect(provisional.body.data[0]).toMatchObject({ playerId: 'p-juno', provisional: true });
+    expect(typeof provisional.body.data[0].rating).toBe('number');
+    expect(typeof provisional.body.data[0].uncertainty).toBe('number');
+    expect(provisional.body.data[0].provisionalReason).toBe('too-few-games');
 
     const rated = await get('/api/players/search?q=kira');
     expect(rated.body.data[0].provisional).toBe(false);
     expect(typeof rated.body.data[0].rating).toBe('number');
+    expect(typeof rated.body.data[0].uncertainty).toBe('number');
   });
 
   it('ranks and counts over the ratings, then withholds - never the other way round', async () => {
@@ -567,7 +616,11 @@ describe('the confidence gate is enforced server-side', () => {
     // for a sigma of 168. Rank 1 is the best *rated* player, not the best
     // number, and p-sable occupies no position at all.
     const sable = entries.find((entry) => entry.playerId === 'p-sable')!;
-    expect(sable).toMatchObject({ provisional: true, rating: null, rank: null });
+    expect(sable).toMatchObject({ provisional: true, rank: null });
+    // Its number is published now - which is exactly why the rank assertion
+    // above matters more than it did: the highest rating on the page is not
+    // rank 1, because the position is still earned on evidence.
+    expect(sable.rating).toBe(1604);
     expect(entries.find((entry) => entry.rank === 1)!.playerId).toBe('p-kira');
 
     // Coverage counts the same population the ranks came from.
@@ -658,45 +711,71 @@ describe('the engine\'s verdict decides, not the API\'s own arithmetic', () => {
   beforeAll(() => setRankingStore(createFixtureRankingStore(DATA)));
   afterAll(() => setRankingStore(fixtureRankingStore));
 
-  it('withholds a number its own arithmetic would have published', async () => {
+  it('keeps the engine\'s verdict while publishing the number it withheld', async () => {
     const { body } = await get('/api/rankings?limit=100');
     const entry = (body.data.entries as Array<Record<string, unknown>>).find(
       (row) => row.playerId === 'p-engine-withheld'
     )!;
 
-    expect(entry).toMatchObject({ rating: null, provisional: true, rank: null });
+    // The verdict is still the engine's - this API's own arithmetic (40 sigma
+    // over 40 games) would have called this player rated. What changed is that
+    // a provisional verdict no longer removes the figure: it removes the rank.
+    expect(entry).toMatchObject({ rating: 1777, provisional: true, rank: null });
     // The engine's vocabulary (`too-uncertain`) translated into this API's.
     expect(entry.provisionalReason).toBe('uncertainty-too-wide');
     expect(entry.uncertainty).toBe(40);
-    expect(JSON.stringify(body)).not.toContain('1777');
   });
 
-  it('publishes a number its own arithmetic would have withheld', async () => {
+  it('honours the engine\'s rated verdict but still applies the display floor', async () => {
     const { body } = await get('/api/rankings?limit=100');
     const entry = (body.data.entries as Array<Record<string, unknown>>).find(
       (row) => row.playerId === 'p-engine-rated'
     )!;
-    expect(entry).toMatchObject({ rating: 1301, provisional: false, provisionalReason: null, rank: 1 });
+    // The engine published this one off two games. The verdict is honoured -
+    // not provisional, and it holds rank 1 - but two games is below the display
+    // floor, so the number itself is still the prior and is not shown. The two
+    // thresholds are independent and this is where that shows.
+    expect(entry).toMatchObject({ provisional: false, provisionalReason: null, rank: 1, rating: null });
   });
 
-  it('withholds it on the profile, in the per-set map and in the history', async () => {
+  it('publishes it on the profile, in the per-set map and in the history', async () => {
     const profileResponse = await get('/api/players/p-engine-withheld');
-    expect(profileResponse.body.data.rating).toBeNull();
-    expect(profileResponse.body.data.setRatings[0]).toMatchObject({ setId: 'radiance', rating: null, provisional: true });
-    expect(JSON.stringify(profileResponse.body)).not.toContain('1777');
-    expect(JSON.stringify(profileResponse.body)).not.toContain('1766');
+    expect(profileResponse.body.data.rating).toBe(1777);
+    expect(profileResponse.body.data.uncertainty).toBe(40);
+    expect(profileResponse.body.data.setRatings[0]).toMatchObject({
+      setId: 'radiance',
+      rating: 1766,
+      uncertainty: 44,
+      provisional: true,
+    });
 
     const all = await get('/api/players/p-engine-withheld/ratings');
-    expect(all.body.data.points).toEqual([]);
-    expect(all.body.data.pointsWithheld).toBe(true);
-    expect(JSON.stringify(all.body)).not.toContain('1777');
+    expect(all.body.data.points.length).toBe(1);
+    expect(all.body.data.points[0].rating).toBe(1777);
+    expect(all.body.data.pointsWithheld).toBe(false);
+    expect(all.body.data.provisional).toBe(true);
 
     const perSet = await get('/api/players/p-engine-withheld/ratings?scope=set:radiance');
-    expect(perSet.body.data.points).toEqual([]);
-    expect(JSON.stringify(perSet.body)).not.toContain('1766');
+    expect(perSet.body.data.points.length).toBe(1);
+    expect(perSet.body.data.points[0].rating).toBe(1766);
 
     const search = await get('/api/players/search?q=Withheld');
-    expect(search.body.data[0]).toMatchObject({ playerId: 'p-engine-withheld', rating: null, provisional: true });
+    expect(search.body.data[0]).toMatchObject({
+      playerId: 'p-engine-withheld',
+      rating: 1777,
+      uncertainty: 40,
+      provisional: true,
+    });
+  });
+
+  it('withholds the history of a player below the display floor', async () => {
+    // Two games: the floor holds the figure back on the headline, so it has to
+    // hold the series back too - its last point *is* the headline.
+    const series = await get('/api/players/p-engine-rated/ratings');
+    expect(series.body.data.points).toEqual([]);
+    expect(series.body.data.pointsWithheld).toBe(true);
+    expect(series.body.data.minGamesToPublishRating).toBe(3);
+    expect(JSON.stringify(series.body)).not.toContain('1301');
   });
 
   it('never publishes a rating that does not exist, whatever the item claims', async () => {
@@ -720,7 +799,395 @@ describe('the engine\'s verdict decides, not the API\'s own arithmetic', () => {
 });
 
 describe('the calendar API is untouched', () => {
-  it('still answers /api/health', async () => {
-    expect((await get('/api/health')).status).toBe(200);
+  it('still answers /api/health, and never from a cache', async () => {
+    const { status, headers } = await get('/api/health');
+    expect(status).toBe(200);
+    // A health check answered from an edge cache is not a health check.
+    expect(headers.get('cache-control')).toBe('no-store');
+  });
+});
+
+/**
+ * The two thresholds, end to end, on a fixture built to sit either side of
+ * each. They are independent and conflating them is the mistake this block
+ * exists to catch.
+ */
+describe('the display floor and the rank gate are different thresholds', () => {
+  const player = (over: Partial<PlayerRecord>): PlayerRecord => ({
+    playerId: 'p-x',
+    displayName: 'X',
+    tagLine: 'NA1',
+    rating: null,
+    uncertainty: null,
+    gamesPlayed: null,
+    matchesPlayed: null,
+    firstSeen: '2026-10-01',
+    lastSeen: '2026-10-20',
+    componentId: 'c-bay',
+    componentSize: 23,
+    regionLabel: 'San Francisco Bay Area',
+    setRatings: [],
+    updatedAt: '2026-10-25T06:00:00.000Z',
+    ...over,
+  });
+
+  // One game either side of the floor, with everything else held equal, so the
+  // only thing that can explain a difference is the floor itself.
+  const BELOW = player({
+    playerId: 'p-floor-below',
+    displayName: 'Below',
+    rating: 1207,
+    uncertainty: 130,
+    gamesPlayed: 2,
+    matchesPlayed: 1,
+  });
+  const AT = player({
+    playerId: 'p-floor-at',
+    displayName: 'At',
+    rating: 1232,
+    uncertainty: 122,
+    gamesPlayed: 3,
+    matchesPlayed: 2,
+  });
+  // Past the floor and past the gate: a number and a position.
+  const RATED = player({
+    playerId: 'p-floor-rated',
+    displayName: 'Rated',
+    rating: 1340,
+    uncertainty: 95,
+    gamesPlayed: 12,
+    matchesPlayed: 6,
+  });
+
+  const DATA = {
+    players: [BELOW, AT, RATED],
+    matches: {},
+    ratings: {
+      'p-floor-below': { all: [{ date: '2026-10-20', rating: 1207, uncertainty: 130, gamesPlayed: 2 }] },
+      'p-floor-at': { all: [{ date: '2026-10-20', rating: 1232, uncertainty: 122, gamesPlayed: 3 }] },
+    },
+    boards: { all: ['p-floor-below', 'p-floor-at', 'p-floor-rated'] },
+  };
+
+  beforeAll(() => setRankingStore(createFixtureRankingStore(DATA)));
+  afterAll(() => setRankingStore(fixtureRankingStore));
+
+  const row = async (playerId: string) => {
+    const { body } = await get('/api/rankings?limit=100');
+    return (body.data.entries as Array<Record<string, unknown>>).find((entry) => entry.playerId === playerId)!;
+  };
+
+  it('withholds the number at two games and publishes it at three', async () => {
+    // Two games is 1200-with-noise: the posterior has barely moved off the
+    // prior (median SD 130 against a prior SD of 150), so there is nothing to
+    // show. Three is where the figure starts responding to results.
+    const below = await row('p-floor-below');
+    expect(below.rating).toBeNull();
+    expect(below.uncertainty).toBe(130);
+    expect(below.gamesPlayed).toBe(2);
+
+    const at = await row('p-floor-at');
+    expect(at.rating).toBe(1232);
+    expect(at.uncertainty).toBe(122);
+    expect(at.gamesPlayed).toBe(3);
+  });
+
+  it('gives neither of them a rank, and publishes the floor it used', async () => {
+    expect((await row('p-floor-below')).rank).toBeNull();
+    expect((await row('p-floor-at')).rank).toBeNull();
+    // Past the floor is not past the gate: 3 games, 8 needed.
+    expect(await row('p-floor-at')).toMatchObject({
+      provisional: true,
+      provisionalReason: 'too-few-games',
+      gamesUntilRated: CONFIDENCE.minGames - 3,
+    });
+
+    // Only the player past the gate holds a position.
+    expect(await row('p-floor-rated')).toMatchObject({ rank: 1, provisional: false, rating: 1340 });
+
+    const { body } = await get('/api/rankings?limit=100');
+    expect(body.data.coverage.minGamesToPublishRating).toBe(3);
+    expect(body.data.coverage.minGamesForRating).toBe(CONFIDENCE.minGames);
+    // The ranks and the counts came off the ratings before the floor ran.
+    expect(body.data.coverage.ratedPlayers).toBe(1);
+    expect(body.data.coverage.provisionalPlayers).toBe(2);
+    expect(body.data.coverage.totalPlayers).toBe(3);
+  });
+
+  it('applies the same floor to the profile, the search hit and the history', async () => {
+    const below = await get('/api/players/p-floor-below');
+    expect(below.body.data).toMatchObject({ known: true, rating: null, uncertainty: 130 });
+    const at = await get('/api/players/p-floor-at');
+    expect(at.body.data).toMatchObject({ known: true, rating: 1232, uncertainty: 122 });
+
+    const searchBelow = await get('/api/players/search?q=Below');
+    expect(searchBelow.body.data[0]).toMatchObject({ rating: null, uncertainty: 130 });
+    const searchAt = await get('/api/players/search?q=At');
+    expect(searchAt.body.data[0]).toMatchObject({ rating: 1232, uncertainty: 122 });
+
+    const historyBelow = await get('/api/players/p-floor-below/ratings');
+    expect(historyBelow.body.data.points).toEqual([]);
+    expect(historyBelow.body.data.pointsWithheld).toBe(true);
+
+    const historyAt = await get('/api/players/p-floor-at/ratings');
+    expect(historyAt.body.data.points.length).toBe(1);
+    expect(historyAt.body.data.pointsWithheld).toBe(false);
+  });
+
+  it('never publishes a rating without its uncertainty, anywhere', async () => {
+    // `uncertainty` is now the only thing separating a settled rating from an
+    // unsettled one, so a number without it is a bare figure wearing the word
+    // "rating". The pairing is enforced at the publish boundary.
+    const { body } = await get('/api/rankings?limit=100');
+    for (const entry of body.data.entries as Array<Record<string, unknown>>) {
+      if (entry.rating !== null) expect(typeof entry.uncertainty).toBe('number');
+    }
+
+    const noMargin = createFixtureRankingStore({
+      ...DATA,
+      players: [player({ playerId: 'p-no-margin', displayName: 'NoMargin', rating: 1400, uncertainty: null, gamesPlayed: 20, matchesPlayed: 10 })],
+      boards: { all: ['p-no-margin'] },
+      ratings: {},
+    });
+    setRankingStore(noMargin);
+    try {
+      const profile = await get('/api/players/p-no-margin');
+      // The engine fitted a number but no margin: not publishable, because the
+      // margin is what the decision to publish rests on.
+      expect(profile.body.data.rating).toBeNull();
+      expect(profile.body.data.uncertainty).toBeNull();
+      expect(JSON.stringify(profile.body)).not.toContain('1400');
+    } finally {
+      setRankingStore(createFixtureRankingStore(DATA));
+    }
+  });
+});
+
+/**
+ * The three provisional states as the profile endpoint reports them. The
+ * frontend branches on `provisionalReason` - `too-few-games` draws the games
+ * meter, the others do not - so a reason that names the wrong obstacle is a
+ * missing progress indicator, not just wrong prose.
+ */
+describe('provisionalReason, end to end, for all three states', () => {
+  const base: PlayerRecord = {
+    playerId: 'p-x',
+    displayName: 'X',
+    tagLine: 'NA1',
+    rating: null,
+    uncertainty: null,
+    gamesPlayed: null,
+    matchesPlayed: null,
+    firstSeen: '2026-10-01',
+    lastSeen: '2026-10-20',
+    componentId: 'c-bay',
+    componentSize: 23,
+    regionLabel: 'San Francisco Bay Area',
+    setRatings: [],
+    updatedAt: '2026-10-25T06:00:00.000Z',
+  };
+
+  // Known, six games, a fitted sigma, and no rating on the item - the exact
+  // live shape that reported `no-rating` while sitting two games off the bar.
+  const SHORT = { ...base, playerId: 'p-short', displayName: 'Short', rating: null, uncertainty: 100, gamesPlayed: 6, matchesPlayed: 3 };
+  const WIDE = { ...base, playerId: 'p-wide', displayName: 'Wide', rating: 1480, uncertainty: 210, gamesPlayed: 20, matchesPlayed: 10 };
+
+  beforeAll(() =>
+    setRankingStore(
+      createFixtureRankingStore({ players: [SHORT, WIDE], matches: {}, ratings: {}, boards: { all: ['p-short', 'p-wide'] } })
+    )
+  );
+  afterAll(() => setRankingStore(fixtureRankingStore));
+
+  it('never seen -> no-rating, and known: false', async () => {
+    const { body } = await get('/api/players/p-ghost');
+    expect(body.data).toMatchObject({
+      known: false,
+      rating: null,
+      gamesPlayed: null,
+      provisional: true,
+      provisionalReason: 'no-rating',
+      gamesUntilRated: CONFIDENCE.minGames,
+    });
+  });
+
+  it('known but short of the games bar -> too-few-games, with the games left to go', async () => {
+    const { body } = await get('/api/players/p-short');
+    expect(body.data).toMatchObject({
+      known: true,
+      provisional: true,
+      provisionalReason: 'too-few-games',
+      gamesPlayed: 6,
+      uncertainty: 100,
+      gamesUntilRated: CONFIDENCE.minGames - 6,
+    });
+  });
+
+  it('known with games but too wide a margin -> uncertainty-too-wide', async () => {
+    const { body } = await get('/api/players/p-wide');
+    expect(body.data).toMatchObject({
+      known: true,
+      provisional: true,
+      provisionalReason: 'uncertainty-too-wide',
+      rating: 1480,
+      uncertainty: 210,
+      // Not a games problem, so the meter has nothing to count down.
+      gamesUntilRated: 0,
+    });
+  });
+});
+
+/**
+ * The Global scope carries positions.
+ *
+ * It used not to, and the suppression was the wrong shape of honesty: Global is
+ * the landing scope, so a reader's first sight of the ladder was a page with no
+ * left-hand column and a banner explaining why. The order exists - the engine
+ * publishes a global board with ranks on it - and an order that exists is
+ * better reported with its caveat than withheld.
+ *
+ * The caveat is real and this block pins the part of it the API owes. Measured
+ * on the live corpus: **0 of 56,257 recorded games cross a scene** - a scene is
+ * a connected component of the co-play graph, so a game between two of them
+ * would merge them - across 1,235 scenes, 369 of which appear on the global
+ * board and 15 of which appear in its top 25. So every scene's level rests on
+ * the 1,200 prior alone, and `sceneComparable` says only that a row's own
+ * internal order is real. Nothing says a comparison *between* two rows of
+ * different scenes is, because nothing in the data does.
+ */
+describe('the Global scope has positions, with the gate still on each row', () => {
+  const player = (over: Partial<PlayerRecord>): PlayerRecord => ({
+    playerId: 'p-x',
+    displayName: 'X',
+    tagLine: 'NA1',
+    rating: null,
+    uncertainty: null,
+    gamesPlayed: null,
+    matchesPlayed: null,
+    firstSeen: '2026-10-01',
+    lastSeen: '2026-10-20',
+    componentId: 'c-bay',
+    componentSize: 23,
+    regionLabel: 'San Francisco Bay Area',
+    setRatings: [],
+    updatedAt: '2026-10-25T06:00:00.000Z',
+    ...over,
+  });
+
+  // Two settled players in two scenes that have never met, plus one settled
+  // player in a scene too small to order anyone, plus one provisional. The
+  // only thing separating the third from the first two is its scene's size.
+  const BAY = player({ playerId: 'p-g-bay', displayName: 'Bayward', rating: 1480, uncertainty: 95, gamesPlayed: 14, matchesPlayed: 7 });
+  const SING = player({
+    playerId: 'p-g-sing',
+    displayName: 'Singa',
+    rating: 1534,
+    uncertainty: 94,
+    gamesPlayed: 15,
+    matchesPlayed: 15,
+    componentId: 'c-sing',
+    componentSize: 4654,
+    regionLabel: 'Central Singapore Community Development Council, 01',
+  });
+  const TINY = player({
+    playerId: 'p-g-tiny',
+    displayName: 'Tinyscene',
+    // The highest rating of the four, deliberately: if the scene gate were not
+    // applied this row would take position 1 off a four-player scene.
+    rating: 1620,
+    uncertainty: 90,
+    gamesPlayed: 20,
+    matchesPlayed: 10,
+    componentId: 'c-tiny',
+    componentSize: 4,
+    regionLabel: 'Ketchikan, AK',
+  });
+  const SOON = player({ playerId: 'p-g-soon', displayName: 'Soonish', rating: 1511, uncertainty: 140, gamesPlayed: 5, matchesPlayed: 3 });
+
+  const DATA = {
+    players: [TINY, SING, BAY, SOON],
+    matches: {},
+    ratings: {},
+    boards: { all: ['p-g-tiny', 'p-g-sing', 'p-g-bay', 'p-g-soon'] },
+  };
+
+  // One request for the whole block, held here: the app's general rate limiter
+  // is per-process, and a `get` inside every assertion exhausts it.
+  let global: {
+    entries: Array<Record<string, unknown>>;
+    coverage: Record<string, unknown>;
+  };
+  let tinyScope: Record<string, unknown>;
+
+  beforeAll(async () => {
+    setRankingStore(createFixtureRankingStore(DATA));
+    global = (await get('/api/rankings?limit=100')).body.data;
+    tinyScope = (await get('/api/rankings?scope=component:c-tiny&limit=100')).body.data;
+  });
+  afterAll(() => setRankingStore(fixtureRankingStore));
+
+  const row = (playerId: string) => global.entries.find((entry) => entry.playerId === playerId)!;
+
+  it('places settled players across scenes, in rating order', () => {
+    // The scope mixes scenes and still orders them. Singapore outranks the Bay
+    // on the number, which is the whole point: a position is published.
+    expect(row('p-g-sing')).toMatchObject({ rank: 1, rating: 1534, sceneComparable: true });
+    expect(row('p-g-bay')).toMatchObject({ rank: 2, rating: 1480, sceneComparable: true });
+  });
+
+  it('withholds a global position from a scene too small to order anyone', () => {
+    // The promise: no position here that the player would not get at home.
+    // 1,620 is the best number on the page and takes no place at all.
+    expect(row('p-g-tiny')).toMatchObject({
+      rating: 1620,
+      rank: null,
+      sceneComparable: false,
+      // Still rated: the scene is a *comparison* problem, not an evidence one,
+      // so the number and the margin are published exactly as before.
+      provisional: false,
+      provisionalReason: null,
+    });
+  });
+
+  it('withholds a global position from an unsettled rating, as a scene would', () => {
+    expect(row('p-g-soon')).toMatchObject({
+      rating: 1511,
+      rank: null,
+      sceneComparable: true,
+      provisional: true,
+      provisionalReason: 'too-few-games',
+    });
+  });
+
+  it('counts the too-small player as rated, because "rated" is about evidence', () => {
+    // Coverage must not move with a comparability rule: the scene gate decides
+    // a position, and `ratedPlayers` is the count of published settled ratings.
+    expect(global.coverage.ratedPlayers).toBe(3);
+    expect(global.coverage.provisionalPlayers).toBe(1);
+    expect(global.coverage.totalPlayers).toBe(4);
+    // And the positions are dense over the placed rows only - 1 and 2, with no
+    // gap where the suppressed row would have sat.
+    expect(global.entries.map((entry) => entry.rank).filter((rank) => rank !== null)).toEqual([1, 2]);
+  });
+
+  it('reports every row\'s scene, so a mixed ladder can name what it is mixing', () => {
+    // The only caveat the API can carry per row. The cross-scene weakness is
+    // not expressible as a number: the engine's own `crossComponentUncertainty`
+    // widens the margin by a median of 1.2 points on the live board (ratio
+    // 1.011), because the model pins a 4,654-player scene's mean to +-2.2 off
+    // the 1,200 prior - which would read as "1% less certain" for a comparison
+    // nothing in the data identifies at all.
+    for (const entry of global.entries) {
+      expect(typeof entry.sceneComparable).toBe('boolean');
+      expect(entry.componentId).toBeTruthy();
+      expect(typeof entry.componentSize).toBe('number');
+    }
+    expect(row('p-g-sing').regionLabel).toContain('Singapore');
+  });
+
+  it('still suppresses the whole ladder for a scene scope too small to order', () => {
+    // Unchanged, and the same rule read per row rather than per scope: asking
+    // for the four-player scene by name gets its rating and no position.
+    expect(tinyScope.component).toMatchObject({ componentId: 'c-tiny', comparable: false });
   });
 });

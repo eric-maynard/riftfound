@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import dotenv from 'dotenv';
+import { DEFAULT_MIN_GAMES_TO_PUBLISH } from '../models/ranking.js';
 
 dotenv.config({ path: '../.env' });
 dotenv.config();
@@ -38,6 +39,16 @@ const envSchema = z.object({
   // in-memory fixtures everywhere else (the rating engine only writes to
   // DynamoDB). Force either one for testing.
   RANKING_SOURCE: z.enum(['auto', 'dynamodb', 'fixture']).default('auto'),
+
+  // The display floor: recorded games needed before a rating *number* is
+  // published. Not the rank gate (8 games / 120 sigma / component 8), which is
+  // in `CONFIDENCE` and decides positions. See DEFAULT_MIN_GAMES_TO_PUBLISH for
+  // why the default is 3. 0 publishes every rating the engine fitted.
+  RANKING_MIN_GAMES_TO_PUBLISH: z.coerce
+    .number()
+    .int()
+    .min(0)
+    .default(DEFAULT_MIN_GAMES_TO_PUBLISH),
 });
 
 export type Env = z.infer<typeof envSchema>;

@@ -8,7 +8,7 @@ import type {
   TournamentStore,
 } from '../adapters/tournamentStore.js';
 import type { PlayerRecord } from '../adapters/rankingStore.js';
-import { getRankingStore } from './rankingService.js';
+import { getRankingStore, minGamesToPublish, publishableRating } from './rankingService.js';
 import { resolveVerdict, isComparable, normaliseOutcome, CONFIDENCE } from '../models/ranking.js';
 import {
   isSyntheticByeId,
@@ -113,8 +113,13 @@ function enrich(
     displayName: identity.displayName ?? profile?.displayName ?? null,
     tagLine: identity.tagLine ?? profile?.tagLine ?? null,
     known: profile !== undefined,
-    // The gate: a withheld rating is withheld, not shipped with a flag beside it.
-    rating: verdict.provisional ? null : profile?.rating ?? null,
+    // The number with its margin once there is a little evidence, null below
+    // the display floor. `uncertainty` below is what qualifies it.
+    rating: publishableRating(
+      profile?.rating ?? null,
+      profile?.gamesPlayed ?? null,
+      profile?.uncertainty ?? null
+    ),
     uncertainty: profile?.uncertainty ?? null,
     gamesPlayed: profile?.gamesPlayed ?? null,
     matchesPlayed: profile?.matchesPlayed ?? null,
@@ -135,6 +140,9 @@ function toSidePlayer(player: TournamentPlayer | null): TournamentSidePlayer | n
     displayName: player.displayName,
     tagLine: player.tagLine,
     rating: player.rating,
+    // Carried on the compact form too: a rating is never published without its
+    // margin, and a pairing row is a place a bare number would have appeared.
+    uncertainty: player.uncertainty,
     provisional: player.provisional,
   };
 }
@@ -198,6 +206,7 @@ function summariseField(players: TournamentPlayer[]): TournamentField {
     minGamesForRating: CONFIDENCE.minGames,
     maxUncertaintyForRating: CONFIDENCE.maxUncertainty,
     minComponentSize: CONFIDENCE.minComponentSize,
+    minGamesToPublishRating: minGamesToPublish(),
   };
 }
 

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { UNRANKED_LABEL } from '../ranking';
+import { ratingDisplay, UNRANKED_LABEL } from '../ranking';
 import type {
   TournamentField,
   TournamentMatch,
@@ -9,7 +9,6 @@ import type {
   TournamentRound,
 } from '../../types/tournament';
 import {
-  NO_RECORD_LABEL,
   fieldComposition,
   fieldStrength,
   formatPercent,
@@ -18,7 +17,6 @@ import {
   matchHasPlay,
   matchScore,
   playedGames,
-  ratingStanding,
   NOT_FINAL_REASON,
   rosterColumns,
   rosterNote,
@@ -27,7 +25,6 @@ import {
   sectionLabel,
   orderedMatches,
   sideOutcome,
-  standingLabel,
   standingRecord,
   titleCaseEnum,
   TRIMMED_LABEL,
@@ -110,23 +107,27 @@ function round(overrides: Partial<TournamentRound> = {}): TournamentRound {
   };
 }
 
-describe('ratingStanding', () => {
-  it('separates a player with no profile from one below the gate', () => {
-    expect(ratingStanding(player())).toBe('rated');
-    expect(ratingStanding(player({ provisional: true, rating: null }))).toBe('unranked');
-    // The engine has never seen them. Not the same thing, and the difference
-    // is the whole point: "Unranked" would claim they failed a bar.
-    expect(ratingStanding(player({ known: false, provisional: true, rating: null }))).toBe(
-      'no-record'
-    );
-    expect(ratingStanding(null)).toBe('no-record');
+describe('how a field player\'s rating is shown', () => {
+  // This page used to keep its own three-state vocabulary, whose third state
+  // printed "No record yet" for `known: false`. The distinction was real in
+  // principle and false in practice - a 25-hour-stale engine reported
+  // `known: false` for 22 players whose games were on the same page - so it
+  // was collapsed into `Unranked`, and the page now reads the site-wide rule.
+  it('shows the number whenever the engine will quote one', () => {
+    expect(ratingDisplay(player())).toBe('rated');
+    expect(ratingDisplay(player({ provisional: true, rating: 1204 }))).toBe('unsettled');
   });
 
-  it('gives the two withheld states different words', () => {
-    expect(standingLabel('unranked')).toBe(UNRANKED_LABEL);
-    expect(standingLabel('no-record')).toBe(NO_RECORD_LABEL);
-    expect(standingLabel('unranked')).not.toBe(standingLabel('no-record'));
-    expect(standingLabel('rated')).toBe('');
+  it('withholds the word for the rows that genuinely have no number', () => {
+    expect(ratingDisplay(player({ provisional: true, rating: null }))).toBe('none');
+    expect(ratingDisplay(player({ known: false, provisional: true, rating: null }))).toBe('none');
+    expect(ratingDisplay(null)).toBe('none');
+  });
+
+  it('does not key off `known`, which has been wrong on live data', () => {
+    // A player the engine has rated is shown as rated even if the roster's
+    // `known` flag disagrees.
+    expect(ratingDisplay(player({ known: false, rating: 1361, provisional: false }))).toBe('rated');
   });
 });
 
@@ -165,11 +166,15 @@ describe('fieldStrength', () => {
     expect(none.emptyReason).toContain('has a recorded game yet');
   });
 
-  it('counts the three groups of the field', () => {
+  it('counts the field in two groups, since the third lost its own word', () => {
+    // Was ['Rated', 'Unranked', 'No record'] = [4, 5, 15]. Once the last two
+    // print the same word everywhere else, two legend rows both reading
+    // "Unranked" would be a puzzle rather than a breakdown.
     const segments = fieldComposition(field());
-    expect(segments.map((segment) => segment.count)).toEqual([4, 5, 15]);
-    expect(segments.map((segment) => segment.label)).toEqual(['Rated', UNRANKED_LABEL, 'No record']);
+    expect(segments.map((segment) => segment.count)).toEqual([4, 20]);
+    expect(segments.map((segment) => segment.label)).toEqual(['Rated', UNRANKED_LABEL]);
     expect(segments[0].percent).toBeCloseTo((4 / 24) * 100);
+    expect(segments[1].percent).toBeCloseTo((20 / 24) * 100);
   });
 
   it('does not divide by zero on an empty field', () => {

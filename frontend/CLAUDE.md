@@ -15,12 +15,12 @@ src/
 │   ├── EventFilters.tsx  # Format dropdown, distance dropdown, location search
 │   ├── EventTooltip.tsx  # Hover card for events
 │   ├── SceneSelect.tsx   # Searchable scene (connected-component) picker
-│   ├── SetPills.tsx      # Set scope as a segmented control
+│   ├── SetScope.tsx      # Set scope as a segmented control
+│   ├── TypeSelect.tsx    # Event-type picker with the chip colour dots
 │   ├── RecordBar.tsx     # W-L-D counts with a filled record bar
 │   ├── FormStrip.tsx     # Recent form as lettered result pips
 │   ├── DayEventsModal.tsx  # The "+N more" day list on phones
-│   ├── EventTrophyLink.tsx # The trophy on a day-list row
-│   ├── HowRankingWorks.tsx # "How rankings work", at the foot of the page
+│   ├── EventTrophyLink.tsx # The trophy on an event chip
 │   └── RatingChart.tsx   # Inline-SVG rating-over-time chart
 ├── pages/
 │   ├── CalendarPage.tsx  # Main view with FullCalendar
@@ -29,7 +29,9 @@ src/
 │   └── PlayerPage.tsx    # Summary block, chart, per-set breakdown, match history
 ├── lib/
 │   ├── ranking.ts        # Pure helpers (scope, formatting, record, chart geometry)
-│   └── tournament.ts     # Pure helpers for the event page
+│   ├── tournament.ts     # Pure helpers for the event page
+│   ├── calendarDates.ts  # FullCalendar date markers -> local dates
+│   └── eventColors.ts    # One chip colour per event type, measured
 ├── services/
 │   └── api.ts            # API client functions
 └── types/
@@ -48,14 +50,45 @@ caches, filters and geolocation survive a switch.
 
 The switch *is* the site mark: the looking glass for Event View, the trophy for
 Rankings, on one track with a thumb sliding under the active side and the other
-desaturated. It replaces the earlier text tab bar. While Rankings is unlisted
+desaturated. Both marks are one composition - Riot's Riftbound swirl, inset in
+a 174 canvas, with a small object laid over its open centre and pushed down and
+to the right. The Rankings trophy is sized and placed off measurements taken
+from `logo.png` (swirl 142px centred (86.5, 90.5); glass lens 58px centred
+(100.5, 97), i.e. 41% of the mark at +14, +6.5), so the pair reads as siblings
+rather than two unrelated drawings. `public/logo-rankings-v3.svg` carries the
+numbers. The asset filename is **versioned** because `deploy.sh frontend` only
+invalidates `index.html`: an asset that changes without changing its name stays
+cached at the edge and in browsers, which is why an earlier fix to this mark
+looked like it had never shipped.
+
+The switch replaces the earlier text tab bar. While Rankings is unlisted
 (`SHOW_SECTION_TABS` false in `Layout.tsx`) the plain logo stands in instead, so
-a deploy cannot reveal the section by accident; set
-`localStorage.riftfoundRankingTabs = 'on'` to preview the switch, or follow
-`?preview=rankings` - the older `?preview=ranking` is still honoured, because
-that link was handed out before the rename, and `?preview=off` clears it. On
+a deploy cannot reveal the section by accident; follow
+`?preview=rankings` to see it - the older `?preview=ranking` is still honoured,
+because that link was handed out before the rename, and `?preview=off` clears
+it. **The URL is the whole switch**: an earlier version mirrored it into
+`localStorage`, which turned the section on permanently for that browser after
+a single visit, an opt-in nobody could find their way out of. Nothing is
+persisted now, so `carryPreview` (`lib/preview.ts`) has to ride every internal
+link - the mode switch, every back-link, every player and event link, and the
+catch-all redirect. One surface that drops it strands the reader in an
+unlisted section with no visible way back. On
 phones it leaves the fixed corner and sits in the page flow, because unlike the
 bare logo it is navigation and must not be hidden.
+
+**Under 600px the two sides are labelled.** Two unlabelled 36px marks read as a
+logo on a phone, not a control: there is no hover to lift the inactive side,
+and the sliding thumb reads as decoration at that size - a first-time reader
+could not tell it was a toggle. The targets were never the problem (both
+measure 44x44 and `elementFromPoint` reaches the link at the centre and both
+corners); the affordance was. Once the switch is out of the fixed corner it is
+not competing with the calendar for width, so the names are simply shown, the
+lavender wash moves from the sliding `::before` onto the active option itself -
+a fixed `translateX(46px)` is wrong the moment the two sides stop being square
+- and `aria-current` still carries the selected state. Measured over the real
+composited ancestors: the active label `#f8f8f2` on `#5a5475` is **6.70:1**,
+the inactive `--color-text-muted-lifted` on the `#3e4250` track **5.77:1**, and
+the whole control is 255px inside a 390px viewport. Desktop is untouched.
 
 The routes went plural with the section, matching the API's `/api/rankings`.
 `/ranking` and `/ranking/players/:id` were handed out as live links, so
@@ -67,24 +100,108 @@ shared calendar URL and the Rankings set/scene selection both survive the
 round trip.
 
 ### Rankings
-- Defaults to a *scene* (connected component), never a global ladder: ratings
-  only compare players who have played each other.
-- A rating below the confidence gate is not printed; the player reads
-  **`Unranked`** and nothing else. The reason is the `title` on that word
-  (`provisionalExplanation`), never inline prose - the page reports, it does not
-  explain itself at every row.
-- The exposition lives in `HowRankingWorks` at the *foot* of the page, headed
-  "How rankings work", with a link to the engine source. Its anchor id stays
-  `#how-ranking-works` through the rename: the id was handed out as a live deep
-  link, and a heading is not an address. Short hints carry the same facts where
-  the concepts appear: the scene picker's `?` and the dotted-underlined "Rating"
+- **Opens on `Global`** - the scope that mixes every scene - and the reader
+  picks a scene when they want positions. It used to auto-select the biggest
+  comparable component by rewriting the URL; it does not any more, so a bare
+  `/rankings` link is the same page for everyone. `pickDefaultComponent` is
+  kept for the "which one scene would you show" question, and a shared
+  `?region=` link still wins outright, because the page reads that parameter
+  straight into the scope and nothing rewrites it.
+- `Global` was called `Everywhere`, beside a heading that said `All scenes` -
+  two names for one scope. One name now (`GLOBAL_SCENE_LABEL`), used by the
+  picker, the heading and the coverage block alike.
+- **Global has positions, and says what they rest on.** It used to drop its
+  `#` column entirely, on the grounds that Global is never `comparable`. The
+  grounds were sound and the conclusion was not: the order exists - the engine
+  publishes a global board with ranks on it - and withholding an order that
+  exists is not more honest than printing it with its caveat, especially on the
+  page a reader lands on. A **position is a per-row fact** now, not a per-scope
+  one: the API ranks over the whole rated population on every scope
+  (`earnsPosition`), and the page draws the column whenever any loaded row
+  holds a place (`hasPositions`). The old gate is unchanged where it belongs -
+  8 games, ±120 - and the scene-size gate moved onto the row, so a player who
+  would get no place in their own scene gets none globally either (29 of the
+  live board's 6,117 rated players, all in scenes under 8).
+- **The caveat moved; it did not go.** The cross-scene weakness is one the `±`
+  does **not** carry: the margin is the posterior SD of a comparison *inside* a
+  scene, and between two scenes there is no comparison for it to be about.
+  Measured on production: **0 of 56,257 recorded games cross a scene** - which
+  is definitional, since a scene is a connected component of the co-play graph
+  and a game between two of them would merge them - over 1,235 scenes, 369 of
+  them on the global ladder and 15 in its top 25. There is no RC/RCQ tier in
+  the data to link them: the whole corpus is Nexus Night, Pre-Rift and Other.
+  So every scene's level rests on the 1,200 prior and nothing else. Three
+  surfaces carry that, all of them in the page's existing idiom:
+  - the `#` header is a dotted-underlined `abbr` whose title is
+    `GLOBAL_POSITION_HINT`, beside the thing it qualifies;
+  - the banner is one line (`GLOBAL_POSITION_NOTICE`), replacing
+    "No positions in Global — pick a scene", which now describes a page that
+    does not exist. No paragraph, same as every other notice here;
+  - the `Scene` column **stays**, beside the positions rather than instead of
+    them, because seeing that #1 and #2 come from scenes that have never met
+    *is* the caveat. Its cell hint is `sceneSizeHint` - the depth a place was
+    earned among.
+- **No cross-scene figure is published, and that was measured, not assumed.**
+  Two candidates were rejected on the numbers. The engine's own
+  `crossComponentUncertainty` widens the margin by a median of **1.2 rating
+  points** on the live board (ratio 1.011), because the model pins a
+  4,654-player scene's mean to ±2.2 off the prior - correct given the prior,
+  and the prior is the untested part, so a `±96` beside a `±95` would read as
+  "1% less certain" about a comparison nothing identifies at all. And a
+  per-player "how connected is your scene" count is **zero for every player in
+  the corpus**, so a column of it would be furniture. What varies between rows
+  is scene size, which the `Scene` column already carries.
+- The picker row reads `every scene at once`, not `not comparable`: a caveat met
+  before the thing it qualifies was always the wrong place for it, and that
+  wording described the positionless ladder. `GLOBAL_OPTION.comparable` stays
+  **false** - it is the narrow statistical claim and it is still true; what
+  changed is that the page no longer reads it as "print nothing".
+- **Every player with a number gets their number**, with its margin beside it.
+  Three states, decided once by `ratingDisplay` in `lib/ranking.ts` and used by
+  the ladder, the event page and the player page alike:
+
+  | state | prints | position |
+  |---|---|---|
+  | `rated` | `1,382 ±95` | `#3` |
+  | `unsettled` | `1,204 ±156`, **muted** | `--` |
+  | `none` | `Unranked` | `--` |
+
+  The page used to print `Unranked` for everything but the first, which read
+  as a broken page rather than an honest one and threw away a figure the
+  engine was willing to stand behind. **The honesty rides on the margin now**:
+  a `±156` beside a `±95` says "not settled" better than the word did, and it
+  is a comparison a reader can make instead of a verdict they have to accept.
+- The floor belongs to the API, not to us. Below about three recorded games
+  the estimate has barely moved off the 1,200 prior - median posterior SD 130
+  against a prior of 150 - so it would describe the average rather than the
+  player, and the API sends `rating: null`. `ratingDisplay` therefore reads the
+  *number*, never a game count, so the floor can move without this changing.
+- **No position below the rank gate**, whatever the number says. 8 games,
+  ±120, scene ≥8, computed server-side; the rank cell is a `--` and the
+  position is never inferred from the rating. The dash carries *which* gate
+  stopped it, because they are different kinds of thing: `ratingExplanation`
+  for an evidence problem, `sceneTooSmallExplanation` for a comparison one -
+  a settled rating in a scene too small to order anyone, where the number
+  itself is not in question.
+- The reason is the `title`, never inline prose - `ratingExplanation`, which
+  says "Still settling - 3 more recorded games…" for an unsettled rating and
+  the no-games sentence for `none`.
+- **`ratingExplanation` and `gateProgress` distrust `provisionalReason`.** The
+  API has sent `no-rating` for players who plainly have games, so both read the
+  display state and the game counts first and let the reason string pick the
+  wording only when it says something the numbers cannot - that the *margin*,
+  not the volume, is what is holding the rating back.
+- The exposition is the footer's "How Rankings Work" hover note (`Layout.tsx`),
+  not a section on the page. Short hints carry the same facts where the
+  concepts appear: the scene picker's `?` and the dotted-underlined "Rating"
   and "Margin" column headers.
 - The scene picker is searchable (`SceneSelect`): ~194 components and growing,
   so it copies the calendar's location autocomplete rather than inventing a
   second idiom. Filtering is a pure function in `lib/ranking.ts`
   (`sceneOptions` / `filterSceneOptions`) so it is tested without a DOM.
-- Positions are suppressed entirely when the scope mixes scenes or the scene is
-  too small - with a banner saying why.
+- Positions are suppressed entirely only when the **scene** is too small to
+  order anyone - with a banner saying why. Mixing scenes no longer suppresses
+  them; see "Global has positions" above.
 - Empty and sparse states are the primary design, not a fallback.
 - **Density is modelled on op.gg and lolchess; their tier furniture is not.**
   One summary block instead of a row of equal-weight tiles, a filled coverage
@@ -96,18 +213,54 @@ round trip.
   first in a scene is a fact and a medal ramp would be a fiction.
 - **The margin bar** (`marginScale` / `marginBar`) draws each rating ± its
   uncertainty on one axis shared by the whole page, so overlapping bars read as
-  "not separated yet". Suppressed below three rated rows and hidden under
-  600px: a bar with nothing beside it is decoration.
-- **The games gate** (`gateProgress`) shows recorded games against the published
-  threshold beside `Unranked`. A count of evidence is not a rating, so it leaks
-  nothing the gate withholds.
-- **Result colour is never the only signal.** Every win, loss and draw carries a
-  letter - the form pips, the match row's badge, the Bo3 chips, the W-L-D counts
-  - so both pages survive being read in greyscale. The record bar's segments are
-  separated by a 2px gap in the track colour, because the win green and the loss
-  red are only 2.29:1 against one another.
+  "not separated yet". **Unsettled rows are in the scale, and that is the
+  point** - it is the thing carrying what the word `Unranked` used to carry,
+  and their wide spans stretch the axis, which is what makes the contrast
+  legible. The floor dropped from three rows to two: three was right when only
+  settled rows drew bars, but the bars now do work on every row with a number
+  and two spans are already a comparison. One span is still decoration, and so
+  is a degenerate range. Hidden under 600px, where the `±` in the rating cell
+  carries the same fact.
+- **The games gate** (`gateProgress`) answers the one question an unsettled
+  rating leaves open - how close am I - as recorded games against the published
+  threshold. On the player page and the `Unranked` tail it is the pip meter; in
+  a ladder row it is the Games cell reading `6/8` instead of `6`, because a row
+  of pips on every line is noise. It says nothing for a player who has already
+  played enough games (a full meter beside an unsettled rating reads as a
+  contradiction) or one the API says is held back by its margin.
+- **Result colour is never the only signal.** Every individual win, loss and
+  draw carries a letter - the form pips, the match row's badge, the Bo3 chips -
+  so both pages survive being read in greyscale. The record bar's segments are
+  separated by a 2px gap in the track colour, because the win green and the
+  loss red are only 2.29:1 against one another.
+- **A record is written `2-1`, or `2-1-1` when a draw happened** - win-loss-draw
+  in the notation a card player already reads, never `2W 1L` in coloured display
+  type. The trailing `-0` is dropped rather than printed on every row: draws are
+  rare (72 against 1,372 decisive sides) so a universal `-0` is noise. It is a
+  figure, at figure size with tabular numerals, not the loudest thing on the
+  block - the rating is. It satisfies the greyscale rule by itself, because
+  numerals are not colour, but a screen reader announces it as "two dash one
+  dash one", so the visible figure is `aria-hidden` and `recordSpoken` carries
+  the name ("2 wins, 1 loss, 1 draw"). `formatRecord` / `recordSpoken` in
+  `lib/ranking.ts` are shared by the player summary and the event page's
+  standings column, which sits under a header reading "Record" beside one
+  reading "Pts", so there is nothing for it to be mistaken for.
+- The bar beside the record is **decorative** (`aria-hidden`): the figure and
+  the win rate printed next to it already say everything it draws, so
+  announcing it again would only repeat the row.
 - The player page's record is computed from *loaded* matches, so the bar always
   carries a caption saying which ("All 6 loaded matches", "First 25 of 40").
+- **The player page reads absence off the profile, not off an error.**
+  `/api/players/:id` used to 404 for a player the engine has never seen, and
+  the page turned that into its message; it answers 200 now, so the branch is
+  `profile.known === false` and the page prints one line - "Unranked - no games
+  by <name> have been recorded yet" with the reason as its hover hint - instead
+  of a shell of dashes, an empty chart and an empty match list. A 404 is still honoured, because an older API deploy answers
+  that way for the same player, and a malformed id is a 400 and a real error.
+  A profile that arrives all-null with no `known` field at all - the shape an
+  older deploy would send - lands in the same `rating === null` branch and
+  reads `Unranked`, so no deploy order breaks the page. Both shapes verified in
+  a browser.
 - A **map of the 390 known venues** is the likely next feature. Match rows carry
   their `data-shop-id`, and both pages are a flat column of sibling sections, so
   a venues panel drops in without disturbing the layout.
@@ -128,15 +281,29 @@ round trip.
   strength-of-field preview and the most interesting state an unplayed event
   has; `trimmed: true`, where `rounds` is empty and `standings` is whole;
   and `status: 'none'`, where the event happened and nothing was recorded.
-- **Three rating states, not two.** `rated` prints the number; `provisional`
-  prints `Unranked` (never the withheld figure - these endpoints null it out);
-  `known: false` prints **`No record yet`**, because the engine has never seen
-  that player and telling them they are "unranked" claims they failed a bar they
-  never stood at. At launch that is most of a field: 15 of 22 on the live event
-  this was built against.
-- Names link to `/rankings/players/:playerId` **only when `known`**. An unknown
-  player has no profile, so `/api/players/:id` 404s and the link would be a dead
-  end; those names render as plain text beside "No record yet".
+- **The same three rating states as the ladder, from the same
+  `ratingDisplay`.** A number whenever the engine will quote one, muted when it
+  is unsettled, `Unranked` only when there is none.
+- **"No record yet" is gone.** The page used to keep a fourth state for
+  `known: false`, on the reasoning that telling a first-time player they are
+  "unranked" claims they failed a bar they never stood at. The reasoning was
+  sound and the data was not: a 25-hour-stale engine reported `known: false`
+  for 22 players whose games were rendered on the same page, so the phrase was
+  lying more often than it was informing. After the refit - 27,318 profiles
+  over 3,122 events, rated players 166 → 6,122 - that event reads 22 of 22
+  known, 7 rated. The distinction is collapsed into `Unranked` everywhere, and
+  `fieldComposition` counts two groups rather than three, because two legend
+  rows both reading `Unranked` would be a puzzle rather than a breakdown.
+- Names link to `/rankings/players/:playerId` **only when `known`**. The rule
+  is unchanged; its justification moved. `/api/players/:id` used to 404 for an
+  unknown player, so the link was a dead end. It answers **200** now, with
+  every number null and a `known: false` on the profile - a resource whose
+  `/matches` and `/ratings` already answered 200 is not absent, and such a
+  player gets a real profile the moment the engine sees them, so the 404 made a
+  bookmarked URL dead and then alive. The link is still withheld because the
+  page would have nothing on it, and unknown names render as plain text beside
+  `Unranked`. On a *pairing*, where there is no `known` flag, a name links when
+  it carries a rating.
 - **Strength of field never prints a bare mean.** The rated subset is
   systematically the regulars, so the number always carries `ratedShare`'s
   story - "1,219 mean, across the 7 rated players of 14" - and the three groups
@@ -144,10 +311,22 @@ round trip.
 - **Finality is read off the round, or off the capture - never off a match.**
   Riot leaves matches reading `IN_PROGRESS` inside rounds it has `FINALIZED`
   (21 of 22 on the live event). `openMatches` is a data-quality signal, not a
-  gate. A drawn match arrives as **`TIE`**, not `DRAW`.
-- Pairings are sorted into table order (the capture returns 7, 6, 4, 3, 2, 1, 5)
-  and a bye is printed once: it arrives twice, as a synthesised `bye: true`
-  match *and* in `byes`.
+  gate. A drawn match now arrives as **`draw`**: the API normalises Riot's
+  vocabulary to this one and keeps the verbatim word in `rawOutcome`. It used
+  to arrive as `TIE` - 72 of 1,444 sides on the live corpus, `DRAW` never once
+  - so `sideOutcome` matches both, case-insensitively, and reads an old capture
+  and a new one the same way. `FORFEIT` / `DISQUALIFIED` / `NO_SHOW` are
+  deliberately `unknown` rather than guessed at.
+- Pairings arrive in table order now, sorted server-side; `orderedMatches` is a
+  no-op re-sort, kept so the page never goes back to depending on upstream
+  order. (21 of the corpus's 87 rounds used to be out of order, round 1 of the
+  live event arriving 7, 6, 4, 3, 2, 1, 5.)
+- A bye is printed once. It used to arrive **twice** - a synthesised
+  `bye: true` match *and* `byes` - in 42 of 87 rounds; it comes in `byes` alone
+  now, with no `bye-` prefixed id leaving the API. `unlistedByes` keeps the
+  de-dupe anyway, because that is what makes the page correct under either
+  shape and in either deploy order, and it guards every field against arriving
+  `undefined` rather than empty.
 - A Bo3's third game slot arrives pre-created with `winnerTeamId: null`, so
   `playedGames` drops it rather than inventing a game that never happened.
 - Standings and roster are `.table-scroll` tables with a `min-width`, so they
@@ -163,9 +342,26 @@ round trip.
 ### The trophy affordance
 - `EventTrophyLink` renders inside FullCalendar's `eventContent`, because the
   desktop "+N more" popover is drawn by FullCalendar and that is the only way
-  into it. One renderer therefore covers both day lists. CSS then confines it to
-  `.fc-popover`: availability is fetched one day list at a time, so a trophy in
-  the grid cell would light only on days whose list had already been opened.
+  into it. One renderer therefore covers the grid chip and the popover.
+- **It rides the grid chip, not only a day list.** It used to be confined by
+  CSS to `.fc-popover`, which made it unreachable for almost everyone: with
+  `dayMaxEventRows` 3 a day needs **four** events before there is a "+N more"
+  link at all, and most days have one or two. The reason for the confinement
+  was real - availability was fetched one day list at a time, so a grid trophy
+  would have lit up only after someone had opened that day - so the *premise*
+  was removed rather than the symptom worked around. See the availability sweep
+  under CalendarPage.
+- Not on phones, where `renderEventContent` withholds it: the grid chip there
+  carries the bare time in a ~50px cell, and tapping the cell already opens the
+  day list, which carries the trophy at 44px. A `@media (max-width: 600px)`
+  rule hides it on the grid for a narrow *desktop* window too, sparing the
+  popover, which is not inside `.fc-daygrid-day-events`.
+- A chip that carries one gets `.has-trophy`, which lets the title shrink and
+  ellipsise. Without it the title is `white-space: nowrap` with `min-width:
+  auto`, so as a flex item its min-content is the whole string: it refuses to
+  shrink and shoves the trophy past the chip's `overflow: hidden`. Measured at
+  1280px: one line, the 15px glyph inside the chip's right edge, and the label
+  losing 16px it was already ellipsising away.
 - `DayEventsModal` is the phone path and renders it as a *sibling* of the event
   button inside a coloured band - a link inside a button is invalid markup. The
   band is 44px tall so the trophy is a real touch target.
@@ -174,13 +370,15 @@ round trip.
   native event itself and routes by hand; modified clicks fall through to the
   real `href` so "open in new tab" still works.
 - **Ink `#21222c`**, the app's own darkest surface read as dark grey. Measured
-  against each composited chip colour: `#bd93f9` 6.55:1, `#ff79c6` 6.62:1,
-  `#73d393` 8.62:1, `#6272a4` **3.36:1** - the slate "Other" chip is the binding
-  case, and nothing lighter clears the 3:1 graphics floor there (even pure black
-  only reaches 4.46:1). On the page ground the same ink is 1.40:1, which is why
-  this affordance can only live on a coloured chip. Hover and focus keep the ink
-  and add a ring in it: white would *drop* it to 2.26:1 on lavender, and the
-  site's cyan focus ring reaches 1.63:1 there.
+  against each chip colour it sits on: `#bd93f9` 6.55:1, `#ff79c6` 6.62:1,
+  `#73d393` 8.62:1, `#9ea8c7` 6.68:1. The slate "Other" chip used to be the
+  binding case at **3.36:1** against the 3:1 graphics floor, with nothing
+  lighter clearing it and even pure black reaching only 4.46:1 - which is why
+  the chip itself was lightened rather than the ink. On the page ground the
+  same ink is 1.40:1, which is why this affordance can only live on a coloured
+  chip. Hover and focus keep the ink and add a ring in it: white would *drop*
+  it to 2.26:1 on lavender, and the site's cyan focus ring reaches 1.63:1
+  there.
 - It always carries an accessible name ("Standings and roster for <event>").
 
 ### RatingChart
@@ -202,6 +400,25 @@ round trip.
 - Events displayed as "Time | Shop Name"
 - Navigation restricted to 3-month window via `validRange`
 - `fixedWeekCount={false}` prevents extra rows
+- **Dates from FullCalendar are not all the same thing.** The library works in
+  *date markers* - a `Date` whose **UTC** fields carry the cell's wall-clock
+  values - and converts them with `DateEnv.toDate` before handing most of them
+  out. `dateClick` and `navLinkDayClick` arrive converted, as does the `start`
+  on each of `moreLinkClick`'s `allSegs`; `moreLinkClick`'s own `date` does
+  **not**. Read with local getters, a Nov 7 cell headed its day list "Fri,
+  Nov 6" everywhere west of UTC. `lib/calendarDates.ts` holds the conversion
+  (`dateMarkerToLocalDate`) and the local-day key `getEventsForDate` compares
+  on, both pure and both tested - including across a DST boundary, where a
+  blind offset lands an hour out. Only the `moreLinkClick` path converts; the
+  other two must be left alone.
+- **Availability is swept over the whole visible range**, not one day list at a
+  time. `CalendarPage` already loads every event for the range in one
+  `calendarMode` request, so `loadAvailability` asks about all of them up
+  front, chunked at the endpoint's documented 50 ids a call - one request for a
+  25-mile month, four for 132 events, none per event, and never twice for the
+  same id in a session. `displayEvents` is memoised so the sweep has a stable
+  trigger. A failed batch puts its ids back, and opening a day list asks again
+  as the retry path.
 
 ### EventFilters
 - Format: dropdown (All, Constructed, Sealed, Draft, Multiplayer)
@@ -223,6 +440,19 @@ round trip.
   3.59:1 on the page ground. Likewise `--color-green-text` for the win chip.
 - A chip's ink must contrast with its own tint, not with the page: the W/L chips
   used the saturated hue on an 18% wash of the same hue.
+- **The event-type chips live in `lib/eventColors.ts`**, once, rather than in
+  four copies with comments saying they had to match. Their ink is
+  `--fc-event-text-color` / `.day-event-item`'s `--color-bg` `#363b43`:
+  `#bd93f9` 4.67:1, `#ff79c6` 4.72:1, `#73d393` 6.15:1, `#9ea8c7` 4.77:1.
+  `Other` was Dracula's "comment" slate `#6272a4`, which put its own label at
+  **2.39:1** - and no ink could fix that, since pure black reaches only 4.46:1
+  on it. So the chip moved: hue 226 held, saturation held at 27%, L 51% -> 70%,
+  the same move `--color-text-muted` made away from the same original value,
+  landing it in the 64-78% lightness band its three peers already occupy. The
+  calendar's colour-dot legend and the hover card's type tag read the same map,
+  so all three surfaces moved together; the dot was 3.36:1 as a graphic on
+  `#21222c` and is 6.68:1 now. `--color-border` keeps `#6272a4` and the select
+  chevrons drawn in it are untouched: a hairline is not text.
 - **The Rankings surfaces are solid hex, not `rgba()` tints**, declared once on
   `.ranking-page, .player-page` (`--row-win`, `--pip-loss`, `--chip-draw`,
   `--meter-track`...). A tint's real colour depends on what it sits on, so the

@@ -88,23 +88,21 @@ export function parseScope(raw: string | null | undefined): { setId: string | nu
 }
 
 /**
- * Ratings only compare inside a connected component of the co-play graph, so
- * the page defaults to a region rather than a global ladder: the comparable
- * component with the most rated players, or failing that the biggest one.
+ * The scope that mixes every scene together.
+ *
+ * It is the landing state: a reader arriving at /rankings sees Global, and
+ * picks a scene when they want positions. One name for it, used by the scene
+ * picker, the page heading and the coverage block alike - two names for one
+ * scope is the confusion this replaced ("Everywhere" beside "All scenes").
+ *
+ * It **carries positions**, and used not to. The old rule was that Global is
+ * never `comparable` - true, in the narrow sense that a rating is only
+ * identified against the players it was earned among - so the ladder dropped
+ * its `#` column entirely. That withheld an order that exists rather than
+ * reporting it with its caveat, and it did so on the page a reader lands on.
+ * `GLOBAL_POSITION_HINT` and `GLOBAL_POSITION_NOTICE` carry the caveat now.
  */
-export function pickDefaultComponent(components: ComponentSummary[]): string | null {
-  if (components.length === 0) return null;
-  const comparable = components.filter((component) => component.comparable);
-  const pool = comparable.length > 0 ? comparable : components;
-  return [...pool].sort(
-    (a, b) => b.ratedPlayers - a.ratedPlayers || (b.componentSize ?? 0) - (a.componentSize ?? 0)
-  )[0].componentId;
-}
-
-export function componentLabel(component: ComponentSummary | { componentId: string | null; regionLabel: string | null } | null): string {
-  if (!component || !component.componentId) return 'Everywhere';
-  return component.regionLabel ?? `Scene ${component.componentId}`;
-}
+export const GLOBAL_SCENE_LABEL = 'Global';
 
 /**
  * One row of the scene picker. Kept as data rather than JSX so the filtering a
@@ -112,24 +110,40 @@ export function componentLabel(component: ComponentSummary | { componentId: stri
  * and the list only grows.
  */
 export interface SceneOption {
-  /** null is the "Everywhere" pseudo-scene, which is never comparable. */
+  /** null is the Global pseudo-scene: every scene at once, and never `comparable`. */
   id: string | null;
   label: string;
-  /** Secondary line: rated count, and whether the scene can carry positions. */
+  /** Secondary line: rated count, and whether the scene is big enough to order. */
   meta: string;
   comparable: boolean;
 }
 
-export const EVERYWHERE_OPTION: SceneOption = {
+/**
+ * The first row of the picker, and the scope the page opens on.
+ *
+ * `meta` used to read `not comparable`, and it was the first explanation a
+ * reader got of why the ladder had no numbers down its left edge. It has
+ * numbers now, so that line would be describing a page that no longer exists -
+ * and it was always the wrong place for the caveat, because a reader meets it
+ * before they have seen anything it qualifies. It says what the scope *is*;
+ * `GLOBAL_POSITION_HINT` on the `#` column says what its order rests on,
+ * beside the thing being qualified.
+ *
+ * `comparable` stays **false**, and is not a contradiction: it is the narrow
+ * statistical claim - a rating is only identified against the players it was
+ * earned among - and it is still true. What changed is that the page no longer
+ * reads it as "print nothing".
+ */
+export const GLOBAL_OPTION: SceneOption = {
   id: null,
-  label: 'Everywhere',
-  meta: 'not comparable',
+  label: GLOBAL_SCENE_LABEL,
+  meta: 'every scene at once',
   comparable: false,
 };
 
 export function sceneOptions(components: ComponentSummary[]): SceneOption[] {
   return [
-    EVERYWHERE_OPTION,
+    GLOBAL_OPTION,
     ...components.map((component) => ({
       id: component.componentId,
       label: componentLabel(component),
@@ -210,50 +224,6 @@ export function formatShortDate(epochMs: number): string {
 export const UNRANKED_LABEL = 'Unranked';
 
 /**
- * The phrase printed where a rating would go for a player the engine has
- * never seen play.
- *
- * Distinct from `Unranked`, which says a player stood at the bar and has not
- * cleared it yet. Lives here rather than in lib/tournament.ts because the
- * player page needs it too - see `hasNoRecord` - and tournament.ts re-exports
- * it for the event page's existing callers.
- */
-export const NO_RECORD_LABEL = 'No record yet';
-
-/** Why a player with no record has no rating - the tooltip on that phrase. */
-export const NO_RECORD_EXPLANATION =
-  'No record yet - no games by this player have been recorded, so the rating engine has never seen them.';
-
-/**
- * Whether a profile describes a player with nothing recorded at all.
- *
- * `/api/players/:id` currently 404s for these, so the player page never sees
- * one; the event page renders their names as plain text for exactly that
- * reason. If the endpoint starts answering - a profile whose numbers are all
- * null - the page must read `No record yet` rather than `Unranked`, which
- * would tell a first-time player they failed a bar they never stood at. It is
- * read off the evidence, not off a flag, so it holds whichever shape arrives:
- * no games, no matches and no rating is no record.
- */
-export function hasNoRecord(
-  profile:
-    | {
-        rating?: number | null;
-        gamesPlayed?: number | null;
-        matchesPlayed?: number | null;
-      }
-    | null
-    | undefined
-): boolean {
-  if (!profile) return true;
-  return (
-    (profile.rating ?? null) === null &&
-    !(profile.gamesPlayed ?? 0) &&
-    !(profile.matchesPlayed ?? 0)
-  );
-}
-
-/**
  * Where the rating scale starts. A player with no games sits here, so the
  * number is the one to quote when explaining what a rating means.
  *
@@ -262,36 +232,208 @@ export function hasNoRecord(
 export const RATING_ANCHOR = 1200;
 
 /**
- * Why a rating is being withheld - as a *tooltip*, never as inline prose.
+ * How a rating is allowed to be shown. Three states, decided in one place so
+ * the ladder, the event page and the player page cannot drift apart.
  *
- * The page used to print this sentence next to the player, which read as the
- * site explaining itself rather than reporting a fact. Now the page says
- * "Unranked" and this is the hover/focus text on that word.
+ *  `rated`     - a settled number with a position behind it.
+ *  `unsettled` - a real number, printed muted and with **no position**. It has
+ *                enough games to describe the player but not enough to be
+ *                placed against others.
+ *  `none`      - no number at all.
+ *
+ * **The page used to print `Unranked` for everything but the first.** A column
+ * of that word reads as a broken page rather than an honest one, and it threw
+ * away a figure the engine was perfectly willing to stand behind. The honesty
+ * now rides on the **margin**: a `±156` beside a `±95` says "not settled"
+ * better than the word did, and the margin bar makes it something a reader
+ * *sees* rather than reads.
+ *
+ * The floor is the API's to decide, not ours: below about three recorded games
+ * the estimate has barely moved off the 1,200 prior, so it would echo the
+ * prior rather than describe the player, and the API sends `rating: null`.
+ * That is why this reads the number and not a game count - the one rule is
+ * "is there a number", and whoever owns the floor can move it without this
+ * changing.
  */
-export function provisionalExplanation(
+export type RatingDisplay = 'rated' | 'unsettled' | 'none';
+
+export function ratingDisplay(
+  subject: { rating?: number | null; provisional?: boolean } | null | undefined
+): RatingDisplay {
+  if ((subject?.rating ?? null) === null) return 'none';
+  return subject?.provisional ? 'unsettled' : 'rated';
+}
+
+/**
+ * Why there is no number yet - the hover hint on `Unranked`.
+ *
+ * Not prose on the page: the page reports, and a reader who wants the reason
+ * hovers. The figure quoted is `RATING_ANCHOR`, so this cannot drift from the
+ * engine's own origin.
+ */
+export const UNRANKED_NO_GAMES_EXPLANATION =
+  `Unranked - too few recorded games for a rating. With one or two games the estimate barely moves ` +
+  `off the ${RATING_ANCHOR.toLocaleString()} starting average, so it would describe the average rather ` +
+  `than the player.`;
+
+/**
+ * The caveat on a global position, as the `#` column's hover hint.
+ *
+ * It names the specific weakness, which is **not** the one the `±` beside each
+ * rating already carries. The margin is the posterior SD of a comparison
+ * *inside* a scene. Across scenes there is no comparison to have a margin
+ * about: a scene is a group of players who have played each other, so a game
+ * between two scenes would merge them, and measured on the live corpus
+ * **0 of 56,257 recorded games cross one** - 1,235 scenes, 369 of them on the
+ * global ladder, 15 of them in its top 25. Every scene's level therefore rests
+ * on the 1,200 starting rating and nothing else.
+ *
+ * Why this is copy and not a number: the engine does publish a cross-scene
+ * sigma (`crossComponentUncertainty`), and it is useless here. It widens the
+ * margin by a median of 1.2 rating points on the live board, because the model
+ * pins a 4,654-player scene's mean level to ±2.2 off the prior. That is right
+ * given the prior, and the prior - every scene averages 1,200 - is exactly the
+ * part nothing has tested. A ±96 beside a ±95 would read as "a cross-scene
+ * comparison is 1% less certain", which is the opposite of what is true.
+ *
+ * It is also why there is no per-player "how connected is your scene" figure:
+ * that quantity was measured and it is zero for every player in the corpus, so
+ * a column of it would be furniture. What varies, and what a reader actually
+ * needs, is the size of the scene a position was earned in - which the Scene
+ * column carries.
+ */
+export const GLOBAL_POSITION_HINT =
+  `Global positions order every scene at once. Scenes are groups of players who have played each other, ` +
+  `and no recorded game crosses one - so each scene's level rests on the ${RATING_ANCHOR.toLocaleString()} starting ` +
+  `rating, and only the order within a scene is earned. Pick a scene for places that are.`;
+
+/**
+ * The same fact as the page's one banner line.
+ *
+ * It replaces "No positions in Global - pick a scene", which was true of the
+ * old behaviour and is now wrong. One line, like every other notice here: it
+ * reports, and the reason is the hover hint. No paragraph.
+ */
+export const GLOBAL_POSITION_NOTICE = 'Global places every scene on one ladder — no recorded game crosses a scene.';
+
+/**
+ * Why a settled rating still has no position: its scene is too small for an
+ * order inside it to mean anything. The row's hover hint on the `--`.
+ *
+ * Distinct from `ratingExplanation`'s cases, which are all about evidence - a
+ * player here has plenty. On the live board 29 of 6,117 rated players are in
+ * this state, and the Global ladder is where they are visible, so the page
+ * needs a sentence for it rather than an unexplained dash.
+ */
+export function sceneTooSmallExplanation(componentSize: number | null | undefined, minSceneSize: number): string {
+  const size = componentSize ?? null;
+  const scene = size === null ? 'this scene' : `a scene of ${size.toLocaleString()}`;
+  return `No position - ${scene} is too small to order anyone (${minSceneSize} players needed). The rating itself stands.`;
+}
+
+/**
+ * Does this row hold a position?
+ *
+ * One rule, read off the API's own answer rather than re-derived: a rank is a
+ * number or it is not. `ratingDisplay` says why a row has none when the reason
+ * is evidence; `sceneComparable` says so when the reason is the scene.
+ */
+export function hasPosition(entry: { rank: number | null }): boolean {
+  return entry.rank !== null;
+}
+
+/**
+ * Should the ladder draw a `#` column at all?
+ *
+ * Data-driven, not scope-driven, which is the change: the old rule was "only
+ * when the scope is one comparable scene", and it is what kept Global
+ * positionless. A column of nothing but dashes is furniture, so the question is
+ * simply whether any loaded row earns a place - true on Global, true on a real
+ * scene, false on a four-player one, where the banner says why.
+ */
+export function hasPositions(entries: { rank: number | null }[]): boolean {
+  return entries.some(hasPosition);
+}
+
+/**
+ * The Scene cell's hover hint: how deep the field behind this position is.
+ *
+ * This is the per-row measure that replaced the idea of a cross-scene
+ * connectivity figure. Cross-scene play is zero everywhere, so it cannot
+ * separate one row from another; scene size can, and it is the thing the
+ * model's own cross-scene term is a function of. A first place among 4,654
+ * players and a first place among 9 are both real and are not the same claim.
+ */
+export function sceneSizeHint(entry: { componentSize: number | null }): string {
+  if (entry.componentSize === null) return 'Scene size not recorded.';
+  if (entry.componentSize === 1) return 'Scene of 1 player.';
+  return `Scene of ${entry.componentSize.toLocaleString()} players who have played each other.`;
+}
+
+/**
+ * The comparable component with the most rated players, or failing that the
+ * biggest one.
+ *
+ * No longer the landing scope - the page opens on Global and lets the reader
+ * choose - but kept because it is the answer to "which scene would you show
+ * if you had to show one", and a shared `?region=` link always outranks any
+ * default anyway.
+ */
+export function pickDefaultComponent(components: ComponentSummary[]): string | null {
+  if (components.length === 0) return null;
+  const comparable = components.filter((component) => component.comparable);
+  const pool = comparable.length > 0 ? comparable : components;
+  return [...pool].sort(
+    (a, b) => b.ratedPlayers - a.ratedPlayers || (b.componentSize ?? 0) - (a.componentSize ?? 0)
+  )[0].componentId;
+}
+
+export function componentLabel(component: ComponentSummary | { componentId: string | null; regionLabel: string | null } | null): string {
+  if (!component || !component.componentId) return GLOBAL_SCENE_LABEL;
+  return component.regionLabel ?? `Scene ${component.componentId}`;
+}
+
+
+/**
+ * Why a rating is where it is - as a *tooltip*, never as inline prose.
+ *
+ * The page used to print this sentence beside the player, which read as the
+ * site explaining itself rather than reporting a fact. It is the hover text
+ * now, and it says three different things because there are three states: a
+ * settled rating needs no explanation, an unsettled one is still earning its
+ * position, and no number at all is a different thing again.
+ *
+ * **Defensive about `reason` on purpose.** The API has sent `no-rating` for
+ * players who plainly have games - a mapping bug - so this trusts the display
+ * state and the game counts over the reason string, and only lets the string
+ * pick the wording when it says something the numbers cannot: that the margin,
+ * rather than the volume, is what is holding the rating back.
+ */
+export function ratingExplanation(
+  display: RatingDisplay,
   reason: ProvisionalReason | null,
   gamesUntilRated: number,
   minGames: number
 ): string {
-  switch (reason) {
-    case 'no-rating':
-      return `Unranked - no games recorded yet. A rating appears after ${minGames} games.`;
-    case 'too-few-games':
-      return gamesUntilRated === 1
-        ? `Unranked - one more recorded game to go (${minGames} needed).`
-        : `Unranked - ${gamesUntilRated} more recorded games to go (${minGames} needed).`;
-    case 'uncertainty-too-wide':
-      return 'Unranked - the margin is still too wide to place this player against others.';
-    default:
-      return '';
+  if (display === 'rated') return '';
+  if (display === 'none') return UNRANKED_NO_GAMES_EXPLANATION;
+  if (reason === 'uncertainty-too-wide') {
+    return 'Still settling - the margin is too wide to place this player against others yet.';
   }
+  const togo = Math.max(0, gamesUntilRated);
+  if (togo === 0) {
+    return `Still settling - not enough recorded games yet to place this player against others (${minGames} needed).`;
+  }
+  return togo === 1
+    ? `Still settling - one more recorded game before this rating earns a position (${minGames} needed).`
+    : `Still settling - ${togo} more recorded games before this rating earns a position (${minGames} needed).`;
 }
 
 /** The reason as a lower-case fragment, for a tooltip or an aria label. */
 export function provisionalShortLabel(reason: ProvisionalReason | null): string {
   switch (reason) {
     case 'no-rating':
-      return 'no games yet';
+      return 'no rating yet';
     case 'too-few-games':
       return 'too few games';
     case 'uncertainty-too-wide':
@@ -311,14 +453,23 @@ export function provisionalShortReason(reason: ProvisionalReason | null): string
   return label ? label.charAt(0).toUpperCase() + label.slice(1) : '--';
 }
 
-/** Splits a leaderboard page into the part that is a ladder and the part that is not. */
-export function splitByConfidence(entries: LeaderboardEntry[]): {
-  rated: LeaderboardEntry[];
-  provisional: LeaderboardEntry[];
+/**
+ * Splits a leaderboard page into the rows that carry a number and the rows
+ * that do not.
+ *
+ * It used to split on `provisional`, which put every unsettled player into a
+ * second list with the word `Unranked` and no figure. The table now holds
+ * everyone the engine will quote a rating for, settled or not - the position
+ * is what `provisional` withholds, not the number - and the tail is only the
+ * players with no number yet, which after the engine refit is a short list.
+ */
+export function splitByRating(entries: LeaderboardEntry[]): {
+  scored: LeaderboardEntry[];
+  unscored: LeaderboardEntry[];
 } {
   return {
-    rated: entries.filter((entry) => !entry.provisional),
-    provisional: entries.filter((entry) => entry.provisional),
+    scored: entries.filter((entry) => ratingDisplay(entry) !== 'none'),
+    unscored: entries.filter((entry) => ratingDisplay(entry) === 'none'),
   };
 }
 
@@ -340,10 +491,38 @@ export function matchRecord(matches: PlayerMatch[]): Record_ {
   );
 }
 
+/**
+ * A record in the notation a card player already reads: `2-1`, or `2-1-1`
+ * when a draw actually happened.
+ *
+ * Win-loss-draw order, and the trailing `-0` is dropped rather than printed on
+ * every row - draws are rare (72 against 1,372 decisive sides on the live
+ * corpus), so a universal `-0` would be noise carrying no information.
+ */
 export function formatRecord(record: Record_): string {
   return record.draws > 0
     ? `${record.wins}-${record.losses}-${record.draws}`
     : `${record.wins}-${record.losses}`;
+}
+
+/**
+ * The same record spelled out, for an accessible name.
+ *
+ * `2-1-1` survives greyscale on its own - it is numerals, not colour - so the
+ * visible W/L/D letters it replaced are not needed for that rule. But a screen
+ * reader announces the notation as "two dash one dash one", so the spoken form
+ * says what it means instead. The visible figure is `aria-hidden` wherever
+ * this is used beside it.
+ */
+export function recordSpoken(record: Record_): string {
+  const parts = [
+    `${record.wins} ${record.wins === 1 ? 'win' : 'wins'}`,
+    `${record.losses} ${record.losses === 1 ? 'loss' : 'losses'}`,
+  ];
+  if (record.draws > 0) {
+    parts.push(`${record.draws} ${record.draws === 1 ? 'draw' : 'draws'}`);
+  }
+  return parts.join(', ');
 }
 
 /**
@@ -411,23 +590,31 @@ export function recentForm(matches: PlayerMatch[], count = 10): PlayerMatch[] {
 }
 
 /**
- * How far an unranked player is through the games gate.
+ * How far a player is through the games gate - recorded games against the
+ * published threshold.
  *
- * This is a count of recorded games against a published threshold, not a
- * rating: showing it never leaks the withheld number, and it answers the only
- * question "Unranked" leaves open - how much is left.
+ * It answers the one question an unsettled rating leaves open: how close am I.
+ *
+ * **Read off the evidence, not off the reason string.** The API has sent
+ * `provisionalReason: 'no-rating'` for players who plainly have games, and a
+ * meter that vanishes because a label was mis-set is worse than one that is
+ * occasionally redundant. So the games decide: anyone short of the threshold
+ * gets a meter.
+ *
+ * Two suppressions, both because a meter would be saying something false. A
+ * player who has already played enough games is not waiting on volume - a full
+ * meter beside an unsettled rating reads as a contradiction - and neither is
+ * one the API explicitly says is held back by its margin.
  */
 export function gateProgress(
   gamesPlayed: number | null | undefined,
   minGames: number,
   reason: ProvisionalReason | null = 'too-few-games'
 ): { filled: number; total: number } | null {
-  // Only when games are what is missing. A player held back by a wide margin
-  // has already cleared this bar, and a full meter beside "Unranked" would
-  // read as a contradiction rather than as progress.
-  if (reason !== 'too-few-games' && reason !== 'no-rating') return null;
   if (!Number.isFinite(minGames) || minGames <= 0 || minGames > 20) return null;
-  const played = Math.max(0, Math.min(gamesPlayed ?? 0, minGames));
+  if (reason === 'uncertainty-too-wide') return null;
+  const played = Math.max(0, gamesPlayed ?? 0);
+  if (played >= minGames) return null;
   return { filled: played, total: minGames };
 }
 
@@ -438,24 +625,33 @@ export function gateProgress(
 /**
  * The shared scale behind the ladder's margin bars.
  *
- * Each rated row draws its rating ± its uncertainty as a span on one common
- * axis, so two players whose spans overlap can be seen to be inseparable -
- * which is the honest reading of two ratings a few points apart with a ±90
- * margin each. The bar is the uncertainty made visible; it invents no tier and
- * no precision.
+ * Every row with a number draws its rating ± its uncertainty as a span on one
+ * common axis, so two players whose spans overlap can be seen to be
+ * inseparable - the honest reading of two ratings a few points apart with a
+ * ±90 margin each. The bar is the uncertainty made visible; it invents no tier
+ * and no precision.
  *
- * null - and so no bars at all - when there is nothing to compare: fewer than
- * `minimumRows` rated players, or a degenerate range. A bar with nothing
- * beside it is decoration, and sparse is the normal case here.
+ * **Unsettled rows are in the scale now, and that is the point.** They used to
+ * be excluded because they printed no number at all. Now that they print one,
+ * the bar is the thing carrying the honesty the word `Unranked` used to carry:
+ * a ±156 span beside a ±95 span is visibly unsettled without anyone having to
+ * read a label. Their wide spans stretch the axis, which is what makes the
+ * contrast legible rather than something that has to be squinted at.
+ *
+ * The floor dropped from three rows to two for the same reason. Three was
+ * right when only settled rows drew bars and a sparse scene would have shown
+ * one or two lonely spans; now the bars are doing work on every row that has a
+ * number, and two spans are already a comparison. One is still decoration, and
+ * so is a degenerate range.
  */
 export interface MarginScale {
   min: number;
   max: number;
 }
 
-export function marginScale(entries: LeaderboardEntry[], minimumRows = 3): MarginScale | null {
+export function marginScale(entries: LeaderboardEntry[], minimumRows = 2): MarginScale | null {
   const usable = entries.filter(
-    (entry) => !entry.provisional && entry.rating !== null && entry.rating !== undefined
+    (entry) => entry.rating !== null && entry.rating !== undefined
   );
   if (usable.length < minimumRows) return null;
 

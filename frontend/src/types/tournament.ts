@@ -117,8 +117,20 @@ export interface TournamentGame {
 
 export interface TournamentMatchSide {
   teamId: string;
-  /** Riot's raw outcome enum (`WIN`, `LOSS`, `DRAW`) or null. */
+  /**
+   * The outcome in this API's own vocabulary: `win` | `loss` | `draw` |
+   * `unknown`, or null.
+   *
+   * Riot's own words used to come through verbatim, and a draw arrived as
+   * `TIE` - 72 of 1,444 sides on the live corpus, `DRAW` never once. The API
+   * normalises now, and `FORFEIT` / `DISQUALIFIED` / `NO_SHOW` map to
+   * `unknown` rather than being guessed at as a win or a loss. `sideOutcome`
+   * still matches case-insensitively against both vocabularies, so either
+   * deploy order reads correctly.
+   */
   outcome: string | null;
+  /** Riot's verbatim word, kept for reference. Never matched on. */
+  rawOutcome?: string | null;
   gameWins: number;
   player: TournamentSidePlayer | null;
 }

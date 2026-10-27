@@ -215,11 +215,12 @@ describe('GET /api/events/:externalId/tournament - a played event', () => {
     }
   });
 
-  it('never returns a provisional player\'s rating number', async () => {
+  it('publishes a provisional player\'s rating with its margin', async () => {
     const { body } = await get(`/api/events/${PLAYED}/tournament`);
     const players = body.data.players as Array<{
       playerId: string;
       rating: number | null;
+      uncertainty: number | null;
       provisional: boolean;
       provisionalReason: string | null;
       known: boolean;
@@ -228,19 +229,29 @@ describe('GET /api/events/:externalId/tournament - a played event', () => {
 
     for (const player of players) {
       if (player.provisional) {
-        expect(player.rating).toBeNull();
         expect(player.provisionalReason).not.toBeNull();
       } else {
         expect(typeof player.rating).toBe('number');
         expect(player.provisionalReason).toBeNull();
       }
+      // The one hard rule: a number never without its margin.
+      if (player.rating !== null) expect(typeof player.uncertainty).toBe('number');
     }
 
-    // The three states the fixture is built to cover.
+    // The four states the fixture is built to cover.
     const byId = new Map(players.map((player) => [player.playerId, player]));
     expect(byId.get('p-kira')).toMatchObject({ known: true, provisional: false });
+    // Provisional but above the floor: a number *and* a reason.
     expect(byId.get('p-juno')).toMatchObject({ known: true, provisional: true, provisionalReason: 'too-few-games' });
-    expect(byId.get('p-quill')).toMatchObject({ known: true, provisional: true, provisionalReason: 'no-rating' });
+    expect(typeof byId.get('p-juno')!.rating).toBe('number');
+    // Known, but the engine fitted nothing at all for them.
+    expect(byId.get('p-quill')).toMatchObject({
+      known: true,
+      provisional: true,
+      provisionalReason: 'no-rating',
+      rating: null,
+    });
+    // Never seen.
     expect(byId.get('u-fieldguest-1')).toMatchObject({
       known: false,
       provisional: true,
@@ -249,16 +260,20 @@ describe('GET /api/events/:externalId/tournament - a played event', () => {
     });
   });
 
-  it('withholds the rating on a pairing side too, not just in the player list', async () => {
+  it('carries the margin on a pairing side too, never a bare number', async () => {
     const { body } = await get(`/api/events/${PLAYED}/tournament`);
-    const sides = (body.data.results.rounds as Array<{ matches: Array<{ sides: Array<{ player: { rating: number | null; provisional: boolean } | null }> }> }>)
+    const sides = (body.data.results.rounds as Array<{ matches: Array<{ sides: Array<{ player: { rating: number | null; uncertainty: number | null; provisional: boolean } | null }> }> }>)
       .flatMap((round) => round.matches)
       .flatMap((match) => match.sides)
       .map((side) => side.player)
-      .filter((player): player is { rating: number | null; provisional: boolean } => player !== null);
+      .filter((player): player is { rating: number | null; uncertainty: number | null; provisional: boolean } => player !== null);
 
     expect(sides.length).toBeGreaterThan(0);
-    expect(sides.filter((player) => player.provisional).every((player) => player.rating === null)).toBe(true);
+    // A pairing row is the compact form, and it is exactly where a bare rating
+    // would have appeared, so the margin rides along with it.
+    expect(sides.every((player) => player.rating === null || typeof player.uncertainty === 'number')).toBe(true);
+    // And a provisional side does show its number.
+    expect(sides.some((player) => player.provisional && typeof player.rating === 'number')).toBe(true);
   });
 
   it('summarises strength of field over the rated players, with the sample size', async () => {
@@ -499,6 +514,15 @@ describe('GET /api/events/:externalId/tournament - edge states', () => {
   it('marks itself noindex - it lists named individuals', async () => {
     const { headers } = await get(`/api/events/${PLAYED}/tournament`);
     expect(headers.get('x-robots-tag')).toContain('noindex');
+
+    // The facts arrive with the hourly scraper, so a quarter of an hour at the
+    // edge is a rounding error on their cadence and the difference between one
+    // origin hit and one per reader. CloudFront's /api/* cache policy has
+    // `default_ttl = 0`, so this header is the only thing making the edge hold
+    // anything at all.
+    expect(headers.get('cache-control')).toBe(
+      'public, max-age=300, s-maxage=900, stale-while-revalidate=3600'
+    );
   });
 
   it('leaves the plain event routes alone', async () => {
@@ -508,6 +532,9 @@ describe('GET /api/events/:externalId/tournament - edge states', () => {
     const info = await get('/api/events/info');
     expect(info.status).toBe(200);
     expect(info.body.data).toHaveProperty('totalEvents');
+    // And they keep the calendar's own, shorter freshness rather than the
+    // facts': five minutes at the edge against an hourly scrape.
+    expect(info.headers.get('cache-control')).toContain('s-maxage=300');
   });
 });
 

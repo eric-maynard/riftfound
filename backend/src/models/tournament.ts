@@ -120,11 +120,13 @@ export interface TournamentEventContext {
  * One player in an event's field, with whatever the rating engine knows about
  * them attached.
  *
- * **The confidence gate is enforced here**: when `provisional` is true,
- * `rating` is null. A withheld rating is never sent, so a page cannot print a
- * number nobody should act on - it prints "Unranked" and the reason.
- * `uncertainty` is still carried because it is a width, not a position, and
- * `gamesUntilRated` is what lets a page say "three more games".
+ * **A rating is published with its uncertainty, not withheld.** A column of
+ * "Unranked" read as a broken page, and it withheld the wrong thing: the honest
+ * answer to "how much should I trust this?" is the number and its margin
+ * together. So `rating` and `uncertainty` travel as a pair, `provisional` /
+ * `provisionalReason` / `gamesUntilRated` say in words that there is no
+ * *position* yet, and the only rating still held back is one below the display
+ * floor, where the figure is the prior rather than a measurement.
  */
 export interface TournamentPlayer {
   /** Riot's stable UUID. The identity key, and the link target for /ranking/players/:playerId. */
@@ -135,8 +137,14 @@ export interface TournamentPlayer {
   tagLine: string | null;
   /** The rating engine has a profile for this player. False for most of a field at launch. */
   known: boolean;
-  /** Publishable rating, or null when `provisional` (never a withheld number). */
+  /**
+   * The rating, published with its margin. Null only below the display floor
+   * (`DEFAULT_MIN_GAMES_TO_PUBLISH`), where the posterior is still the prior.
+   * A provisional player **does** carry a number - what they do not carry is a
+   * rank.
+   */
   rating: number | null;
+  /** Always present when `rating` is. See `TournamentSidePlayer.uncertainty`. */
   uncertainty: number | null;
   gamesPlayed: number | null;
   matchesPlayed: number | null;
@@ -155,7 +163,15 @@ export interface TournamentSidePlayer {
   playerId: string | null;
   displayName: string | null;
   tagLine: string | null;
+  /** Publishable rating; null only below the display floor. */
   rating: number | null;
+  /**
+   * The margin on that rating, and never absent while the rating is present:
+   * `uncertainty` is the signal that separates a settled rating from an
+   * unsettled one, so a number without it would be the one unqualified rating
+   * in this API.
+   */
+  uncertainty: number | null;
   provisional: boolean;
 }
 
@@ -338,6 +354,8 @@ export interface TournamentField {
   minGamesForRating: number;
   maxUncertaintyForRating: number;
   minComponentSize: number;
+  /** Recorded games before a rating number is shown at all. */
+  minGamesToPublishRating: number;
 }
 
 export interface TournamentDetail {

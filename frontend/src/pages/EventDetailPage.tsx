@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useLocation, useParams } from 'react-router-dom';
 import type { Event } from '../types/event';
 import type {
   TournamentDetail,
@@ -17,7 +17,9 @@ import {
   gateProgress,
   outcomeLetter,
   outcomeWord,
-  provisionalExplanation,
+  ratingDisplay,
+  ratingExplanation,
+  recordSpoken,
   UNRANKED_LABEL,
 } from '../lib/ranking';
 import {
@@ -29,11 +31,8 @@ import {
   matchDecided,
   matchHasPlay,
   matchScore,
-  NO_RECORD_EXPLANATION,
-  NO_RECORD_LABEL,
   orderedMatches,
   playedGames,
-  ratingStanding,
   NOT_FINAL_REASON,
   rosterColumns,
   rosterNote,
@@ -41,11 +40,13 @@ import {
   roundStatusLabel,
   sectionLabel,
   sideOutcome,
+  standingRecord,
   titleCaseEnum,
   TRIMMED_LABEL,
   unlistedByes,
   trimmedReason,
 } from '../lib/tournament';
+import { carryPreview } from '../lib/preview';
 
 /**
  * One event: what it is, who is in it, and what happened.
@@ -77,6 +78,18 @@ import {
 
 function EventDetailPage() {
   const { id } = useParams<{ id: string }>();
+  /*
+   * The back-link, once, for all of this page's states.
+   *
+   * This page is reached from the trophy, which only exists inside the
+   * Rankings preview, so its own query string carries the flag - and has to
+   * hand it back. The calendar's filters ride along in the same string
+   * (`linkSearch` on the hover card), so returning here restores the view the
+   * reader left, flag included. One link that dropped it would put them on a
+   * calendar with the preview silently off (lib/preview.ts).
+   */
+  const { search } = useLocation();
+  const backToEvents = carryPreview('/', search);
   // Two independent fetches. The calendar row carries the name, venue and
   // price; the facts carry everything else and outlive the row, so either can
   // be missing and the page still renders what it has.
@@ -123,7 +136,7 @@ function EventDetailPage() {
   if (loading) {
     return (
       <div className="event-page">
-        <Link to="/" className="back-link">&larr; Back to events</Link>
+        <Link to={backToEvents} className="back-link">&larr; Back to events</Link>
         <p className="muted">Loading event...</p>
       </div>
     );
@@ -132,11 +145,11 @@ function EventDetailPage() {
   if (!event && !detail) {
     return (
       <div className="event-page">
-        <Link to="/" className="back-link">&larr; Back to events</Link>
+        <Link to={backToEvents} className="back-link">&larr; Back to events</Link>
         <section className="panel empty-state">
           <h2>No event here</h2>
           <p>
-            <Link to="/">Find an event near you &rarr;</Link>
+            <Link to={backToEvents}>Find an event near you &rarr;</Link>
           </p>
         </section>
       </div>
@@ -155,7 +168,7 @@ function EventDetailPage() {
 
   return (
     <div className="event-page">
-      <Link to="/" className="back-link">&larr; Back to events</Link>
+      <Link to={backToEvents} className="back-link">&larr; Back to events</Link>
 
       {factsError && (
         <div className="error-banner">
@@ -323,9 +336,9 @@ function FieldStrengthBlock({ detail }: { detail: TournamentDetail }) {
         </>
       ) : (
         <>
-          {/* Set as a sentence, not at display size pretending to be a figure -
-              and deliberately not the word "Unranked", which belongs to a
-              player who has a record and has not cleared the gate. */}
+          {/* Set as a sentence, not at display size pretending to be a
+              figure. Deliberately not "Unranked": that word belongs to a
+              player, and this is a statement about the field. */}
           <p className="field-unmeasured">Not enough rated players</p>
           <p className="event-strength-basis">{strength.emptyReason}</p>
         </>
@@ -333,7 +346,7 @@ function FieldStrengthBlock({ detail }: { detail: TournamentDetail }) {
 
       {/* The ranking page's coverage meter, for the same quantity it measures
           there: how much of what we can see is actually rated. One fill, not a
-          three-colour chart - the three groups are counted in words below. */}
+          segmented chart - the groups are counted in words below. */}
       <div
         className="coverage-track"
         role="img"
@@ -418,6 +431,7 @@ function PlayerName({
   player: TournamentPlayer | TournamentSidePlayer | null;
   fallbackName?: string;
 }) {
+  const { search } = useLocation();
   const name = player?.displayName ?? fallbackName ?? 'Unknown player';
   const tag = player?.tagLine ?? null;
   const linkable = Boolean(player?.playerId) && isKnown(player);
@@ -434,7 +448,13 @@ function PlayerName({
   }
 
   return (
-    <Link to={`/rankings/players/${encodeURIComponent(player.playerId)}`} className="player-link">
+    // Four call sites, three of them nested two components deep, so the flag
+    // is read off the URL here rather than threaded through the tables. A
+    // player link that lost it would land on a page with no mode switch.
+    <Link
+      to={carryPreview(`/rankings/players/${encodeURIComponent(player.playerId)}`, search)}
+      className="player-link"
+    >
       {inner}
     </Link>
   );
@@ -453,7 +473,19 @@ function isKnown(player: TournamentPlayer | TournamentSidePlayer | null): boolea
   return player.rating !== null;
 }
 
-/** The rating, `Unranked`, or `No record yet` - never a provisional number. */
+/**
+ * A field player's rating, by the site's one rule (`ratingDisplay`).
+ *
+ * A number whenever the engine will quote one, muted when it is unsettled,
+ * with the margin beside it doing the work the word `Unranked` used to do -
+ * a ±156 next to a ±95 says "not settled" without anyone reading a label.
+ * The word is left for the one case that has no number at all.
+ *
+ * This used to have a third branch printing "No record yet" for `known:
+ * false`. That distinction was collapsed: a stale engine reported `known:
+ * false` for 22 players whose games were rendered on this very page, so the
+ * phrase was lying more often than it was informing.
+ */
 function PlayerRating({
   player,
   minGames,
@@ -463,28 +495,26 @@ function PlayerRating({
   minGames: number;
   showGate?: boolean;
 }) {
-  const standing = ratingStanding(player);
+  const display = ratingDisplay(player);
+  const why = ratingExplanation(
+    display,
+    player?.provisionalReason ?? null,
+    player?.gamesUntilRated ?? 0,
+    minGames
+  );
 
-  if (standing === 'rated' && player) {
+  if (display !== 'none') {
     return (
-      <>
-        <span className="rating-value">{formatRating(player.rating)}</span>
-        <span className="rating-margin">{formatUncertainty(player.uncertainty)}</span>
-      </>
-    );
-  }
-
-  if (standing === 'no-record') {
-    return (
-      <span className="no-record" title={NO_RECORD_EXPLANATION}>
-        {NO_RECORD_LABEL}
+      <span
+        className={display === 'unsettled' ? 'rating-cell-unsettled' : undefined}
+        title={why || undefined}
+      >
+        <span className="rating-value">{formatRating(player?.rating ?? null)}</span>
+        <span className="rating-margin">{formatUncertainty(player?.uncertainty ?? null)}</span>
       </span>
     );
   }
 
-  const why = player
-    ? provisionalExplanation(player.provisionalReason, player.gamesUntilRated, minGames)
-    : '';
   const gate = showGate && player
     ? gateProgress(player.gamesPlayed, minGames, player.provisionalReason)
     : null;
@@ -596,22 +626,25 @@ function StandingsSection({
 }
 
 /**
- * The record with its letters, so the row survives greyscale and so "3-1-1"
- * cannot be mistaken for a score.
+ * The record as `4-0` or `3-1-1` - the notation a card player reads - under a
+ * column headed "Record" and beside one headed "Pts", so there is nothing for
+ * it to be mistaken for. It survives greyscale by being numerals; the spoken
+ * name spells it out, because "three dash one dash one" does not.
  */
 function standingRecordCell(standing: {
   matchWins: number | null;
   matchLosses: number | null;
   matchDraws: number | null;
 }) {
-  const wins = standing.matchWins ?? 0;
-  const losses = standing.matchLosses ?? 0;
-  const draws = standing.matchDraws ?? 0;
+  const record = {
+    wins: standing.matchWins ?? 0,
+    losses: standing.matchLosses ?? 0,
+    draws: standing.matchDraws ?? 0,
+  };
   return (
     <span className="record-counts">
-      <span className="record-count record-count-win">{wins}W</span>
-      <span className="record-count record-count-loss">{losses}L</span>
-      {draws > 0 && <span className="record-count record-count-draw">{draws}D</span>}
+      <span className="record-value" aria-hidden="true">{standingRecord(standing)}</span>
+      <span className="sr-only">{recordSpoken(record)}</span>
     </span>
   );
 }
@@ -789,10 +822,18 @@ function PairingSide({
       <span className="sr-only">{outcomeWord(outcome)}: </span>
       <span className="pairing-player">
         <PlayerName player={side.player} />
-        {side.player && side.player.rating !== null && (
-          <span className="pairing-rating">{formatRating(side.player.rating)}</span>
+        {/* Same rule as everywhere else: the number when there is one,
+            muted when it is unsettled, the word only when there is none. */}
+        {side.player && ratingDisplay(side.player) !== 'none' && (
+          <span
+            className={`pairing-rating${
+              ratingDisplay(side.player) === 'unsettled' ? ' pairing-rating-unsettled' : ''
+            }`}
+          >
+            {formatRating(side.player.rating)}
+          </span>
         )}
-        {side.player && side.player.rating === null && (
+        {side.player && ratingDisplay(side.player) === 'none' && (
           <span className="pairing-rating pairing-rating-withheld">{UNRANKED_LABEL}</span>
         )}
       </span>

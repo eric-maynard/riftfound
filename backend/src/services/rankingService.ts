@@ -5,7 +5,9 @@ import { fixtureRankingStore } from '../adapters/rankingFixtureAdapter.js';
 import type { PlayerRecord, RankingStore, SetRatingRecord } from '../adapters/rankingStore.js';
 import {
   resolveVerdict,
+  earnsPosition,
   isComparable,
+  publishesRating,
   CONFIDENCE,
   type ComponentSummary,
   type LeaderboardEntry,
@@ -26,6 +28,51 @@ import { describeSet, setDisplayName, setReleaseDate, sortSets } from '../models
  * the counts are a floor rather than a total.
  */
 const COVERAGE_LIMIT = 200;
+
+/**
+ * Recorded games needed before a rating number is published. One place, read
+ * from `RANKING_MIN_GAMES_TO_PUBLISH`, so the floor cannot differ between two
+ * endpoints.
+ */
+export function minGamesToPublish(): number {
+  return env.RANKING_MIN_GAMES_TO_PUBLISH;
+}
+
+/**
+ * The rating as published: the number itself once there is a little evidence,
+ * null below the display floor.
+ *
+ * **This is no longer the confidence gate, and that is the point.** Withholding
+ * every provisional rating produced a column of "Unranked" that read as a
+ * broken page, and it withheld the wrong thing: the honest answer to "how much
+ * should I trust this?" is the number *with its margin*, not the absence of a
+ * number. So `uncertainty` now carries that weight - it travels with every
+ * rating and is what separates a settled figure from an unsettled one - and
+ * `provisional` / `provisionalReason` / `gamesUntilRated` still say, in words,
+ * that the player has no *position* yet.
+ *
+ * What is still withheld is a rating that is merely the prior: below the floor
+ * the posterior has barely moved off 1200, so there is no information to show
+ * (see `DEFAULT_MIN_GAMES_TO_PUBLISH`).
+ *
+ * Ranks and aggregates are unaffected - they are computed over the rated
+ * players before anything here runs.
+ */
+export function publishableRating(
+  rating: number | null | undefined,
+  gamesPlayed: number | null | undefined,
+  uncertainty: number | null | undefined
+): number | null {
+  if (rating === null || rating === undefined) return null;
+  // The pairing is structural, not a convention. The decision was to publish
+  // the rating *together with* its uncertainty, so a number whose margin is
+  // missing is not a publishable rating - it is the bare figure the margin was
+  // meant to qualify. Nothing upstream guarantees the two arrive together
+  // (`rating` and `uncertainty` are separate attributes with separate fallback
+  // chains), so the invariant is enforced at the one place that publishes.
+  if (uncertainty === null || uncertainty === undefined || !Number.isFinite(uncertainty)) return null;
+  return publishesRating(gamesPlayed, minGamesToPublish()) ? rating : null;
+}
 
 let override: RankingStore | null = null;
 
@@ -69,8 +116,17 @@ export async function getRankings(scope: Scope, limit: number, cursor?: string):
 
   // The contract does not pin down what a leaderboard row carries, so fill any
   // gap from the player's PROFILE rather than reporting a null we can avoid.
+  // `uncertainty == null` is in here deliberately: the margin is now what makes
+  // a rating publishable, so a row that arrives without one would lose its
+  // number rather than merely lose a detail. Fill it from the profile first.
   const needsHydration = [...page.items, ...sample.items]
-    .filter((entry) => entry.displayName == null || entry.rating === undefined || entry.componentId == null)
+    .filter(
+      (entry) =>
+        entry.displayName == null ||
+        entry.rating === undefined ||
+        entry.uncertainty == null ||
+        entry.componentId == null
+    )
     .map((entry) => entry.playerId);
   const profiles = needsHydration.length > 0 ? await store.getPlayers(needsHydration) : new Map<string, PlayerRecord>();
 
@@ -123,30 +179,63 @@ export async function getRankings(scope: Scope, limit: number, cursor?: string):
 
   const sampleEntries = sample.items.map(merge);
 
-  // Rank densely among the players whose rating is fit to publish, so a
-  // provisional player never occupies a ladder position. Ranks come from the
-  // whole sample, so they stay right across pages.
-  const ranked = sampleEntries
-    .filter((entry) => !entry.provisional && entry.rating !== null)
-    .sort((a, b) => (b.rating ?? 0) - (a.rating ?? 0));
-  const rankByPlayer = new Map<string, number>();
-  ranked.forEach((entry, index) => rankByPlayer.set(entry.playerId, index + 1));
+  // Everyone whose rating is fit to publish. This is the coverage population:
+  // "rated" is a statement about evidence, so it must not move because of a
+  // comparability rule applied below.
+  const rated = sampleEntries.filter((entry) => !entry.provisional && entry.rating !== null);
 
   /**
-   * The gate, enforced here rather than left to the UI: a provisional player's
-   * rating number does not leave this process. Everything that explains the
-   * state - the margin, the game counts, how many games are still needed -
-   * stays, because a width and a count are not a position.
+   * Positions, densely, over the rated players who earn one - on **every**
+   * scope, Global included.
+   *
+   * Global used to come back with ranks only by accident. Nothing here gated
+   * on `comparable`, so the numbers were computed; the client then dropped the
+   * whole column whenever the scope mixed scenes, and the engine's own board
+   * rows say to (`suppressPosition` is true on all 6,117 rows of the live
+   * `RANKING#all`, because the global scope ORs a scope-wide flag into every
+   * row). The decision is now taken deliberately and in one place: a weakly
+   * identified order is reported with its caveat rather than withheld. See
+   * `LeaderboardEntry.rank`, and `sceneComparable` for what the caveat is and
+   * why it is not a number.
+   *
+   * The engine's per-row flag is deliberately *not* read for this. On a global
+   * board it carries no per-player information at all - it is true for
+   * everyone - so the per-row test is `earnsPosition`, which re-applies the
+   * same measured threshold (component >= 8) to the `componentSize` the row
+   * already carries. That is what keeps the promise that a player who would
+   * get no position in their own scene gets none globally either: 29 of the
+   * live board's 6,117 rated players sit in a scene below 8 and are placed by
+   * the engine's global rank field today.
+   *
+   * Ranks come from the whole coverage sample, not the page, so they stay right
+   * across pages.
+   */
+  const placed = sampleEntries
+    .filter((entry) => earnsPosition(entry))
+    .sort((a, b) => (b.rating ?? 0) - (a.rating ?? 0));
+  const rankByPlayer = new Map<string, number>();
+  placed.forEach((entry, index) => rankByPlayer.set(entry.playerId, index + 1));
+
+  /**
+   * The row as published: the rating travels with its margin, and the rank is
+   * the thing a provisional player does not get.
+   *
+   * Note what has *already* happened above and does not depend on this step:
+   * `rated`, `placed`, `rankByPlayer` and every count below are computed over
+   * `sampleEntries` with their ratings intact. The sequence is still the point
+   * - a rank or an average that came out differently because of a display rule
+   * would be a different answer rather than a safer one.
    */
   const publish = (entry: ReturnType<typeof merge>): LeaderboardEntry => ({
     ...entry,
-    rating: entry.provisional ? null : entry.rating,
+    rating: publishableRating(entry.rating, entry.gamesPlayed, entry.uncertainty),
     rank: rankByPlayer.get(entry.playerId) ?? null,
+    sceneComparable: isComparable(entry.componentSize),
   });
 
   const entries: LeaderboardEntry[] = page.items.map(merge).map(publish);
 
-  const ratedPlayers = ranked.length;
+  const ratedPlayers = rated.length;
   const totalPlayers = sample.totalPlayers ?? sampleEntries.length;
   const totalGames = sampleEntries.reduce<number | null>(
     (sum, entry) => (entry.gamesPlayed === null ? sum : (sum ?? 0) + entry.gamesPlayed),
@@ -178,6 +267,7 @@ export async function getRankings(scope: Scope, limit: number, cursor?: string):
       provisionalPlayers: Math.max(0, sampleEntries.length - ratedPlayers),
       totalGames,
       minGamesForRating: CONFIDENCE.minGames,
+      minGamesToPublishRating: minGamesToPublish(),
       maxUncertaintyForRating: CONFIDENCE.maxUncertainty,
       minComponentSize: CONFIDENCE.minComponentSize,
       lastUpdated: page.updatedAt ?? sample.updatedAt,
@@ -214,7 +304,7 @@ function toSetRating(record: SetRatingRecord): SetRating {
     setId: record.setId,
     setName: setDisplayName(record.setId),
     releaseDate: setReleaseDate(record.setId),
-    rating: verdict.provisional ? null : record.rating,
+    rating: publishableRating(record.rating, record.gamesPlayed, record.uncertainty),
     uncertainty: record.uncertainty,
     gamesPlayed: record.gamesPlayed,
     matchesPlayed: record.matchesPlayed,
@@ -285,9 +375,9 @@ export async function getPlayer(playerId: string): Promise<PlayerProfile> {
     displayName: record.displayName,
     tagLine: record.tagLine,
     known: true,
-    // The gate: a withheld rating is withheld, not shipped with a flag beside
-    // it. Same rule, same shape as `/api/events/:id/tournament`.
-    rating: verdict.provisional ? null : record.rating,
+    // The number with its margin, once there is a little evidence. Same rule,
+    // same shape as `/api/events/:id/tournament`.
+    rating: publishableRating(record.rating, record.gamesPlayed, record.uncertainty),
     uncertainty: record.uncertainty,
     gamesPlayed: record.gamesPlayed,
     matchesPlayed: record.matchesPlayed,
@@ -342,10 +432,20 @@ export interface RatingSeries {
    * True when points exist but are being withheld, as opposed to a player who
    * simply has no history yet. The two read identically on the wire otherwise,
    * and they want different copy.
+   *
+   * It no longer fires for a provisional player: a provisional rating is
+   * published now, so there is nothing for its history to reconstruct. The only
+   * thing that still withholds a series is the **display floor** - below it
+   * every point is the prior and the chart would be a flat line through 1200.
+   * Kept rather than removed because it is the field that tells "we have
+   * history you cannot see yet" from "no history", and the floor still produces
+   * the first of those.
    */
   pointsWithheld: boolean;
   minGamesForRating: number;
   maxUncertaintyForRating: number;
+  /** The display floor these points are subject to. */
+  minGamesToPublishRating: number;
 }
 
 export async function getPlayerRatings(playerId: string, scope: Scope, limit: number): Promise<RatingSeries> {
@@ -355,10 +455,8 @@ export async function getPlayerRatings(playerId: string, scope: Scope, limit: nu
     store.getPlayer(playerId),
   ]);
 
-  // The verdict is the profile's (the engine's own, for this scope) - not one
-  // re-derived from the last point, which carries no verdict and whose rating
-  // is published whether or not the player cleared the bar. The last point is
-  // only a fallback for a player with history but no profile.
+  // The verdict is the profile's (the engine's own, for this scope), with the
+  // last point only as a fallback for a player with history but no profile.
   const last = points[points.length - 1];
   const setRating = scope.setId ? profile?.setRatings.find((entry) => entry.setId === scope.setId) : undefined;
   const stated = scope.setId ? setRating ?? profile : profile;
@@ -371,15 +469,23 @@ export async function getPlayerRatings(playerId: string, scope: Scope, limit: nu
     gamesUntilRated: stated?.gamesUntilRated,
   });
 
+  // The series is published for a provisional player now - the headline rating
+  // is, so the history reconstructs nothing that is being withheld. Only the
+  // display floor still holds points back, and on the same grounds as the
+  // headline: below it the curve is the prior, not a record of play.
+  const games = stated?.gamesPlayed ?? last?.gamesPlayed ?? null;
+  const floored = !publishesRating(games, minGamesToPublish());
+
   return {
     scope,
-    points: verdict.provisional ? [] : points,
+    points: floored ? [] : points,
     provisional: verdict.provisional,
     provisionalReason: verdict.provisionalReason,
     gamesUntilRated: verdict.gamesUntilRated,
-    pointsWithheld: verdict.provisional && points.length > 0,
+    pointsWithheld: floored && points.length > 0,
     minGamesForRating: CONFIDENCE.minGames,
     maxUncertaintyForRating: CONFIDENCE.maxUncertainty,
+    minGamesToPublishRating: minGamesToPublish(),
   };
 }
 
@@ -387,11 +493,20 @@ export interface PlayerSearchHit {
   playerId: string;
   displayName: string | null;
   tagLine: string | null;
-  /** Publishable rating: null whenever `provisional`. */
+  /** Publishable rating: null only below the display floor. */
   rating: number | null;
+  /**
+   * The margin on that rating. Carried here because `uncertainty` is now the
+   * signal that separates a settled rating from an unsettled one, so a hit that
+   * showed a number without it would be the one place in this API where a
+   * rating arrives unqualified.
+   */
+  uncertainty: number | null;
   gamesPlayed: number | null;
   regionLabel: string | null;
   provisional: boolean;
+  provisionalReason: ProvisionalReason | null;
+  gamesUntilRated: number;
 }
 
 export async function searchPlayers(query: string, limit: number): Promise<PlayerSearchHit[]> {
@@ -402,10 +517,13 @@ export async function searchPlayers(query: string, limit: number): Promise<Playe
       playerId: record.playerId,
       displayName: record.displayName,
       tagLine: record.tagLine,
-      rating: verdict.provisional ? null : record.rating,
+      rating: publishableRating(record.rating, record.gamesPlayed, record.uncertainty),
+      uncertainty: record.uncertainty,
       gamesPlayed: record.gamesPlayed,
       regionLabel: record.regionLabel,
       provisional: verdict.provisional,
+      provisionalReason: verdict.provisionalReason,
+      gamesUntilRated: verdict.gamesUntilRated,
     };
   });
 }

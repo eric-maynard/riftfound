@@ -34,6 +34,19 @@ export interface PlayerProfile {
   playerId: string;
   displayName: string | null;
   tagLine: string | null;
+  /**
+   * Whether the rating engine has ever seen this player play.
+   *
+   * `/api/players/:id` used to 404 for `known: false` and now answers 200 with
+   * every number null - a resource whose `/matches` and `/ratings` already
+   * answered 200 is not absent, and such a player gets a real profile the
+   * moment the engine sees them, so the 404 made a bookmarked URL dead and
+   * then alive. This flag is how the page tells "never seen" from "not yet
+   * rated"; it is optional only so the page still works if it is ever served
+   * by an older deploy, where `hasNoRecord` reads the same fact off the
+   * numbers.
+   */
+  known?: boolean;
   rating: number | null;
   uncertainty: number | null;
   gamesPlayed: number | null;
@@ -51,6 +64,12 @@ export interface PlayerProfile {
 }
 
 export interface LeaderboardEntry {
+  /**
+   * Dense position among the rows that earn one, on **every** scope now -
+   * Global included. The old rule suppressed the whole column whenever the
+   * scope mixed scenes; see `GLOBAL_POSITION_HINT` in `lib/ranking.ts` for what
+   * replaced it and why.
+   */
   rank: number | null;
   playerId: string;
   displayName: string | null;
@@ -62,6 +81,19 @@ export interface LeaderboardEntry {
   componentId: string | null;
   componentSize: number | null;
   regionLabel: string | null;
+  /**
+   * Is this row's scene big enough for a position inside it to mean anything?
+   *
+   * The API's verdict, not ours - the threshold is the engine's measured one.
+   * Optional because an older API deploy does not send it, and a row without it
+   * is read as comparable: the rank the same row carries is the stronger
+   * signal, and inventing `false` would blank a column that deploy populates.
+   *
+   * It says only that the row's *own* order is real. It does not say the row
+   * can be compared with the one above it in a mixed ladder - nothing does,
+   * because no recorded game crosses a scene. See `GLOBAL_POSITION_HINT`.
+   */
+  sceneComparable?: boolean;
   provisional: boolean;
   provisionalReason: ProvisionalReason | null;
   gamesUntilRated: number;

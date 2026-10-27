@@ -18,12 +18,17 @@ import {
   formatWinRate,
   gameScore,
   gateProgress,
-  hasNoRecord,
+  GLOBAL_POSITION_HINT,
+  GLOBAL_POSITION_NOTICE,
+  GLOBAL_SCENE_LABEL,
+  hasPosition,
+  hasPositions,
   marginBar,
   marginScale,
   outcomeLetter,
   outcomeWord,
   recentForm,
+  recordSpoken,
   matchRecord,
   nearestPointIndex,
   niceTicks,
@@ -34,11 +39,15 @@ import {
   SET_PILL_LIMIT,
   sceneOptions,
   selectableSets,
-  provisionalExplanation,
   provisionalShortReason,
+  ratingDisplay,
+  ratingExplanation,
+  sceneSizeHint,
+  sceneTooSmallExplanation,
   setBoundaryNote,
   setLabel,
-  splitByConfidence,
+  splitByRating,
+  UNRANKED_NO_GAMES_EXPLANATION,
   winRate,
 } from '../ranking';
 
@@ -49,7 +58,7 @@ function point(date: string, rating: number, uncertainty: number | null = 100, g
   return { date, rating, uncertainty, gamesPlayed: games };
 }
 
-function entry(overrides: Partial<Parameters<typeof splitByConfidence>[0][number]>) {
+function entry(overrides: Partial<Parameters<typeof splitByRating>[0][number]>) {
   return {
     rank: null,
     playerId: 'p',
@@ -85,6 +94,9 @@ describe('scope round-tripping', () => {
   });
 });
 
+// Kept, but no longer the landing scope: /rankings opens on Global and the
+// reader picks a scene. A shared `?region=` link still wins, because the page
+// reads the parameter straight into the scope and nothing rewrites it.
 describe('pickDefaultComponent', () => {
   const comp = (id: string, size: number, rated: number, comparable: boolean): ComponentSummary => ({
     componentId: id,
@@ -188,41 +200,72 @@ describe('formatting', () => {
   });
 
   it('labels a scope with no component as not region-specific', () => {
-    expect(componentLabel(null)).toBe('Everywhere');
+    // Renamed from "Everywhere" when Global became the landing scope: one
+    // name for it, so the heading and the picker cannot disagree.
+    expect(componentLabel(null)).toBe('Global');
+    expect(componentLabel(null)).toBe(GLOBAL_SCENE_LABEL);
     expect(componentLabel({ componentId: 'c', regionLabel: null })).toBe('Scene c');
     expect(componentLabel({ componentId: 'c', regionLabel: 'Puget Sound' })).toBe('Puget Sound');
   });
 });
 
-describe('the unranked wording', () => {
-  it('prints one word, not a reason, wherever a rating is withheld', () => {
-    // The page used to say "too few games · 4 games · 4 to go" inline. It
-    // says "Unranked" now; the reason is a tooltip.
+describe('how a rating is allowed to be shown', () => {
+  // The page used to print `Unranked` for everyone below the gate, which threw
+  // away a figure the engine would stand behind and read as a broken page.
+  // Three states now, and the margin carries what the word used to.
+  it('prints a number whenever the API sends one', () => {
+    expect(ratingDisplay({ rating: 1382, provisional: false })).toBe('rated');
+    expect(ratingDisplay({ rating: 1204, provisional: true })).toBe('unsettled');
+  });
+
+  it('is `none` only when there is no number at all', () => {
+    // The API nulls the rating below its own floor - about three games, where
+    // the estimate is still echoing the 1,200 prior. We do not count games to
+    // decide this, so the floor can move without this changing.
+    expect(ratingDisplay({ rating: null, provisional: true })).toBe('none');
+    expect(ratingDisplay({ rating: null, provisional: false })).toBe('none');
+    expect(ratingDisplay(null)).toBe('none');
+    expect(ratingDisplay(undefined)).toBe('none');
+    expect(ratingDisplay({})).toBe('none');
+  });
+
+  it('keeps the word for the genuinely empty case', () => {
     expect(UNRANKED_LABEL).toBe('Unranked');
+    expect(UNRANKED_NO_GAMES_EXPLANATION).toMatch(/^Unranked/);
+    // Quotes the engine's own origin rather than a hardcoded figure.
+    expect(UNRANKED_NO_GAMES_EXPLANATION).toMatch(/1,200/);
   });
 
   it('starts the scale at the engine anchor', () => {
     expect(RATING_ANCHOR).toBe(1200);
   });
 
-  it('keeps the reason available as tooltip text, headed by the word', () => {
+  it('explains an unsettled rating without calling it unranked', () => {
+    expect(ratingExplanation('unsettled', 'too-few-games', 1, 8)).toMatch(/one more recorded game/);
+    expect(ratingExplanation('unsettled', 'too-few-games', 6, 8)).toMatch(/6 more recorded games/);
+    expect(ratingExplanation('unsettled', 'uncertainty-too-wide', 0, 8)).toMatch(/margin is too wide/);
     for (const reason of ['no-rating', 'too-few-games', 'uncertainty-too-wide'] as const) {
-      expect(provisionalExplanation(reason, 4, 8)).toMatch(/^Unranked/);
+      expect(ratingExplanation('unsettled', reason, 4, 8)).toMatch(/^Still settling/);
     }
-    expect(provisionalExplanation('no-rating', 8, 8)).toMatch(/no games recorded yet/);
-    expect(provisionalExplanation('too-few-games', 1, 8)).toMatch(/one more recorded game/);
-    expect(provisionalExplanation('too-few-games', 6, 8)).toMatch(/6 more recorded games/);
-    expect(provisionalExplanation('uncertainty-too-wide', 0, 8)).toMatch(/margin is still too wide/);
   });
 
-  it('says nothing when the rating is fit to show', () => {
-    expect(provisionalExplanation(null, 0, 8)).toBe('');
+  it('survives the API mislabelling a player who plainly has games', () => {
+    // Known-but-unrated players have come back as `no-rating`. A row with a
+    // number is still settling whatever the reason string claims.
+    expect(ratingExplanation('unsettled', 'no-rating', 3, 8)).toMatch(/3 more recorded games/);
+    expect(ratingExplanation('unsettled', null, 2, 8)).toMatch(/2 more recorded games/);
+  });
+
+  it('says nothing when the rating is settled, and says why when there is none', () => {
+    expect(ratingExplanation('rated', null, 0, 8)).toBe('');
+    expect(ratingExplanation('rated', 'too-few-games', 4, 8)).toBe('');
+    expect(ratingExplanation('none', null, 0, 8)).toBe(UNRANKED_NO_GAMES_EXPLANATION);
   });
 
   it('sentence-cases the short reason for a table cell tooltip', () => {
     expect(provisionalShortReason('too-few-games')).toBe('Too few games');
     expect(provisionalShortReason('uncertainty-too-wide')).toBe('Margin too wide');
-    expect(provisionalShortReason('no-rating')).toBe('No games yet');
+    expect(provisionalShortReason('no-rating')).toBe('No rating yet');
     expect(provisionalShortReason(null)).toBe('--');
   });
 });
@@ -243,11 +286,16 @@ describe('the searchable scene picker', () => {
     comp('d', null, 0, false),
   ];
 
-  it('leads with Everywhere, then one row per scene', () => {
+  it('leads with Global, then one row per scene', () => {
     const options = sceneOptions(components);
-    expect(options[0]).toEqual({ id: null, label: 'Everywhere', meta: 'not comparable', comparable: false });
+    // `meta` says what the scope *is*. It used to read `not comparable`, as
+    // the first explanation of a ladder with no positions; there are positions
+    // now, and a caveat met before the thing it qualifies was the wrong place
+    // for it anyway - it lives on the `#` column's hint. `comparable` stays
+    // false: that is the narrow statistical claim, and it is still true.
+    expect(options[0]).toEqual({ id: null, label: 'Global', meta: 'every scene at once', comparable: false });
     expect(options.map((option) => option.label)).toEqual([
-      'Everywhere',
+      'Global',
       'Puget Sound',
       'Bay Area',
       'Montréal',
@@ -272,31 +320,43 @@ describe('the searchable scene picker', () => {
     expect(filterSceneOptions(options, 'zzz')).toEqual([]);
   });
 
-  it('finds the row for the current selection, including Everywhere', () => {
+  it('finds the row for the current selection, including Global', () => {
     const options = sceneOptions(components);
     expect(findSceneOption(options, 'b')?.label).toBe('Bay Area');
-    expect(findSceneOption(options, null)?.label).toBe('Everywhere');
+    expect(findSceneOption(options, null)?.label).toBe('Global');
     expect(findSceneOption(options, 'missing')).toBeNull();
   });
 });
 
-describe('splitByConfidence', () => {
-  it('keeps provisional players out of the ladder', () => {
-    const { rated, provisional } = splitByConfidence([
+describe('splitByRating', () => {
+  // It used to split on `provisional`, which banished every unsettled player
+  // to a second list with no figure in it. The table holds everyone the engine
+  // will quote a number for now; only the no-number rows fall out.
+  it('keeps an unsettled player in the table, with their number', () => {
+    const { scored, unscored } = splitByRating([
       entry({ playerId: 'a', rank: 1 }),
-      entry({ playerId: 'b', provisional: true, provisionalReason: 'too-few-games' }),
+      entry({ playerId: 'b', rating: 1204, provisional: true, provisionalReason: 'too-few-games' }),
     ]);
-    expect(rated.map((e) => e.playerId)).toEqual(['a']);
-    expect(provisional.map((e) => e.playerId)).toEqual(['b']);
+    expect(scored.map((e) => e.playerId)).toEqual(['a', 'b']);
+    expect(unscored).toEqual([]);
   });
 
-  it('handles an entirely provisional page - the normal state at launch', () => {
+  it('drops only the rows with no number at all', () => {
+    const { scored, unscored } = splitByRating([
+      entry({ playerId: 'a', rank: 1 }),
+      entry({ playerId: 'b', rating: null, provisional: true, provisionalReason: 'no-rating' }),
+    ]);
+    expect(scored.map((e) => e.playerId)).toEqual(['a']);
+    expect(unscored.map((e) => e.playerId)).toEqual(['b']);
+  });
+
+  it('handles a page with nothing rated yet', () => {
     const all = [1, 2, 3].map((n) =>
-      entry({ playerId: `p${n}`, provisional: true, provisionalReason: 'too-few-games' })
+      entry({ playerId: `p${n}`, rating: null, provisional: true, provisionalReason: 'no-rating' })
     );
-    const { rated, provisional } = splitByConfidence(all);
-    expect(rated).toEqual([]);
-    expect(provisional).toHaveLength(3);
+    const { scored, unscored } = splitByRating(all);
+    expect(scored).toEqual([]);
+    expect(unscored).toHaveLength(3);
   });
 });
 
@@ -339,12 +399,24 @@ describe('match helpers', () => {
       match('unknown', []),
     ]);
     expect(record).toEqual({ wins: 2, losses: 1, draws: 0 });
+    // Hyphenated numerals, win-loss-draw, and no trailing `-0`: this is what
+    // the pages print now instead of "2W 1L" in coloured display type.
     expect(formatRecord(record)).toBe('2-1');
     expect(formatRecord({ wins: 1, losses: 1, draws: 1 })).toBe('1-1-1');
+    expect(formatRecord({ wins: 2, losses: 1, draws: 1 })).toBe('2-1-1');
   });
 
   it('reports an empty record for a player with no games', () => {
     expect(formatRecord(matchRecord([]))).toBe('0-0');
+  });
+
+  it('spells the record out for a screen reader', () => {
+    // The figure is aria-hidden wherever this is used, because "2-1-1"
+    // announces as "two dash one dash one".
+    expect(recordSpoken({ wins: 2, losses: 1, draws: 1 })).toBe('2 wins, 1 loss, 1 draw');
+    expect(recordSpoken({ wins: 1, losses: 2, draws: 0 })).toBe('1 win, 2 losses');
+    expect(recordSpoken({ wins: 0, losses: 0, draws: 0 })).toBe('0 wins, 0 losses');
+    expect(recordSpoken({ wins: 3, losses: 0, draws: 2 })).toBe('3 wins, 0 losses, 2 draws');
   });
 });
 
@@ -415,16 +487,29 @@ describe('the games gate', () => {
     expect(gateProgress(null, 8)).toEqual({ filled: 0, total: 8 });
   });
 
-  it('never overfills, and gives up on an implausible threshold', () => {
-    expect(gateProgress(40, 8)).toEqual({ filled: 8, total: 8 });
+  it('gives up on an implausible threshold', () => {
     expect(gateProgress(1, 0)).toBeNull();
     expect(gateProgress(1, 500)).toBeNull();
   });
 
   it('stays away when the games are not what is missing', () => {
-    // A player with twelve games held back by a wide margin has cleared this
-    // bar already; a full meter beside "Unranked" reads as a contradiction.
+    // A player who has already played enough games is not waiting on volume -
+    // a full meter beside an unsettled rating reads as a contradiction. It
+    // used to clamp to a full strip; it now says nothing at all.
+    expect(gateProgress(40, 8)).toBeNull();
+    expect(gateProgress(8, 8)).toBeNull();
+    // Nor when the API says plainly that the margin is what is holding it.
     expect(gateProgress(12, 8, 'uncertainty-too-wide')).toBeNull();
+    expect(gateProgress(3, 8, 'uncertainty-too-wide')).toBeNull();
+  });
+
+  it('draws anyway when the API mislabels a player who has games', () => {
+    // Known-but-unrated players have come back as `no-rating`. The meter is
+    // read off the evidence, not off the reason string, so it survives that:
+    // a meter that vanishes because a label was mis-set is worse than one
+    // that is occasionally redundant.
+    expect(gateProgress(3, 8, 'no-rating')).toEqual({ filled: 3, total: 8 });
+    expect(gateProgress(5, 8, null)).toEqual({ filled: 5, total: 8 });
     expect(gateProgress(0, 8, 'no-rating')).toEqual({ filled: 0, total: 8 });
     expect(gateProgress(3, 8, 'too-few-games')).toEqual({ filled: 3, total: 8 });
   });
@@ -448,18 +533,38 @@ describe('margin bars', () => {
     gamesUntilRated: 0,
   });
 
-  it('spans every rated rating plus and minus its margin', () => {
+  it('spans every rating plus and minus its margin', () => {
     const scale = marginScale([entry(1200, 100), entry(1300, 50), entry(1250, 20)]);
     expect(scale).toEqual({ min: 1100, max: 1350 });
   });
 
+  it('includes the unsettled rows, whose wide spans are the point', () => {
+    // They used to be excluded, because they printed no number at all. Now
+    // they print one, and the bar is what carries the honesty the word
+    // "Unranked" used to: a wide span beside a narrow one is visibly
+    // unsettled. Their margins stretch the axis, which is what makes the
+    // contrast legible.
+    const scale = marginScale([entry(1382, 95), entry(1204, 156, true)]);
+    expect(scale).toEqual({ min: 1048, max: 1477 });
+  });
+
   it('draws no bars at all when there is nothing to compare', () => {
-    // Sparse is the normal case: a bar with nothing beside it is decoration,
-    // so one or two rated players get the number and no axis.
+    // One span is still decoration, and so is a degenerate range. The floor
+    // dropped from three rows to two because the bars now do work on every
+    // row that has a number, and two spans are already a comparison.
     expect(marginScale([entry(1200, 100)])).toBeNull();
-    expect(marginScale([entry(1200, 100), entry(1300, 50)])).toBeNull();
+    expect(marginScale([entry(1200, 100, true)])).toBeNull();
     expect(marginScale([entry(1200, 0), entry(1200, 0), entry(1200, 0)])).toBeNull();
-    expect(marginScale([entry(1200, 100, true), entry(1300, 50, true), entry(1250, 20, true)])).toBeNull();
+    expect(marginScale([entry(1200, 100), entry(1300, 50)])).not.toBeNull();
+  });
+
+  it('skips the rows with no number, which have nothing to span', () => {
+    const noNumber = { ...entry(1200, 100, true), rating: null };
+    expect(marginScale([noNumber, noNumber, noNumber])).toBeNull();
+    expect(marginScale([entry(1200, 100), entry(1300, 50), noNumber])).toEqual({
+      min: 1100,
+      max: 1350,
+    });
   });
 
   it('places a span and its marker on the shared axis', () => {
@@ -600,24 +705,64 @@ describe('buildRatingChartGeometry', () => {
   });
 });
 
-describe('hasNoRecord', () => {
-  // `/api/players/:id` 404s today for a player the engine has never seen, and
-  // the event page renders those names as plain text for that reason. The
-  // endpoint may start answering with an all-null profile instead, so the
-  // player page must be able to tell "never seen" from "not yet rated"
-  // without waiting for a flag to be added to the wire.
-  it('reads a profile the engine has never seen', () => {
-    expect(hasNoRecord({ rating: null, gamesPlayed: 0, matchesPlayed: 0 })).toBe(true);
-    expect(hasNoRecord({ rating: null, gamesPlayed: null, matchesPlayed: null })).toBe(true);
-    expect(hasNoRecord({})).toBe(true);
-    expect(hasNoRecord(null)).toBe(true);
-    expect(hasNoRecord(undefined)).toBe(true);
+
+/**
+ * Global carries positions.
+ *
+ * The measurement that shaped this: **0 of 56,257 recorded games cross a
+ * scene**. A scene is a group of players who have played each other, so a game
+ * between two of them would merge them - the cross-scene link is not thin, it
+ * is empty, across 1,235 scenes, 369 of which reach the global ladder and 15 of
+ * which reach its top 25. The order is still published, with the caveat on the
+ * `#` column rather than in place of the column.
+ */
+describe('positions on a ladder that mixes scenes', () => {
+  it('draws the column when any loaded row holds a place, not when the scope is one scene', () => {
+    // The old rule was scope-shaped and it is what kept Global positionless.
+    expect(hasPositions([entry({ rank: 1 }), entry({ rank: null })])).toBe(true);
+    expect(hasPositions([entry({ rank: null }), entry({ rank: null })])).toBe(false);
+    expect(hasPositions([])).toBe(false);
   });
 
-  it('does not mistake an unranked player for an unseen one', () => {
-    // Below the gate, so the rating is nulled out on the wire - but the games
-    // are there, and "No record yet" would be a lie.
-    expect(hasNoRecord({ rating: null, gamesPlayed: 3, matchesPlayed: 2 })).toBe(false);
-    expect(hasNoRecord({ rating: 1219, gamesPlayed: 12, matchesPlayed: 6 })).toBe(false);
+  it('reads a position off the rank the API sent, never off the rating', () => {
+    expect(hasPosition(entry({ rank: 3, rating: 1240 }))).toBe(true);
+    // A settled rating with no place: the scene it was earned in is too small.
+    expect(hasPosition(entry({ rank: null, rating: 1620, provisional: false, componentSize: 4 }))).toBe(false);
+  });
+
+  it('explains a withheld place as a comparison problem, not a lack of evidence', () => {
+    const why = sceneTooSmallExplanation(4, 8);
+    expect(why).toContain('too small to order anyone');
+    expect(why).toContain('8 players needed');
+    // The rating is not in question - 29 of the live board's 6,117 rated
+    // players are in this state with perfectly good numbers.
+    expect(why).toContain('The rating itself stands');
+    expect(why).not.toMatch(/games/);
+    // No size recorded is still a sentence rather than a dangling number.
+    expect(sceneTooSmallExplanation(null, 8)).toContain('this scene is too small');
+  });
+
+  it('qualifies a global position with what it rests on, and quotes the anchor', () => {
+    // The specific weakness the ± cannot carry: the margin is the posterior SD
+    // of a comparison *inside* a scene, and across scenes there is no
+    // comparison for it to be about.
+    expect(GLOBAL_POSITION_HINT).toContain('no recorded game crosses one');
+    expect(GLOBAL_POSITION_HINT).toContain(RATING_ANCHOR.toLocaleString());
+    // One line, and it no longer claims there are no positions.
+    expect(GLOBAL_POSITION_NOTICE).not.toMatch(/No positions/i);
+    expect(GLOBAL_POSITION_NOTICE.split('\n')).toHaveLength(1);
+    expect(GLOBAL_POSITION_NOTICE).toContain(GLOBAL_SCENE_LABEL);
+  });
+
+  it('shows the depth a place was earned among, because that is what varies', () => {
+    // Cross-scene play is zero for every player, so it cannot separate two
+    // rows. Scene size can, and it is what the model's own cross-scene term is
+    // a function of: first among 4,654 and first among 9 are both real and are
+    // not the same claim.
+    expect(sceneSizeHint(entry({ componentSize: 4654 }))).toBe(
+      'Scene of 4,654 players who have played each other.'
+    );
+    expect(sceneSizeHint(entry({ componentSize: 1 }))).toBe('Scene of 1 player.');
+    expect(sceneSizeHint(entry({ componentSize: null }))).toBe('Scene size not recorded.');
   });
 });

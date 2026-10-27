@@ -3,17 +3,12 @@ import type {
   TournamentField,
   TournamentMatch,
   TournamentMatchSide,
-  TournamentPlayer,
   TournamentResults,
   TournamentRound,
   TournamentRoster,
   TournamentSidePlayer,
 } from '../types/tournament';
-import { NO_RECORD_LABEL, UNRANKED_LABEL } from './ranking';
-
-// Declared in lib/ranking.ts - the player page needs them too - and re-exported
-// here so the event page's callers keep importing them from one place.
-export { NO_RECORD_LABEL, NO_RECORD_EXPLANATION } from './ranking';
+import { UNRANKED_LABEL } from './ranking';
 
 /**
  * Pure helpers behind the event page.
@@ -27,40 +22,15 @@ export { NO_RECORD_LABEL, NO_RECORD_EXPLANATION } from './ranking';
 // ---------------------------------------------------------------------------
 // A player's rating, as the page is allowed to say it
 // ---------------------------------------------------------------------------
-
-/**
- * Three states, not two.
- *
- * `rated`       - a publishable number.
- * `unranked`    - the engine has a profile but it has not cleared the gate.
- * `no-record`   - the engine has never seen this player play at all.
- *
- * The last two are the ones it is easy to collapse, and collapsing them tells
- * a first-time player they failed a bar they never stood at. `known: false` is
- * most of a field at launch: 15 of the 22 signups on the event this page was
- * built against.
- */
-export type RatingStanding = 'rated' | 'unranked' | 'no-record';
-
-export function ratingStanding(
-  player: Pick<TournamentPlayer, 'known' | 'provisional'> | null | undefined
-): RatingStanding {
-  if (!player) return 'no-record';
-  if (!player.known) return 'no-record';
-  return player.provisional ? 'unranked' : 'rated';
-}
-
-/** The label for a standing, for the one or two places that need it as text. */
-export function standingLabel(standing: RatingStanding): string {
-  switch (standing) {
-    case 'unranked':
-      return UNRANKED_LABEL;
-    case 'no-record':
-      return NO_RECORD_LABEL;
-    default:
-      return '';
-  }
-}
+//
+// This page used to keep its own three-state vocabulary - `rated`,
+// `unranked`, `no-record` - and the last of those printed "No record yet" to
+// distinguish a player the engine had never seen from one who had not cleared
+// the gate. The distinction was real in principle and a lie in practice: a
+// 25-hour-stale engine reported `known: false` for 22 players whose games were
+// rendered on the same page. It is collapsed into `Unranked`, and what the
+// page shows is decided by `ratingDisplay` in lib/ranking.ts, the same rule
+// the ladder and the player page use.
 
 // ---------------------------------------------------------------------------
 // Strength of field
@@ -117,39 +87,35 @@ function plural(count: number, word: string): string {
 }
 
 export interface FieldSegment {
-  key: 'rated' | 'provisional' | 'unknown';
+  key: 'rated' | 'unranked';
   label: string;
   count: number;
   percent: number;
 }
 
 /**
- * The field's three groups, as counts.
+ * The field's groups, as counts.
  *
- * Deliberately *not* drawn as a three-segment meter: in this theme the three
- * fills would have to sit above 3:1 on the panel and still be told apart from
- * each other, and the best available pair measures 1.08:1 - two shades nobody
- * could separate. So the page draws the ranking section's one-fill coverage
- * meter for the rated share and prints all three counts in words beside it.
- * `percent` is kept for anything that wants the proportion.
+ * **Two groups, not three.** It used to separate "Unranked" from "No record",
+ * and once those two print the same word in every other place on the site, two
+ * legend rows reading `Unranked` would be a puzzle rather than a breakdown.
+ * The split was never load-bearing here anyway - what the block is for is the
+ * rated share.
+ *
+ * Deliberately *not* drawn as a segmented meter: in this theme the fills would
+ * have to sit above 3:1 on the panel and still be told apart from each other,
+ * and the best available pair measures 1.08:1 - two shades nobody could
+ * separate. So the page draws the ranking section's one-fill coverage meter
+ * for the rated share and prints the counts in words beside it. `percent` is
+ * kept for anything that wants the proportion.
  */
 export function fieldComposition(field: TournamentField): FieldSegment[] {
   const total = field.totalPlayers;
   const share = (count: number) => (total > 0 ? (count / total) * 100 : 0);
+  const unranked = field.provisionalPlayers + field.unknownPlayers;
   return [
     { key: 'rated', label: 'Rated', count: field.ratedPlayers, percent: share(field.ratedPlayers) },
-    {
-      key: 'provisional',
-      label: UNRANKED_LABEL,
-      count: field.provisionalPlayers,
-      percent: share(field.provisionalPlayers),
-    },
-    {
-      key: 'unknown',
-      label: 'No record',
-      count: field.unknownPlayers,
-      percent: share(field.unknownPlayers),
-    },
+    { key: 'unranked', label: UNRANKED_LABEL, count: unranked, percent: share(unranked) },
   ];
 }
 
@@ -195,6 +161,16 @@ export function sectionLabel(section: number): string {
  * was built against has two of them. Mapping only `DRAW` turned a recorded
  * draw into an unrecorded match: a `?` badge and "Not recorded" over a 1-1 the
  * standings had already counted as `1D`.
+ */
+/**
+ * A side's result, in this page's vocabulary.
+ *
+ * Matched case-insensitively against both vocabularies on purpose. The API
+ * normalises to lowercase `win`/`loss`/`draw`/`unknown` now, but Riot's own
+ * words used to come through verbatim and a draw arrived as `TIE` - never
+ * `DRAW`. Keeping both means the page reads an old capture and a new one the
+ * same way, in either deploy order. Anything else - `FORFEIT`,
+ * `DISQUALIFIED`, `NO_SHOW` - is `unknown` rather than guessed at.
  */
 export function sideOutcome(side: TournamentMatchSide | null | undefined): GameOutcome {
   switch (side?.outcome?.toUpperCase()) {
@@ -242,9 +218,13 @@ export function matchHasPlay(match: TournamentMatch): boolean {
 /**
  * The matches of a round in table order.
  *
- * The capture lists them in whatever order Riot's software returned - round 1
- * of the live event arrives 7, 6, 4, 3, 2, 1, 5 - and a reader looking for
- * their table should not have to scan for it. Byes carry no table and go last.
+ * The capture used to list them in whatever order Riot's software returned -
+ * round 1 of the live event arrived 7, 6, 4, 3, 2, 1, 5, and 21 of the
+ * corpus's 87 rounds were out of order - and a reader looking for their table
+ * should not have to scan for it. The API sorts server-side now, so this is a
+ * no-op re-sort; it is kept because a stable client-side order costs nothing
+ * and the page should not go back to depending on upstream order. Byes carry
+ * no table and go last.
  */
 export function orderedMatches(round: TournamentRound): TournamentMatch[] {
   return [...round.matches].sort((a, b) => {
@@ -257,17 +237,20 @@ export function orderedMatches(round: TournamentRound): TournamentMatch[] {
 /**
  * The byes that are not already a row.
  *
- * A bye arrives **twice**: once synthesised as a match with `bye: true`, and
- * again in `byes` / `byeTeamIds`. Rendering both printed every bye player
- * twice, so this returns only the ones no match already covers.
+ * A bye used to arrive **twice** - once synthesised as a match with
+ * `bye: true`, and again in `byes` / `byeTeamIds` - which printed every bye
+ * player twice, in 42 of the live corpus's 87 rounds. The API sends it once
+ * now, in `byes` only, and no `bye-` prefixed match id leaves it at all.
  *
- * It has to survive either half of that duplication going away, in either
- * deploy order:
- *   - the synthesised match dropped -> nothing is covered, so every listed
- *     bye is returned;
- *   - `byes`/`byeTeamIds` dropped -> there is nothing left to list, and the
- *     byes come from the matches alone;
- *   - the field dropped entirely rather than emptied -> the `?? []` below,
+ * This de-dupe is kept rather than deleted, because it is what makes the page
+ * read correctly under either shape and in either deploy order:
+ *   - no bye matches (the shape now) -> nothing is covered, so every listed
+ *     bye is returned, exactly once;
+ *   - both shapes (the older one) -> the match is the row and nothing is
+ *     printed a second time;
+ *   - `byes`/`byeTeamIds` gone instead -> there is nothing left to list, and
+ *     the byes come from the matches alone;
+ *   - a field dropped entirely rather than emptied -> the `?? []` below,
  *     because `undefined.map` is a blank page, not a missing bye.
  */
 export function unlistedByes(round: TournamentRound): TournamentSidePlayer[] {

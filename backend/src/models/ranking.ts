@@ -95,6 +95,44 @@ export const CONFIDENCE = {
   minComponentSize: 8,
 } as const;
 
+/**
+ * The display floor: how many recorded games before the rating *number* is
+ * published at all. `RANKING_MIN_GAMES_TO_PUBLISH` overrides it.
+ *
+ * **This is not the rank gate.** `CONFIDENCE` above decides who gets a
+ * *position* (8 games, sigma <= 120, component >= 8) and is unchanged. This is
+ * the much lower bar for showing a figure at all, and between the two a player
+ * shows a rating with its uncertainty and `rank: null`.
+ *
+ * Three is not arbitrary. Measured posterior SD by games played, against a
+ * prior SD of 150:
+ *
+ * | games | median SD | share under 120 |
+ * |---|---|---|
+ * | 1-2 | 130 | 0.7% |
+ * | 3-4 | 122 | 15.4% |
+ * | 5-7 | 107 | 87.3% |
+ * | 8-9 | 97 | 95.1% |
+ *
+ * At one or two games the posterior has barely moved off the prior, so the
+ * number is 1200-with-noise wearing the word "rating". By three it has at least
+ * responded to results. The floor is the point where the figure starts carrying
+ * information instead of echoing the prior.
+ */
+export const DEFAULT_MIN_GAMES_TO_PUBLISH = 3;
+
+/**
+ * Is there enough evidence to show the number?
+ *
+ * The predicate is on recorded games alone, deliberately: `uncertainty` travels
+ * with every published rating and is what tells a settled figure from an
+ * unsettled one, so the floor only has to keep out the ratings that are still
+ * the prior.
+ */
+export function publishesRating(gamesPlayed: number | null | undefined, floor: number): boolean {
+  return (gamesPlayed ?? 0) >= floor;
+}
+
 export type ProvisionalReason = 'too-few-games' | 'uncertainty-too-wide' | 'no-rating';
 
 /**
@@ -145,8 +183,16 @@ export function assessConfidence(input: {
 }): ConfidenceVerdict {
   const games = input.gamesPlayed ?? 0;
   const gamesUntilRated = Math.max(0, CONFIDENCE.minGames - games);
+  const hasRating = input.rating !== null && input.rating !== undefined;
 
-  if (input.rating === null || input.rating === undefined) {
+  // `no-rating` means **no evidence**, and nothing else. It is the verdict for
+  // an id the engine has never recorded a game for - and it used to be the
+  // verdict for anyone whose rating happened to be absent, which was the bug:
+  // a known player with 6 recorded games and a fitted sigma of 100 reported
+  // `no-rating`, so a page drew no progress meter for someone two games off the
+  // bar. Once there are games, the reason is about the evidence, not about
+  // whether a number came back.
+  if (games <= 0 && !hasRating) {
     return { provisional: true, provisionalReason: 'no-rating', gamesUntilRated };
   }
   if (games < CONFIDENCE.minGames) {
@@ -154,6 +200,10 @@ export function assessConfidence(input: {
   }
   if (input.uncertainty !== null && input.uncertainty > CONFIDENCE.maxUncertainty) {
     return { provisional: true, provisionalReason: 'uncertainty-too-wide', gamesUntilRated };
+  }
+  // Past both gates with no number at all: there genuinely is no rating.
+  if (!hasRating) {
+    return { provisional: true, provisionalReason: 'no-rating', gamesUntilRated };
   }
   return { provisional: false, provisionalReason: null, gamesUntilRated: 0 };
 }
@@ -184,13 +234,26 @@ export function resolveVerdict(input: {
   if (typeof input.provisional !== 'boolean') return derived;
 
   if (input.rating === null || input.rating === undefined) {
-    return { provisional: true, provisionalReason: 'no-rating', gamesUntilRated: derived.gamesUntilRated };
+    // Provisional either way, but the *reason* is the derived one, which knows
+    // the difference between "never seen" and "seen, two games short". Forcing
+    // `no-rating` here was half of the fall-through.
+    return {
+      provisional: true,
+      provisionalReason: derived.provisionalReason ?? 'no-rating',
+      gamesUntilRated: derived.gamesUntilRated,
+    };
   }
   if (!input.provisional) {
     return { provisional: false, provisionalReason: null, gamesUntilRated: 0 };
   }
 
-  const mapped = input.provisionalReason ? ENGINE_REASONS[input.provisionalReason] ?? null : null;
+  const stated = input.provisionalReason ? ENGINE_REASONS[input.provisionalReason] ?? null : null;
+  // The other half of the fall-through: the engine's own reason is authoritative
+  // about *why* it withheld a rating, but it cannot be right that there is
+  // "no rating" for a player whose rating we are holding - execution only
+  // reaches here with a non-null one. So a stated `no-rating` is discarded in
+  // favour of the derived reason, which reads the games and the sigma.
+  const mapped = stated === 'no-rating' ? null : stated;
   const gamesUntilRated =
     typeof input.gamesUntilRated === 'number' && Number.isFinite(input.gamesUntilRated)
       ? Math.max(0, Math.round(input.gamesUntilRated))
@@ -210,6 +273,38 @@ export function resolveVerdict(input: {
  */
 export function isComparable(componentSize: number | null | undefined): boolean {
   return (componentSize ?? 0) >= CONFIDENCE.minComponentSize;
+}
+
+/**
+ * Does this rating earn a **position**?
+ *
+ * Three conditions, all of them about evidence rather than about display:
+ *
+ *  - the engine calls it settled (its own 8-games / sigma <= 120 verdict);
+ *  - there is a number to order on at all;
+ *  - the scene it was earned in is big enough for an order inside it to mean
+ *    something (`isComparable`).
+ *
+ * The third used to be enforced one scope at a time - a whole ladder either
+ * printed positions or did not - and that is what kept the Global scope
+ * positionless. It is a **per-row** fact: a player in a 4-person scene has no
+ * position to give, and a player in a 4,654-person one does, and mixing them
+ * on one page does not change either answer. So the gate moved onto the row,
+ * which is also what lets Global carry positions without handing one to a
+ * player who would not get one in their own scene. Measured on the live board:
+ * 29 of 6,117 rated players sit in a component below 8 and lose a position
+ * they were previously given by the global board's own rank field.
+ *
+ * What it deliberately does *not* decide is whether the comparison between two
+ * rows is well identified. Nothing between two scenes is - see
+ * `LeaderboardEntry.sceneComparable`.
+ */
+export function earnsPosition(input: {
+  provisional: boolean;
+  rating: number | null;
+  componentSize: number | null | undefined;
+}): boolean {
+  return !input.provisional && input.rating !== null && isComparable(input.componentSize);
 }
 
 // ---------------------------------------------------------------------------
@@ -287,16 +382,54 @@ export interface PlayerProfile extends PlayerIdentity, ComponentInfo {
 }
 
 export interface LeaderboardEntry extends PlayerIdentity {
-  /** Dense rank among rated players only; null for a provisional player. */
+  /**
+   * Dense position among the rows that earn one (`earnsPosition`); null for a
+   * provisional player, and null for one whose scene is too small to order.
+   *
+   * **Assigned on every scope, Global included.** It used to be - in effect -
+   * withheld there, because the client suppressed the whole column whenever
+   * the scope mixed scenes. The suppression was honest about a real weakness
+   * and dishonest about its own confidence: an order that exists is better
+   * reported with its caveat than hidden, and the caveat is what
+   * `sceneComparable` and the scene label are for.
+   */
   rank: number | null;
-  /** Publishable rating: null whenever `provisional`, never a withheld number. */
+  /**
+   * The rating, published with its margin. Null only below the display floor.
+   * A provisional player carries a number and `rank: null`.
+   */
   rating: number | null;
+  /** Always present when `rating` is: the margin is what qualifies the number. */
   uncertainty: number | null;
   gamesPlayed: number | null;
   matchesPlayed: number | null;
   componentId: string | null;
   componentSize: number | null;
   regionLabel: string | null;
+  /**
+   * Is this row's scene big enough for a position inside it to mean anything?
+   *
+   * `isComparable(componentSize)`, decided here rather than in the UI, for the
+   * same reason every other verdict is: the threshold is the engine's measured
+   * one and a client re-deriving it would be guessing a constant.
+   *
+   * It is the field a mixed ladder needs, and it says less than its name
+   * suggests, on purpose. It answers "is this player's own order real", not
+   * "can this player be compared with the row above". **Nothing answers yes to
+   * the second across two scenes.** A scene is a connected component of the
+   * co-play graph, so a game between two scenes would merge them: measured on
+   * the live corpus, **0 of 56,257 recorded games cross a scene** (800 of 800
+   * same-scene in a stratified sample of 90 players' match logs, 777 opponents
+   * resolved, zero exceptions), spread over 1,235 scenes. The engine's
+   * `crossComponentUncertainty` is the model's own answer and it is not usable
+   * as a caveat: it widens the margin by a median of **1.2 rating points**
+   * (ratio 1.011), because the model pins a 4,654-player scene's mean level to
+   * +-2.2 off the 1,200 prior. That is correct given the prior and the prior is
+   * exactly the unverified part, so publishing it would read as "a cross-scene
+   * comparison is 1% less certain", which is the opposite of true. The caveat
+   * is therefore copy, said once, beside the scene label - not a number.
+   */
+  sceneComparable: boolean;
   provisional: boolean;
   provisionalReason: ProvisionalReason | null;
   gamesUntilRated: number;
@@ -312,6 +445,8 @@ export interface RankingCoverage {
   minGamesForRating: number;
   maxUncertaintyForRating: number;
   minComponentSize: number;
+  /** Recorded games before a rating number is shown at all (the display floor). */
+  minGamesToPublishRating: number;
   lastUpdated: string | null;
 }
 

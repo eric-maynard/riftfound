@@ -132,7 +132,8 @@ function readSetRatings(item: Item): SetRatingRecord[] {
     const inner = value as Item;
     entries.push({
       setId,
-      rating: readNumber(inner, ['rating', 'mu', 'value']),
+      // Same two-layer suppression as the profile: see the note on `rating` below.
+      rating: readNumber(inner, ['rating', 'mu', 'value', 'provisionalRating']),
       uncertainty: readNumber(inner, ['uncertainty', 'sigma', 'rd']),
       gamesPlayed: readNumber(inner, ['gamesPlayed', 'games']),
       matchesPlayed: readNumber(inner, ['matchesPlayed', 'matches']),
@@ -152,10 +153,17 @@ function toPlayerRecord(item: Item): PlayerRecord | null {
     playerId,
     displayName: readString(item, ['displayName', 'gameName', 'name']),
     tagLine: readString(item, ['tagLine', 'tag']),
-    // `provisionalRating` is deliberately NOT in this list. The engine writes
-    // the fitted number there and nulls `rating` when it is below the bar;
-    // reading it as a fallback would undo the gate at the first hop.
-    rating: readNumber(item, ['rating', 'mu']),
+    // The engine suppresses too: it writes the fitted number to
+    // `provisionalRating` and nulls `rating` whenever a player is below its
+    // rank gate. So reading `rating` alone withholds the figure for every
+    // unsettled player no matter what this API decides, which is how the
+    // display floor came to publish nothing between 3 and 8 games.
+    //
+    // Reading the fallback does not undo a gate: `publishableRating` applies
+    // the floor, and the rank gate is enforced separately by `rank`, which is
+    // never derived from this number. A fitted estimate with its margin is
+    // exactly what we publish now.
+    rating: readNumber(item, ['rating', 'mu', 'provisionalRating']),
     uncertainty: readNumber(item, ['uncertainty', 'sigma', 'rd']),
     gamesPlayed: readNumber(item, ['gamesPlayed', 'games']),
     matchesPlayed: readNumber(item, ['matchesPlayed', 'matches']),
@@ -176,7 +184,7 @@ function toLeaderboardRecord(item: Item): LeaderboardRecord | null {
   return {
     playerId,
     rank: readNumber(item, ['rank', 'position']),
-    rating: readNumber(item, ['rating', 'mu']),
+    rating: readNumber(item, ['rating', 'mu', 'provisionalRating']),
     uncertainty: readNumber(item, ['uncertainty', 'sigma', 'rd']),
     gamesPlayed: readNumber(item, ['gamesPlayed', 'games']),
     matchesPlayed: readNumber(item, ['matchesPlayed', 'matches']),
@@ -431,8 +439,28 @@ export const dynamoRankingStore: RankingStore = {
 
   async listComponents() {
     const board = await dynamoRankingStore.getLeaderboard({ raw: 'all', setId: null, componentId: null }, 100);
-    const ids = board.items.map((entry) => entry.playerId);
-    const profiles = await dynamoRankingStore.getPlayers(ids);
+
+    // Only the rows that cannot answer for themselves. The engine denormalises
+    // componentId, componentSize, regionLabel and the rating triple onto every
+    // leaderboard row precisely so a board can be summarised without profile
+    // fetches, and in production none of them is missing - so this used to be
+    // an unconditional 100-key BatchGet on every single /api/rankings request,
+    // around 50 read units and a round trip spent to re-read what the first
+    // Query had already returned. Still conditional rather than removed,
+    // because a row written before those attributes existed must not quietly
+    // drop out of the component list. Same shape as `needsHydration` in
+    // services/rankingService.ts.
+    const sparse = board.items
+      .filter(
+        (entry) =>
+          entry.componentId == null ||
+          entry.rating == null ||
+          entry.uncertainty == null ||
+          entry.gamesPlayed == null
+      )
+      .map((entry) => entry.playerId);
+    const profiles =
+      sparse.length > 0 ? await dynamoRankingStore.getPlayers(sparse) : new Map<string, PlayerRecord>();
 
     const out = new Map<string, { regionLabel: string | null; componentSize: number | null; ratedPlayers: number; totalPlayers: number }>();
     for (const entry of board.items) {

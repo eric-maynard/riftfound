@@ -1,6 +1,7 @@
-import { Link } from 'react-router-dom';
+import { Link, useLocation } from 'react-router-dom';
 import type { PlayerMatch } from '../types/ranking';
 import { formatDate, gameScore, outcomeLetter, outcomeWord, recentForm } from '../lib/ranking';
+import { carryPreview } from '../lib/preview';
 
 /**
  * Recent form: the last few matches as lettered pips, newest first.
@@ -24,6 +25,9 @@ interface FormStripProps {
 }
 
 function FormStrip({ matches, count = 10, totalMatches = null }: FormStripProps) {
+  // The pips are links into an unlisted section, so they carry the preview
+  // flag like every other one (lib/preview.ts).
+  const { search } = useLocation();
   const form = recentForm(matches, count);
   if (form.length === 0) return null;
 
@@ -55,7 +59,7 @@ function FormStrip({ matches, count = 10, totalMatches = null }: FormStripProps)
                   champion portrait is on op.gg. Without one it is still a pip. */}
               {match.opponentId ? (
                 <Link
-                  to={`/rankings/players/${encodeURIComponent(match.opponentId)}`}
+                  to={carryPreview(`/rankings/players/${encodeURIComponent(match.opponentId)}`, search)}
                   className="form-pip-link"
                 >
                   {pip}
