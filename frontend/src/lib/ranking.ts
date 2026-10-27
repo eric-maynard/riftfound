@@ -702,6 +702,250 @@ export function gameScore(match: PlayerMatch): string {
 }
 
 // ---------------------------------------------------------------------------
+// Rating movement: what the match log can honestly say about a day's play
+// ---------------------------------------------------------------------------
+
+/**
+ * **There is no per-match rating delta, anywhere, and there cannot be one.**
+ *
+ * This section exists because "+18 for this win" is the obvious thing to want
+ * beside a match, and the engine behind this page is not the kind that
+ * produces it. Writing down why, once, so nobody re-derives a number the model
+ * never computed:
+ *
+ *  - The engine is **Whole-History Rating** (`scraper/src/ranking/whr.ts`), not
+ *    Elo. Elo is an update rule, so a per-match delta is the only thing it
+ *    *has*. WHR is a single global fit over every recorded match at once: it
+ *    maximises one posterior and reports where each player's curve ended up.
+ *    No match is credited with a share of the result.
+ *  - **The fit's time axis is the day.** A player gets one rating per *day they
+ *    played* (`fit.days[p]`), tied to the next by a Wiener prior. Four matches
+ *    at one event move one curve point between them, and the model holds no
+ *    opinion about how to split that movement across them. So the finest grain
+ *    an honest figure can have is a **day**, and that is the grain used here.
+ *  - It is **retroactive**. A refit can move the rating for a day months past,
+ *    because beating someone who later turns out to be strong improves your
+ *    rating *at the time*. The figure is therefore "what the latest fit says
+ *    about that day", never "what was awarded on the day".
+ *
+ * What is left that is real: both endpoints of the movement are **published,
+ * dated ratings** - the very points `/api/players/:id/ratings` draws the chart
+ * from - so the difference between them is arithmetic on two numbers this page
+ * already prints, and the match log cannot disagree with the chart above it.
+ * The engine rounds each point to a whole rating before storing it, so the
+ * difference is exact with respect to what the reader sees rather than a
+ * rounding of some finer truth.
+ *
+ * Three factors a reader might expect are deliberately **not** offered, each
+ * for a measured reason rather than a stylistic one:
+ *
+ *  - **An event-tier multiplier.** The mechanism exists (`WhrOptions.tierWeights`)
+ *    and ships *neutral*: every tier counts 1, because zero matches exist in
+ *    any tier above Nexus Night and the one weighting that moved held-out log
+ *    loss turned out to be the global `weightScale` under another name. A line
+ *    reading "x1.00" on every row of every match is furniture.
+ *  - **A cross-scene adjustment.** A scene is a connected component of the
+ *    co-play graph, so a game across two of them would merge them: measured on
+ *    production, **0 of 56,257 recorded games cross a scene**. The term would
+ *    be zero on every match on the site. The engine's `crossComponentUncertainty`
+ *    widens a margin by a median of 1.2 points (ratio 1.011), which is not a
+ *    factor, it is a rounding error.
+ *  - **The drift allowance** between two play days. It is a real term
+ *    (`driftEloPerSqrtDay`), but the knob is *not identifiable from the data* -
+ *    held-out log loss is flat to four decimal places from 0.5 to 16 - so it is
+ *    a prior belief, and publishing `±11 of allowed drift` would dress one up
+ *    as a measurement.
+ */
+export interface RatingMove {
+  /** `YYYY-MM-DD` UTC - the engine's own time axis, and the match log's. */
+  date: string;
+  /** The fit's rating for this day, as published. */
+  rating: number;
+  /** Its margin. Never dropped: see `publishableRating` on the API side. */
+  uncertainty: number | null;
+  /** The previous day this player played, or null on their first one. */
+  previousDate: string | null;
+  previousRating: number;
+  previousUncertainty: number | null;
+  /** `rating - previousRating`: a difference of two published numbers. */
+  delta: number;
+  /**
+   * True when the comparison is against the starting anchor rather than a day
+   * that was played. Everyone starts at `RATING_ANCHOR`, so the first recorded
+   * day's movement is real and has to be labelled as what it is.
+   */
+  fromAnchor: boolean;
+  /**
+   * Is the movement smaller than the day's own margin?
+   *
+   * The house rule is that a rating is published with its uncertainty, and a
+   * *movement* has to answer to it too: a +18 under a ±98 has not separated
+   * anything, and that is the single most useful thing to say about it. null
+   * when no margin was recorded, because "false" would be a claim.
+   */
+  withinMargin: boolean | null;
+}
+
+/**
+ * The movement for each day of a rating series, keyed on its date.
+ *
+ * Takes the series exactly as the chart gets it. Sorted defensively - the API
+ * queries the `RATING#<scope>#<date>` sort key ascending, so it already
+ * arrives in order, but the whole point of this function is that consecutive
+ * points are what a movement is *between*.
+ *
+ * Note the ceiling the series brings with it: the endpoint serves the first
+ * `limit` (default 100) play days, which is also what the chart draws. A day
+ * past that has no point and therefore no movement, and the match log says
+ * nothing rather than guessing - the same answer the chart gives by not
+ * plotting it.
+ */
+export function ratingMoves(
+  points: RatingPoint[],
+  anchor: number = RATING_ANCHOR
+): Map<string, RatingMove> {
+  const ordered = [...points].sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+  const moves = new Map<string, RatingMove>();
+
+  ordered.forEach((point, index) => {
+    const previous = index > 0 ? ordered[index - 1] : null;
+    const previousRating = previous ? previous.rating : anchor;
+    const delta = point.rating - previousRating;
+    moves.set(point.date, {
+      date: point.date,
+      rating: point.rating,
+      uncertainty: point.uncertainty,
+      previousDate: previous ? previous.date : null,
+      previousRating,
+      previousUncertainty: previous ? previous.uncertainty : null,
+      delta,
+      fromAnchor: previous === null,
+      withinMargin:
+        point.uncertainty === null || point.uncertainty === undefined
+          ? null
+          : Math.abs(delta) <= point.uncertainty,
+    });
+  });
+
+  return moves;
+}
+
+/** `+18`, `-7`, `0`. The sign is the signal, so zero carries none. */
+export function formatRatingDelta(delta: number): string {
+  const rounded = Math.round(delta);
+  if (rounded === 0) return '0';
+  return `${rounded > 0 ? '+' : '−'}${Math.abs(rounded).toLocaleString()}`;
+}
+
+/** `up`, `down` or `flat` - for the class name and for the spoken form. */
+export function ratingMoveDirection(delta: number): 'up' | 'down' | 'flat' {
+  const rounded = Math.round(delta);
+  if (rounded > 0) return 'up';
+  if (rounded < 0) return 'down';
+  return 'flat';
+}
+
+/**
+ * The whole movement as one sentence, for a screen reader.
+ *
+ * The visible chip is a figure plus an arrow, and an arrow announces as
+ * nothing. This is the accessible name, so it carries the margin too - a bare
+ * "up 18" is exactly the unqualified number the margin exists to qualify.
+ */
+export function ratingMoveSummary(move: RatingMove): string {
+  const margin = formatUncertainty(move.uncertainty);
+  const to = `${formatRating(move.rating)}${margin ? ` plus or minus ${Math.round(move.uncertainty as number)}` : ''}`;
+  const direction = ratingMoveDirection(move.delta);
+  const movement =
+    direction === 'flat'
+      ? 'unchanged'
+      : `${direction} ${Math.abs(Math.round(move.delta)).toLocaleString()}`;
+  const from = move.fromAnchor
+    ? `the ${formatRating(move.previousRating)} starting rating`
+    : `${formatRating(move.previousRating)} on ${formatDate(move.previousDate)}`;
+  const caveat =
+    move.withinMargin === true ? ' The movement is smaller than that margin.' : '';
+  return `Rating ${to} after this day, ${movement} from ${from}.${caveat}`;
+}
+
+/**
+ * The three short line items the breakdown prints, plus their labels.
+ *
+ * Kept as data rather than JSX so the wording is testable without a DOM, which
+ * is how every other claim on these pages is pinned.
+ */
+export const RATING_MOVE_GRAIN_NOTE =
+  'One rating per day played, not per match - the fit has no per-match figure.';
+
+export const RATING_MOVE_REFIT_NOTE =
+  'Fitted over the whole history, so a later refit can move it.';
+
+/** The hover/focus hint on the affordance itself. */
+export const RATING_MOVE_HINT =
+  'The rating this day left the player on, with its margin, and how far it moved from the day before.';
+
+/**
+ * One day of the match log: the matches played on it, and whether we have all
+ * of them.
+ *
+ * The day is the unit because the fit's time axis is (see `RatingMove`), and
+ * grouping is what keeps the movement from being printed once per match - four
+ * rows each reading `+18` over a day that moved 18 in total is a four-fold
+ * overstatement a reader has no way to see through.
+ */
+export interface MatchDay {
+  /** `YYYY-MM-DD` UTC, joining exactly to a rating point's `date`. */
+  date: string;
+  matches: PlayerMatch[];
+  record: Record_;
+  /** Games recorded across the day's matches. */
+  games: number;
+  /**
+   * False when the match log is paginated mid-day, so these are *some* of the
+   * day's matches. The movement is still the day's movement; the record beside
+   * it would not be the day's record, so it is not presented as one.
+   */
+  complete: boolean;
+}
+
+/**
+ * Group the loaded match log into days, newest first.
+ *
+ * Order is preserved rather than sorted: the API returns the log newest-first
+ * off the `MATCH#<iso>` sort key, the same assumption `recentForm` states.
+ *
+ * `eventDate` is the engine's own UTC day (`utcDate(event.startDate)` in
+ * `scraper/src/ranking/snapshot.ts`), which is the same value its rating points
+ * are keyed on, so the join needs no date arithmetic. `playedAt` is the same
+ * instant in ISO form, so its first ten characters are the identical day - a
+ * fallback for a log entry served without the field rather than a conversion.
+ */
+export function matchDays(matches: PlayerMatch[], moreToLoad = false): MatchDay[] {
+  const days: MatchDay[] = [];
+  const byDate = new Map<string, MatchDay>();
+
+  for (const match of matches) {
+    const date = match.eventDate ?? match.playedAt.slice(0, 10);
+    let day = byDate.get(date);
+    if (!day) {
+      day = { date, matches: [], record: { wins: 0, losses: 0, draws: 0 }, games: 0, complete: true };
+      byDate.set(date, day);
+      days.push(day);
+    }
+    day.matches.push(match);
+    day.games += match.games.length;
+    if (match.outcome === 'win') day.record.wins += 1;
+    else if (match.outcome === 'loss') day.record.losses += 1;
+    else if (match.outcome === 'draw') day.record.draws += 1;
+  }
+
+  // Only the oldest loaded day can be cut in half by the page boundary.
+  if (moreToLoad && days.length > 0) days[days.length - 1].complete = false;
+
+  return days;
+}
+
+// ---------------------------------------------------------------------------
 // Rating chart geometry
 // ---------------------------------------------------------------------------
 

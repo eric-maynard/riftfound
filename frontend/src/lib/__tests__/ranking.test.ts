@@ -29,7 +29,15 @@ import {
   outcomeWord,
   recentForm,
   recordSpoken,
+  matchDays,
   matchRecord,
+  formatRatingDelta,
+  ratingMoveDirection,
+  ratingMoves,
+  ratingMoveSummary,
+  RATING_MOVE_GRAIN_NOTE,
+  RATING_MOVE_HINT,
+  RATING_MOVE_REFIT_NOTE,
   nearestPointIndex,
   niceTicks,
   parseChartDate,
@@ -764,5 +772,168 @@ describe('positions on a ladder that mixes scenes', () => {
     );
     expect(sceneSizeHint(entry({ componentSize: 1 }))).toBe('Scene of 1 player.');
     expect(sceneSizeHint(entry({ componentSize: null }))).toBe('Scene size not recorded.');
+  });
+});
+
+/*
+ * Rating movement.
+ *
+ * The property under test is not a format, it is a *grain*: the engine is
+ * Whole-History Rating, it fits one rating per day played, and there is no
+ * per-match delta for anything to report. So these pin that a day of four
+ * matches produces one movement rather than four, that both ends of it are
+ * published numbers carrying their margins, and that the movement is measured
+ * against the anchor on a player's first recorded day rather than against
+ * nothing.
+ */
+describe('rating movement', () => {
+  const log = (
+    date: string,
+    id: string,
+    outcome: PlayerMatch['outcome'],
+    games = 2
+  ): PlayerMatch => ({
+    matchId: id,
+    playedAt: `${date}T19:00:00.000Z`,
+    opponentId: 'o',
+    opponentDisplayName: 'Opponent',
+    outcome,
+    games: Array.from({ length: games }, (_, index) => ({
+      gameNumber: index + 1,
+      outcome: index === 0 ? ('win' as const) : ('loss' as const),
+    })),
+    eventExternalId: 'e',
+    eventName: 'Event',
+    shopId: '1',
+    latitude: null,
+    longitude: null,
+    eventDate: date,
+    tournamentType: 'Nexus Night',
+    setId: 'radiance',
+  });
+
+  it('measures the first recorded day against the anchor, and says so', () => {
+    // Everyone starts at 1,200 - that is the prior mean, not a measurement -
+    // so the first day's movement is real but is a movement off a starting
+    // point rather than off a day that was played.
+    const moves = ratingMoves([point('2026-10-11', 1218, 104)]);
+    const first = moves.get('2026-10-11')!;
+    expect(first.fromAnchor).toBe(true);
+    expect(first.previousDate).toBeNull();
+    expect(first.previousRating).toBe(RATING_ANCHOR);
+    expect(first.delta).toBe(18);
+  });
+
+  it('is the difference between two published, dated ratings', () => {
+    // Not a model output: arithmetic on the two numbers the chart draws, which
+    // the engine has already rounded, so it is exact with respect to what the
+    // reader sees.
+    const moves = ratingMoves([point('2026-10-11', 1225, 104), point('2026-10-18', 1243, 98)]);
+    const second = moves.get('2026-10-18')!;
+    expect(second.fromAnchor).toBe(false);
+    expect(second.previousDate).toBe('2026-10-11');
+    expect(second.previousRating).toBe(1225);
+    expect(second.previousUncertainty).toBe(104);
+    expect(second.delta).toBe(18);
+  });
+
+  it('answers to the margin, because a movement inside it has separated nothing', () => {
+    const settled = ratingMoves([point('2026-10-11', 1225, 104), point('2026-10-18', 1243, 98)]);
+    expect(settled.get('2026-10-18')!.withinMargin).toBe(true);
+    // A move larger than the margin is the interesting case and says so.
+    const big = ratingMoves([point('2026-10-11', 1225, 40), point('2026-10-18', 1400, 38)]);
+    expect(big.get('2026-10-18')!.withinMargin).toBe(false);
+    // No margin recorded is not "outside the margin": it is unknown, and
+    // `false` would be a claim this has no basis for.
+    const bare = ratingMoves([point('2026-10-11', 1225, null)]);
+    expect(bare.get('2026-10-11')!.withinMargin).toBeNull();
+  });
+
+  it('orders the series itself rather than trusting the order it arrived in', () => {
+    const moves = ratingMoves([point('2026-10-18', 1243, 98), point('2026-10-11', 1225, 104)]);
+    expect(moves.get('2026-10-18')!.previousDate).toBe('2026-10-11');
+    expect(moves.get('2026-10-11')!.fromAnchor).toBe(true);
+  });
+
+  it('has nothing to say about a day the series has no point for', () => {
+    // The series is capped at the endpoint's limit, which is also what the
+    // chart draws, so the match log stays silent exactly where the chart does.
+    expect(ratingMoves([]).size).toBe(0);
+    expect(ratingMoves([point('2026-10-11', 1225)]).get('2026-10-18')).toBeUndefined();
+  });
+
+  it('formats the figure with its sign, and zero without one', () => {
+    expect(formatRatingDelta(18)).toBe('+18');
+    expect(formatRatingDelta(-7)).toBe('−7');
+    expect(formatRatingDelta(0)).toBe('0');
+    expect(ratingMoveDirection(18)).toBe('up');
+    expect(ratingMoveDirection(-7)).toBe('down');
+    expect(ratingMoveDirection(0)).toBe('flat');
+  });
+
+  it('never announces the movement without the margin', () => {
+    // The house rule: a number published without its margin is the bare figure
+    // the margin exists to qualify. The visible chip is a figure and an arrow,
+    // so this string is the whole of what a screen reader gets.
+    const moves = ratingMoves([point('2026-10-11', 1225, 104), point('2026-10-18', 1243, 98)]);
+    const spoken = ratingMoveSummary(moves.get('2026-10-18')!);
+    expect(spoken).toContain('1,243');
+    expect(spoken).toContain('plus or minus 98');
+    expect(spoken).toContain('up 18');
+    expect(spoken).toContain('smaller than that margin');
+    // And the first day names the anchor rather than implying a previous day.
+    const firstDay = ratingMoves([point('2026-10-11', 1218, 104)]).get('2026-10-11')!;
+    expect(ratingMoveSummary(firstDay)).toContain('1,200 starting rating');
+  });
+
+  it('says the grain out loud, and that the figure is revisable', () => {
+    // The two things that stop a reader taking it for an Elo award.
+    expect(RATING_MOVE_GRAIN_NOTE).toContain('per day played, not per match');
+    expect(RATING_MOVE_REFIT_NOTE).toContain('whole history');
+    expect(RATING_MOVE_HINT).toContain('margin');
+    // And the factors that do not exist in this engine are not named anywhere:
+    // no tier multiplier (the table ships neutral) and no cross-scene term
+    // (0 of 56,257 recorded games cross a scene).
+    const copy = [RATING_MOVE_GRAIN_NOTE, RATING_MOVE_REFIT_NOTE, RATING_MOVE_HINT].join(' ');
+    expect(copy).not.toMatch(/multiplier|cross-scene|skirmish/i);
+  });
+
+  it('groups the log by the day played, so one day reports one movement', () => {
+    // The overstatement this prevents: four rows each reading `+18` over a day
+    // that moved 18 in total.
+    const days = matchDays([
+      log('2026-10-18', 'a', 'win'),
+      log('2026-10-18', 'b', 'win'),
+      log('2026-10-18', 'c', 'loss'),
+      log('2026-10-11', 'd', 'draw'),
+    ]);
+    expect(days.map((day) => day.date)).toEqual(['2026-10-18', '2026-10-11']);
+    expect(days[0].matches.map((entry) => entry.matchId)).toEqual(['a', 'b', 'c']);
+    expect(days[0].record).toEqual({ wins: 2, losses: 1, draws: 0 });
+    expect(days[0].games).toBe(6);
+    expect(days[1].record).toEqual({ wins: 0, losses: 0, draws: 1 });
+  });
+
+  it('joins to a rating point with no date arithmetic at all', () => {
+    // Both sides are the engine's own UTC day of the event's start, so the key
+    // is shared by construction - which is the reason this needs no API change.
+    const days = matchDays([log('2026-10-18', 'a', 'win')]);
+    const moves = ratingMoves([point('2026-10-11', 1225), point('2026-10-18', 1243)]);
+    expect(moves.has(days[0].date)).toBe(true);
+  });
+
+  it('marks only the oldest loaded day as possibly part-loaded', () => {
+    // The page boundary can fall inside a day. The movement is still the
+    // day's; its record would not be, so the day is flagged rather than
+    // reporting a partial record as a whole one.
+    const matches = [log('2026-10-18', 'a', 'win'), log('2026-10-11', 'b', 'loss')];
+    expect(matchDays(matches, true).map((day) => day.complete)).toEqual([true, false]);
+    expect(matchDays(matches, false).map((day) => day.complete)).toEqual([true, true]);
+    expect(matchDays([], true)).toEqual([]);
+  });
+
+  it('falls back to the timestamp when a log entry carries no event date', () => {
+    const undated = { ...log('2026-10-18', 'a', 'win'), eventDate: null };
+    expect(matchDays([undated])[0].date).toBe('2026-10-18');
   });
 });

@@ -6,21 +6,26 @@ import RatingChart from '../components/RatingChart';
 import RecordBar from '../components/RecordBar';
 import FormStrip from '../components/FormStrip';
 import SetScope from '../components/SetScope';
+import RatingMoveNote from '../components/RatingMoveNote';
 import {
   ALL_SETS,
   ALL_SETS_LABEL,
   buildScope,
   formatDate,
   formatRating,
+  formatRecord,
   formatUncertainty,
   gameScore,
   gateProgress,
+  matchDays,
   matchRecord,
   outcomeLetter,
   outcomeWord,
   provisionalShortReason,
   ratingDisplay,
   ratingExplanation,
+  ratingMoves,
+  recordSpoken,
   setLabel,
   UNRANKED_LABEL,
   UNRANKED_NO_GAMES_EXPLANATION,
@@ -218,6 +223,13 @@ function PlayerPage() {
         provisionalReason: profile.provisionalReason,
       };
   const record = matchRecord(matches);
+  // The match log, grouped by the day played, and what the fit says each of
+  // those days did to the rating. Both come from data already on the page -
+  // `points` is the series the chart draws - so the two cannot disagree and no
+  // extra request is made. `hasMore` is passed because the page boundary can
+  // fall inside a day, and a part-loaded day must not report a day's record.
+  const days = matchDays(matches, hasMore);
+  const moves = ratingMoves(points);
 
   // The same three states as every other surface, from the same rule. The
   // headline prints the number whenever the engine will quote one - muted and
@@ -431,10 +443,37 @@ function PlayerPage() {
           </div>
         ) : (
           <>
-            <ol className="match-list">
-              {matches.map((match) => (
-                <MatchRow key={match.matchId} match={match} />
-              ))}
+            {/* Grouped by the day played, because that is the grain the rating
+                engine works at - see `RatingMove` in lib/ranking.ts. The day
+                header carries the date (so the rows no longer repeat it) and,
+                where the series has a point for that day, what the rating did. */}
+            <ol className="match-days">
+              {days.map((day) => {
+                const move = moves.get(day.date) ?? null;
+                return (
+                  <li key={day.date} className="match-day">
+                    <div className="match-day-head">
+                      <h3 className="match-day-date">{formatDate(day.date)}</h3>
+                      {day.complete && (
+                        <span className="match-day-record">
+                          <span aria-hidden="true">{formatRecord(day.record)}</span>
+                          <span className="sr-only">{recordSpoken(day.record)}</span>
+                        </span>
+                      )}
+                      {/* Nothing at all when the series has no point for this
+                          day: an unrated player has no published curve, and a
+                          dash would invite the reading that the rating stood
+                          still. The chart above says why in words. */}
+                      {move && <RatingMoveNote move={move} day={day} />}
+                    </div>
+                    <ol className="match-list">
+                      {day.matches.map((match) => (
+                        <MatchRow key={match.matchId} match={match} />
+                      ))}
+                    </ol>
+                  </li>
+                );
+              })}
             </ol>
             {hasMore && (
               <button type="button" className="load-more" onClick={loadMoreMatches} disabled={loadingMore}>
@@ -508,10 +547,21 @@ function SetRatingCells({
  * One match, read left to right off a result stripe on the leading edge.
  *
  * The order is op.gg's - verdict, then what was played, then against whom,
- * then where and when - because that is the order the question is usually
- * asked in. The Bo3 game chips sit next to the match score rather than in
- * their own column: "2-1" and "W L W" are the same fact at two resolutions,
- * and splitting them made the eye travel twice.
+ * then where - because that is the order the question is usually asked in. The
+ * Bo3 game chips sit next to the match score rather than in their own column:
+ * "2-1" and "W L W" are the same fact at two resolutions, and splitting them
+ * made the eye travel twice.
+ *
+ * **The date is the day header's, not the row's.** It used to sit on the right
+ * of every row; now that the log is grouped by day, printing it again on each
+ * of a day's four rows is the same figure four times.
+ *
+ * **The event name is a link to the event's page.** It is never a dead end,
+ * and that is structural rather than lucky: this row exists because the rating
+ * engine replayed a *results capture* for that event, which is exactly the
+ * condition `hasTournament` tests before the calendar is allowed to show a
+ * trophy. An event whose organiser never ran pairings (`status: 'none'`, ~29%
+ * of finished events) produces no matches, so it can never appear here.
  *
  * The venue keeps its shop id on the element. A map of the 390 known venues is
  * the next thing this section wants, and it will want to address these rows.
@@ -561,14 +611,24 @@ function MatchRow({ match }: { match: PlayerMatch }) {
       </span>
 
       <span className="match-event">
-        <span className="event-name">{match.eventName ?? 'Unnamed event'}</span>
+        {match.eventExternalId ? (
+          <Link
+            to={carryPreview(`/events/${encodeURIComponent(match.eventExternalId)}`, search)}
+            className="event-name event-link"
+          >
+            {match.eventName ?? 'Unnamed event'}
+          </Link>
+        ) : (
+          // No id to address: the engine keeps the event's own `external_id` on
+          // every log entry, so this is the shape an older refit would send
+          // rather than a state the data produces.
+          <span className="event-name">{match.eventName ?? 'Unnamed event'}</span>
+        )}
         <span className="event-meta">
           {match.tournamentType && <span className="meta-chip">{match.tournamentType}</span>}
           {match.shopId && <span className="meta-venue">Venue {match.shopId}</span>}
         </span>
       </span>
-
-      <span className="match-when">{formatDate(match.eventDate ?? match.playedAt)}</span>
     </li>
   );
 }

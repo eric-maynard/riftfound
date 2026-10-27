@@ -2608,6 +2608,165 @@ td.is-unsettled .rating-value,
    Match history
    --------------------------------------------------------------- */
 
+/* The log is grouped by the day played, because that is the grain the rating
+   engine fits at. The date and the day's rating movement live on the header;
+   the rows below it carry neither. */
+.match-days {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+/* Baseline, not centre. The rating-movement disclosure opens *inside* this row
+   and makes it tall, and centring would then drop the date halfway down an
+   expanded panel - the header would look broken for as long as the panel was
+   open. Baselines keep the date and the figure on one line and let the panel
+   hang below them. */
+.match-day-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.35rem 0.75rem;
+  padding: 0 0.1rem 0.35rem;
+}
+
+.match-day-date {
+  font-size: var(--t-meta);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--color-text-muted-lifted);
+}
+
+.match-day-record {
+  font-size: var(--t-meta);
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-muted);
+}
+
+/* The day's rating movement, and the disclosure that says what it is made of.
+   `margin-left: auto` on a wrapping flex row, so it sits at the end on a wide
+   header and drops onto its own line rather than squeezing the date. */
+.rating-move {
+  position: relative;
+  margin-left: auto;
+  flex-basis: 100%;
+  order: 3;
+}
+
+@media (min-width: 560px) {
+  .rating-move {
+    flex-basis: auto;
+    order: 0;
+  }
+}
+
+.rating-move-toggle {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.45rem;
+  min-height: 44px;              /* a real touch target: this is the breakdown */
+  padding: 0.2rem 0.55rem;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 0.35rem;
+  color: var(--color-text);
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  text-align: left;
+}
+
+.rating-move-toggle:hover,
+.rating-move-toggle[aria-expanded='true'] {
+  border-color: var(--color-border);
+  background-color: var(--row-hover);
+}
+
+.rating-move-rating {
+  font-weight: 600;
+}
+
+/* The margin is never optional beside a rating, so it is styled as part of the
+   figure rather than as a note next to it. */
+.rating-move-margin {
+  margin-left: 0.3rem;
+  font-size: var(--t-meta);
+  font-weight: 400;
+  color: var(--color-text-muted);
+}
+
+.rating-move-delta {
+  font-size: var(--t-meta);
+  font-weight: 600;
+}
+
+.rating-move-delta.is-up {
+  color: var(--color-green-text);
+}
+
+.rating-move-delta.is-down {
+  color: var(--color-red-text);
+}
+
+.rating-move-delta.is-flat {
+  color: var(--color-text-muted);
+}
+
+/* The arrow is a second channel on top of the sign, so the figure survives
+   greyscale the way every other result on these pages does. */
+.rating-move-arrow {
+  margin-right: 0.15rem;
+  font-size: 0.6em;
+}
+
+/* Inline, not a floating card: at 390px a positioned popover is what drags a
+   page sideways, and this one is a column of text. */
+.rating-move-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  margin-top: 0.3rem;
+  padding: 0.6rem 0.75rem;
+  max-width: 44ch;
+  background-color: var(--panel);
+  border: 1px solid var(--color-border);
+  border-radius: 0.4rem;
+  font-size: var(--t-meta);
+  line-height: 1.45;
+}
+
+.rating-move-panel > div {
+  display: grid;
+  grid-template-columns: 5.5rem minmax(0, 1fr);
+  gap: 0.5rem;
+}
+
+.rating-move-panel dt {
+  color: var(--color-text-muted);
+}
+
+.rating-move-panel dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.rating-move-from,
+.rating-move-to {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.rating-move-arrow-to {
+  margin: 0 0.35rem;
+  color: var(--color-text-muted);
+}
+
+.rating-move-qualifier {
+  color: var(--color-text-muted);
+}
+
 .match-list {
   list-style: none;
   display: flex;
@@ -2616,13 +2775,15 @@ td.is-unsettled .rating-value,
 }
 
 /* One row, read left to right off the stripe: verdict, what was played,
-   against whom, where, when. The shop id stays on the element - a map of the
-   390 known venues is the next thing this section wants. */
+   against whom, where. The date is the day header's - repeating it on each of
+   a day's rows is the same figure four times. The shop id stays on the
+   element - a map of the 390 known venues is the next thing this section
+   wants. */
 .match-row {
   position: relative;
   display: grid;
-  grid-template-columns: 6.5rem 7.5rem minmax(0, 0.9fr) minmax(0, 1.5fr) auto;
-  grid-template-areas: 'verdict games opponent event when';
+  grid-template-columns: 6.5rem 7.5rem minmax(0, 0.9fr) minmax(0, 1.5fr);
+  grid-template-areas: 'verdict games opponent event';
   align-items: center;
   gap: 0.4rem 1rem;
   padding: 0.55rem 0.9rem 0.55rem 1.1rem;
@@ -2829,13 +2990,16 @@ td.is-unsettled .rating-value,
   overflow-wrap: anywhere;
 }
 
-.match-when {
-  grid-area: when;
-  font-size: var(--t-meta);
-  color: var(--color-text-muted);
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-  text-align: right;
+/* The event's own page, which this row is always able to reach: the row exists
+   because a results capture for that event was replayed.
+
+   It takes the site's own link colour rather than a quieter one of its own.
+   There is no established "quiet link" idiom here, and a link nobody can see
+   is not a link - the opponent's name beside it is already this colour on this
+   exact surface, so the contrast this inherits is one that has been measured
+   rather than one claimed afresh. */
+.event-link:focus-visible {
+  text-decoration: underline;
 }
 
 /* ---------------------------------------------------------------
@@ -2908,16 +3072,12 @@ td.is-unsettled .rating-value,
   }
 
   .match-row {
-    grid-template-columns: auto minmax(0, 1fr) auto;
+    grid-template-columns: auto minmax(0, 1fr);
     grid-template-areas:
-      'verdict  games    when'
-      'opponent opponent opponent'
-      'event    event    event';
+      'verdict  games'
+      'opponent opponent'
+      'event    event';
     gap: 0.35rem 0.75rem;
-  }
-
-  .match-when {
-    justify-self: end;
   }
 }
 
