@@ -3803,3 +3803,389 @@ td.is-unsettled .rating-value,
 .event-tooltip-standings:focus-visible {
   text-decoration: underline;
 }
+
+/* ===================================================================
+   The scene map (/rankings/map)
+   ===================================================================
+   A flat column of sibling sections like the rest of this section, so it
+   restacks on a phone with no second layout: coverage line, map, the selected
+   scene, then the list of every scene.
+
+   The page is wider than the ladder. `.ranking-page` caps at 74ch, which is
+   right for a column of rows and wrong for a world map - at 74ch a map is a
+   letterbox and the Pacific does not fit in it.
+   =================================================================== */
+
+.scenes-page {
+  max-width: 96ch;
+}
+
+/* The way in, from the ladder's filter row. Reads as a link beside the
+   controls, not as a fifth control. */
+.scene-map-link {
+  align-self: center;
+  font-size: var(--t-body);
+  font-weight: 600;
+  color: var(--color-cyan);
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.scene-map-link:hover,
+.scene-map-link:focus-visible {
+  text-decoration: underline;
+}
+
+/* The caveat, above the thing it qualifies. */
+.scene-map-coverage {
+  margin: 0 0 0.75rem;
+  font-size: var(--t-body);
+  color: var(--color-text-muted);
+}
+
+.scene-map {
+  height: 60vh;
+  /* Tall enough to be a map and short enough that the list below it is
+     visible on a laptop without scrolling - the list is the keyboard surface,
+     so it must not be entirely below the fold. */
+  min-height: 320px;
+  max-height: 560px;
+  margin-bottom: 1rem;
+  border: 1px solid var(--color-border);
+  border-radius: 0.5rem;
+  /* Leaflet draws tiles beyond its container until told otherwise. */
+  overflow: hidden;
+  /* The basemap is dark, and this shows through while tiles load rather than
+     flashing Leaflet's default grey. */
+  background-color: var(--color-bg-tertiary);
+  /* Above the page, below the calendar's tooltip (10000) and FullCalendar's
+     popover - neither is on this page, but the stacking context is global. */
+  z-index: 1;
+}
+
+/* The basemap, darkened.
+   There is no keyless dark OSM raster and this app is dark throughout, so the
+   tiles are inverted and hue-rotated back - roads and labels become light on
+   dark while the greens and blues stay roughly themselves. It costs no
+   request, leaves attribution untouched (the control is not a tile), and
+   tracks whatever VITE_MAP_TILE_URL is set to. A Mapbox *dark* style would
+   want this rule gone; see components/SceneMap.tsx.
+
+   The markers must not be filtered with it, which is why this targets the
+   tile images and not the pane: inverting the Dracula purple would undo every
+   contrast measurement in this file. */
+.scene-map .leaflet-tile {
+  filter: invert(1) hue-rotate(180deg) brightness(0.92) contrast(0.9) saturate(0.7);
+}
+
+/* Leaflet's own chrome, in the app's palette rather than its default white.
+   Scoped to `.scene-map`, and specific enough to beat Leaflet's own
+   `.leaflet-container .leaflet-control-*` rules - at equal specificity its
+   stylesheet wins on order and the attribution strip stays white. */
+.scene-map .leaflet-container .leaflet-bar a,
+.scene-map.leaflet-container .leaflet-bar a,
+.scene-map .leaflet-control-attribution,
+.scene-map.leaflet-container .leaflet-control-attribution {
+  background-color: var(--color-bg-tertiary);
+  color: var(--color-text-muted-lifted);
+  border-color: var(--color-border);
+}
+
+.scene-map .leaflet-bar a:hover,
+.scene-map.leaflet-container .leaflet-bar a:hover {
+  background-color: var(--color-bg-secondary);
+  color: var(--color-text);
+}
+
+.scene-map .leaflet-control-attribution a,
+.scene-map.leaflet-container .leaflet-control-attribution a {
+  color: var(--color-cyan);
+}
+
+.scene-map .leaflet-tooltip,
+.scene-map.leaflet-container .leaflet-tooltip {
+  background-color: var(--color-bg-tertiary);
+  border: 1px solid var(--color-border);
+  color: var(--color-text);
+  font-size: var(--t-meta);
+  box-shadow: none;
+}
+
+.scene-map .leaflet-tooltip-top::before {
+  border-top-color: var(--color-border);
+}
+
+/* ---------------------------------------------------------------
+   The selected scene
+   --------------------------------------------------------------- */
+
+.scene-detail {
+  padding: 0.9rem 1rem;
+  margin-bottom: 1rem;
+  background-color: var(--panel);
+  border: 1px solid var(--color-border);
+  border-radius: 0.5rem;
+}
+
+.scene-detail-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.scene-detail-head h2 {
+  margin: 0;
+  font-size: 1.05rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+/* "largest scene": a fact, at label weight, never a medal. */
+.scene-tag {
+  padding: 0.1rem 0.4rem;
+  font-size: var(--t-label);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--color-text-muted-lifted);
+  background-color: var(--chip-draw);
+  border-radius: 0.25rem;
+}
+
+.scene-clear {
+  padding: 0.25rem 0.6rem;
+  font-size: var(--t-meta);
+  color: var(--color-text-muted-lifted);
+  background: none;
+  border: 1px solid var(--color-border);
+  border-radius: 0.25rem;
+  cursor: pointer;
+}
+
+.scene-clear:hover,
+.scene-clear:focus-visible {
+  color: var(--color-text);
+  background-color: var(--row-hover);
+}
+
+.scene-detail-summary {
+  margin: 0.3rem 0 0.6rem;
+  font-size: var(--t-body);
+  color: var(--color-text-muted-lifted);
+  font-variant-numeric: tabular-nums;
+}
+
+.scene-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1.25rem;
+  margin: 0 0 0.6rem;
+}
+
+.scene-facts dt {
+  font-size: var(--t-label);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--color-text-muted);
+}
+
+.scene-facts dd {
+  margin: 0.15rem 0 0;
+  font-size: var(--t-figure);
+  font-variant-numeric: tabular-nums;
+}
+
+/* What the pin claims, and why a scene has none. One line, muted - the page
+   reports, it does not teach. */
+.scene-place-note {
+  margin: 0 0 0.5rem;
+  font-size: var(--t-meta);
+  color: var(--color-text-muted);
+}
+
+.scene-ladder-link {
+  display: inline-block;
+  margin-top: 0.2rem;
+  font-size: var(--t-body);
+  font-weight: 600;
+  color: var(--color-cyan);
+  text-decoration: none;
+}
+
+.scene-ladder-link:hover,
+.scene-ladder-link:focus-visible {
+  text-decoration: underline;
+}
+
+/* ---------------------------------------------------------------
+   The list - the page's keyboard and screen-reader surface, not a fallback
+   --------------------------------------------------------------- */
+
+.scene-list-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 0.4rem;
+}
+
+.scene-search input {
+  width: 16rem;
+  max-width: 100%;
+  padding: 0.4rem 0.6rem;
+  font-size: var(--t-body);
+  color: var(--color-text);
+  background-color: var(--color-bg-tertiary);
+  border: 1px solid var(--color-border);
+  border-radius: 0.3rem;
+}
+
+.scene-search input::placeholder {
+  color: var(--color-text-muted);
+}
+
+.scene-search input:focus-visible {
+  outline: 2px solid var(--color-cyan);
+  outline-offset: 1px;
+}
+
+.scene-list {
+  list-style: none;
+  margin: 0 0 0.75rem;
+  padding: 0;
+  border: 1px solid var(--color-border);
+  border-radius: 0.5rem;
+  overflow: hidden;
+}
+
+.scene-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding-right: 0.75rem;
+  background-color: var(--panel);
+  border-bottom: 1px solid var(--panel-sep);
+}
+
+.scene-row:last-child {
+  border-bottom: none;
+}
+
+.scene-row:hover {
+  background-color: var(--row-hover);
+}
+
+/* The selected row carries the map's selection colour as a rule on its
+   leading edge - the same signal the dot gets, not a second vocabulary. */
+.scene-row.is-selected {
+  background-color: var(--row-hover);
+  box-shadow: inset 3px 0 0 var(--color-cyan);
+}
+
+.scene-row-main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  /* 44px of target, because this is the phone path for selecting a scene. */
+  min-height: 44px;
+  justify-content: center;
+  padding: 0.5rem 0.75rem;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+
+.scene-row-main:focus-visible {
+  outline: 2px solid var(--color-cyan);
+  outline-offset: -2px;
+}
+
+.scene-row-name {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+  font-size: var(--t-body);
+  font-weight: 600;
+}
+
+.scene-row-summary {
+  font-size: var(--t-meta);
+  color: var(--color-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* "not on the map" / "too small to order" - in words, because colour is never
+   the only signal on these pages. */
+.scene-flag {
+  padding: 0.05rem 0.35rem;
+  font-size: var(--t-label);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--color-text-muted-lifted);
+  background-color: var(--chip-draw);
+  border-radius: 0.25rem;
+  cursor: help;
+}
+
+.scene-row-link {
+  flex: none;
+  padding: 0.35rem 0.5rem;
+  font-size: var(--t-meta);
+  font-weight: 600;
+  color: var(--color-cyan);
+  text-decoration: none;
+}
+
+.scene-row-link:hover,
+.scene-row-link:focus-visible {
+  text-decoration: underline;
+}
+
+.scene-foot {
+  margin: 0.5rem 0 0;
+  font-size: var(--t-body);
+}
+
+.scene-foot a {
+  color: var(--color-cyan);
+  text-decoration: none;
+}
+
+.scene-foot a:hover,
+.scene-foot a:focus-visible {
+  text-decoration: underline;
+}
+
+@media (max-width: 600px) {
+  /* A map is worth less of a phone screen than the list is: the list answers
+     "which scenes are there" without panning, and the map is still there
+     above it. */
+  .scene-map {
+    height: 44vh;
+    min-height: 260px;
+  }
+
+  .scene-list-head {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.4rem;
+  }
+
+  .scene-search input {
+    width: 100%;
+  }
+
+  .scene-facts {
+    gap: 0.9rem;
+  }
+}

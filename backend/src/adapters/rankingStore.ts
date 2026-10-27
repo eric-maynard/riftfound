@@ -129,4 +129,58 @@ export interface RankingStore {
    * component index item.
    */
   listComponents(): Promise<Map<string, { regionLabel: string | null; componentSize: number | null; ratedPlayers: number; totalPlayers: number }>>;
+
+  /**
+   * The engine's `COMPONENT#<id>` catalogue, in full, for the scene map.
+   *
+   * Deliberately **not** `listComponents`, which answers a different question
+   * at a different cost: that one summarises the scenes represented on the
+   * global leaderboard's first page, which is what a picker beside a ladder
+   * wants. This is the whole catalogue - one Query on GSI1's `COMPONENT`
+   * partition, 1,235 items on production - which is what a map of every scene
+   * needs and which no page of a board can supply.
+   *
+   * Optional, and allowed to come back empty, exactly like
+   * `listSetCatalogue`: those items only became enumerable once they carried
+   * GSI1 keys, and the place fields on them are newer still. The service
+   * reports "catalogue unavailable" rather than "no scene is located", because
+   * those are different answers.
+   */
+  listSceneCatalogue?(): Promise<SceneCatalogueEntry[]>;
+}
+
+/**
+ * One `COMPONENT#<id>` item as stored, with nothing derived.
+ *
+ * The place fields are all nullable because **null is the normal value**: a
+ * scene whose stores have never been geocoded has no centroid, and an item
+ * written by an engine that predates the fields carries none. Comparability
+ * and the located/unlocated split are decided in the service layer, so this
+ * adapter stays dumb like the others.
+ */
+export interface SceneCatalogueEntry {
+  componentId: string;
+  regionLabel: string | null;
+  componentSize: number | null;
+  playerCount: number | null;
+  ratedCount: number | null;
+  matchCount: number | null;
+  venueCount: number | null;
+  isGiant: boolean;
+  latitude: number | null;
+  longitude: number | null;
+  spreadKm: number | null;
+  /** Distance from the centroid to the scene's nearest venue, km. */
+  nearestVenueKm: number | null;
+  locatedVenues: number | null;
+  locatedMatches: number | null;
+  topVenues: SceneCatalogueVenue[];
+  generatedAt: string | null;
+}
+
+export interface SceneCatalogueVenue {
+  shopExternalId: number | null;
+  latitude: number;
+  longitude: number;
+  matchCount: number;
 }

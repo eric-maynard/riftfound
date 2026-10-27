@@ -10,6 +10,34 @@ const router = Router();
 // answer. See middleware/cacheControl.ts for the cadences.
 router.use(cacheRanking);
 
+// GET /api/rankings/map - every scene with a place, for the map of scenes
+//
+// Mounted **before** `/` so it matches as a literal; there is no `/:param`
+// route on this router today, but the tournaments router already had to be
+// mounted ahead of the events one for exactly this reason, and a future
+// `/:scope` here would otherwise swallow it silently.
+//
+// It takes no parameters at all, deliberately: the whole catalogue is one
+// Query and one cached answer that every reader shares, where a bounding-box
+// or zoom parameter would fragment the edge cache into a key per viewport for
+// a payload of a few hundred kilobytes. Panning a map is a client-side
+// concern. See `cacheRanking` - the catalogue only moves when the engine
+// refits, which is daily.
+router.get('/map', async (_req: Request, res: Response, next: NextFunction) => {
+  try {
+    const result = await rankingService.getSceneMap();
+    res.json({
+      data: {
+        scenes: result.scenes,
+        unlocated: result.unlocated,
+        coverage: result.coverage,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 // GET /api/rankings - a leaderboard page for one scope
 // scope = all | set:<id> | component:<id> | set:<id>#component:<id>
 router.get('/', async (req: Request, res: Response, next: NextFunction) => {

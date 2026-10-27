@@ -148,6 +148,25 @@ export function rankingPK(scope: string) {
   return `${EntityPrefix.RANKING}${scope}`;
 }
 
+/**
+ * GSI1 partitions the engine's catalogue items are enumerable in.
+ *
+ * `SET#<id>`, `COMPONENT#<id>`, `VENUE#<id>` and `SCENE#<id>` each carry
+ * `GSI1PK: '<PARTITION>'` so a whole catalogue is **one Query** with no scan
+ * and no new index - the access pattern those keys were added for. Without
+ * them an item can only be fetched by an id the reader already has, which is
+ * not a list: that is how `/api/sets` ended up inferring set ids from player
+ * profiles and serving them with no name.
+ *
+ * The scraper writes these (`scraper/src/dynamodb.ts`), and the spellings have
+ * to match it exactly, so they are named here rather than inlined at the call
+ * site. `'COMPONENT'` is the scene map's whole read.
+ */
+export const SET_CATALOGUE_PARTITION = 'SET';
+export const COMPONENT_CATALOGUE_PARTITION = 'COMPONENT';
+export const VENUE_CATALOGUE_PARTITION = 'VENUE';
+export const SCENE_CATALOGUE_PARTITION = 'SCENE';
+
 // --- Tournament facts (written by the scraper's playriftboundResults pass) ---
 // RESULTS#<externalId> / RESULTS#<externalId>  - standings, pairings, per-game
 // ROSTER#<externalId>  / ROSTER#<externalId>   - dated registrations

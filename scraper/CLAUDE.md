@@ -1911,6 +1911,132 @@ ages out of the replay window, or a scene a re-clustering retires, is deleted by
 diffing against the scope directory (which now tracks `venueIds` and
 `sceneIds`), so the catalogue Query never serves a pin with no data behind it.
 
+### Giving a connected component a place on a map
+
+`src/ranking/sceneMap.ts`, published on the `COMPONENT#<id>` item. This is what
+the backend's `/api/rankings/map` and the frontend's `/rankings/map` read, and
+it is the one piece of geography in this pass that is **not** about `VENUE#`.
+
+Be precise about which primitive is being located, because this document argues
+at length that they are different things. **This locates a `componentId`**, the
+connected component - not a Louvain `sceneId`. That is a decision forced by the
+data rather than a contradiction of the recommendation above: `SCENE#` items
+require an accepted re-clustering, the first production dry run produced 1,042
+scenes of 2.1 stores each and the CLI correctly refused it, and there are
+**zero** `SCENE#` and zero `VENUE#` items in production today. There are
+**1,235** `COMPONENT#` items, written by every refit. A map built on `SCENE#`
+would be an empty map. When a re-clustering is finally accepted, the same
+derivation applies unchanged to `SCENE#` - `scenePlace` takes venue tallies and
+knows nothing about which partition produced them.
+
+#### Why the derivation lives here and not in the API
+
+Because the join is affordable in exactly one place. A component's coordinates
+are not on the component: they are on the per-player match items
+(`PLAYER#<uuid>` / `MATCH#…`, which denormalise `shopExternalId` and lat/lon),
+and **there is no index from a component to its matches**. Locating 1,235
+components at request time would mean reading every match item of every player.
+During the replay, `findComponents` is already walking every match with its
+event in hand, so the venue tallies are a by-product of a loop that was running
+anyway, and the whole thing is written once a day with the rest of the snapshot.
+
+#### What is published
+
+`Component.venues` (graph.ts) carries, per venue of a component: the venue key,
+the shop id, the matches *of that component* played there, and the **mean** of
+that venue's events' coordinates (the mean for the same reason `VENUE#` uses
+one - the two sources geocode a store ~20m apart, so "whichever event was read
+last" wobbles). `scenePlace` turns that into five fields on the item:
+
+| field | what it is |
+|---|---|
+| `latitude` / `longitude` | match-weighted **spherical** centroid of the located venues |
+| `spreadKm` | match-weighted mean great-circle distance from that centroid |
+| `nearestVenueKm` | distance from that centroid to the **nearest** venue of the scene - the figure that says whether the pin is anywhere anything happens |
+| `locatedVenues` / `locatedMatches` | the evidence it was computed from, to read against `venueCount` / `matchCount` |
+| `topVenues` | the busiest venues, capped at `RANKING_SCENE_MAP_TOP_VENUES` (5), position and match count only - **no name**, so no new free-text surface |
+
+Three things that are deliberate:
+
+- **The centroid is weighted by play, not by venue.** A component playing 400
+  matches at one store and 3 at another is *at* the first store. An unweighted
+  mean would put it a town away from where its games happen.
+- **It is a spherical mean**, not a mean of degrees. A mean of degrees is wrong
+  in two populated places: a component straddling the antimeridian averages
+  +179 and -179 to 0 and lands in the Gulf of Guinea, and a mean of latitudes
+  over-weights high latitudes. Unit vectors in, unit vector out, eight lines.
+- **`spreadKm` is what keeps a single pin honest**, and it is the reason a pin
+  is publishable at all. On the complete California sample the largest
+  community had a **133km mean venue spread** - a corridor, not a city - so a
+  map drawing it as a dot would assert a precision it does not have. The UI
+  draws the spread as a real ground disc beside the dot.
+- **`nearestVenueKm` is what decides whether the pin is published at all**, and
+  it is a different question from the spread. Measured over the 1,302 scenes of
+  a 60-day production replay (2026-10-27, 69,308 matches, 2,414 venues, every
+  one of them geocoded), the centroid-to-nearest-venue distance is:
+
+  | pin to nearest venue | scenes | players | largest scene |
+  |---|---|---|---|
+  | 0-10 km | 1,211 | 15,168 | 191 |
+  | 10-25 km | 56 | 2,698 | 356 |
+  | 25-50 km | 11 | 892 | 259 |
+  | 50-100 km | 4 | 280 | 185 |
+  | 100-250 km | 10 | 2,963 | 1,259 |
+  | 250-500 km | 6 | 7,151 | 5,254 |
+  | 500+ km | 4 | 2,741 | 2,138 |
+
+  The largest scene in the corpus - 5,254 players over 325 venues - has a
+  1,858km spread and a centroid **360km out in the Gulf of Thailand**; a
+  2,138-player one sits **2,080km** into the Pacific. Meanwhile a 259-player
+  scene with a *131km* spread has its centre 26km from a store and is a real
+  place. So the gate is the nearest-venue distance, not the spread, and the API
+  applies it at `SCENE_CENTROID_MAX_KM` (100km, the gap in that table). The
+  engine publishes the number and takes no view; see backend/CLAUDE.md, "The
+  scene map".
+
+#### It refuses to guess, in three specific ways
+
+Each of these is reachable with real data and each publishes nulls rather than
+a plausible-looking coordinate. `rankingSceneMap.test.ts` pins all three.
+
+1. **No located venue, no centroid.** Not the `regionLabel`'s city (that is a
+   different and weaker precision claim wearing the same clothes, and a
+   geocoding call per component), not the first venue that happens to have a
+   geocode, not `0, 0`. A production component reading
+   `regionLabel: 'Rockhampton, Australia'` with no geocoded event is
+   **unlocated**, and the API and UI are required to say so.
+2. **Half a coordinate pair is not a coordinate.** A latitude with no longitude
+   is the obvious route to a pin in the Gulf of Guinea; both are required, in
+   the engine and again in the API's reader.
+3. **An antipodal cancellation yields no centroid.** The resultant of the
+   weighted unit vectors can be ~0, which is not a place. It cannot happen for
+   a real travel region - 0 of 56,257 recorded games cross a component, so a
+   component is reachable on the ground - and it is cheaper to handle than to
+   argue about.
+
+A `geo:` venue key is still *evidence* even though it is never an *identity*:
+the key rounds to ~1km and must not become a durable id (see `scenes.ts`), but
+the event coordinates behind it are real, so the position counts and the id
+comes through null.
+
+#### What this costs
+
+Nothing measurable at write time - it is five numbers and up to five small maps
+on 1,235 items a refit already rewrites, against ~27,000 profiles and ~17,000
+rating points. At read time the whole catalogue is **one GSI1 Query**, measured
+against production on 2026-10-27 at **46 read units for 1,235 items** *before*
+these fields; expect roughly double once they land, which is still a Query and
+still three orders of magnitude off a scan. `RANKING_SCENE_MAP_TOP_VENUES` is
+the knob if the payload ever matters: it is the bulk of the growth.
+
+#### Nothing is located until the next refit
+
+The fields are written by `saveRankingSnapshot` like everything else, so a
+production item only acquires them when a refit next runs with this code
+deployed (`RANKING_REFIT_INTERVAL_HOURS`, 24). Until then every component comes
+back **unlocated** and the map says so - which is the same discipline as every
+other null here. It is not a failure state, and nothing may treat it as one.
+
 ### Idempotency, and the cost of a refit
 
 The pass is a **batch refit from scratch**, deliberately. Incremental state would
@@ -2310,6 +2436,11 @@ Venues and scenes:
   (default: `1`, the measured stability optimum). Read only by
   `scene-recluster.sh` - a refit never clusters; it reads the stored
   assignment.
+- `RANKING_SCENE_MAP_TOP_VENUES`: Venues denormalised onto a `COMPONENT#` item
+  for the scene map, ordered by matches of that component played there
+  (default: `5`). A page-weight knob rather than a modelling one - the item is
+  read in full on every map load, and this is the bulk of its size. See
+  "Giving a connected component a place on a map".
 
 ## Tests
 
@@ -2343,6 +2474,14 @@ properties the design rests on rather than its surface:
   new id, a geocode is never a venue id, a refit with no assignment publishes
   null scenes rather than clustering on the fly, and `componentId` keeps its
   meaning throughout.
+- `rankingSceneMap.test.ts` - locating a scene: the centroid is weighted by
+  play rather than by venue, it is a **spherical** mean (so a scene straddling
+  the antimeridian lands next to its stores rather than in the Gulf of
+  Guinea), the spread is published beside the pin, and each of the three
+  refusals yields nulls rather than a plausible coordinate - no located venue,
+  half a coordinate pair, and an antipodal cancellation. The component walk is
+  exercised too, because the venue tallies the centroid is computed from are a
+  by-product of that loop.
 - `rankingSets.test.ts` - set partitioning, including that an unpublished
   boundary stays unpublished and that filling one in splits the era.
 - `rankingStore.test.ts` - the storage shape against a real throwaway SQLite

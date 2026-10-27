@@ -28,7 +28,8 @@
 import { readFileSync } from 'node:fs';
 import { loadEventNames, loadSceneAssignment } from '../database.js';
 import { ObservationBuilder, dayNumber, type ObservationSet } from './observations.js';
-import { connectivityReport, type ConnectivityReport } from './graph.js';
+import { connectivityReport, findComponents, type ConnectivityReport } from './graph.js';
+import { scenePlace } from './sceneMap.js';
 import { communityReport, venueAggregates, type CommunityReport } from './communities.js';
 import { buildEras, DEFAULT_PRERELEASE_OPTIONS, parseSetTable, parsePrereleaseTypes, type SetEra } from './sets.js';
 import { replayDates, replayFacts, resolveVenueLabels, runRankingPass } from './pass.js';
@@ -411,6 +412,101 @@ async function main(): Promise<void> {
         purity: sceneId ? percent(purityOfVenue.get(venue.venue) ?? 0) : '-',
       };
     })));
+
+    // What the scene map would be published with, computed exactly as
+    // `buildSnapshot` computes it. It is here rather than in a command of its
+    // own because it reads the same observations the venue aggregate above
+    // does, and because the question it answers - "is a single pin an honest
+    // summary of this scene?" - is only answerable beside the venue spread.
+    //
+    // The headline to read is the spread distribution. A median in the tens of
+    // kilometres is a city and a pin is fair; a median in the hundreds means
+    // the map is drawing travel regions, and the ground disc is carrying the
+    // weight rather than decorating it.
+    const components = findComponents(observations);
+    const places = components.components.map(component => ({
+      component,
+      place: scenePlace(component.venues),
+    }));
+    const located = places.filter(entry => entry.place.latitude !== null);
+    const spreads = located
+      .map(entry => entry.place.spreadKm ?? 0)
+      .sort((a, b) => a - b);
+    const pick = (p: number) => (spreads.length === 0 ? 0 : spreads[Math.min(spreads.length - 1, Math.floor(spreads.length * p))]);
+
+    console.log('\n=== SCENE MAP (what COMPONENT# items would carry) ===\n');
+    console.log(table([{
+      scenes: places.length,
+      located: located.length,
+      'located share': percent(places.length > 0 ? located.length / places.length : 0),
+      'players in located scenes': located.reduce((total, entry) => total + entry.component.size, 0),
+      'players in all scenes': places.reduce((total, entry) => total + entry.component.size, 0),
+    }]));
+
+    console.log('\nSpread of a located scene, km (match-weighted mean distance from its pin)');
+    console.log(table([{
+      p10: pick(0.1).toFixed(1),
+      median: pick(0.5).toFixed(1),
+      p90: pick(0.9).toFixed(1),
+      max: (spreads[spreads.length - 1] ?? 0).toFixed(1),
+      'single-venue scenes': spreads.filter(km => km === 0).length,
+    }]));
+
+    // Where a centroid stops being a place. This is the table that decides the
+    // API's dispersed threshold, so it prints the whole ramp rather than a
+    // verdict.
+    console.log('\nScenes by spread, and the players in them');
+    console.log(table(
+      [0, 25, 50, 100, 150, 250, 500, 1000].map((floor, index, all) => {
+        const ceiling = all[index + 1] ?? Infinity;
+        const inBand = located.filter(
+          entry => (entry.place.spreadKm ?? 0) >= floor && (entry.place.spreadKm ?? 0) < ceiling
+        );
+        return {
+          'spread km': ceiling === Infinity ? `${floor}+` : `${floor}-${ceiling}`,
+          scenes: inBand.length,
+          players: inBand.reduce((total, entry) => total + entry.component.size, 0),
+          'largest scene': inBand.reduce((most, entry) => Math.max(most, entry.component.size), 0),
+        };
+      })
+    ));
+
+    // The decisive one. `spreadKm` says how big a scene is; this says whether
+    // its pin is anywhere anything happens. A centroid hundreds of kilometres
+    // from the nearest store is in a void, however defensible the arithmetic.
+    console.log('\nScenes by how far the pin is from the nearest venue of that scene');
+    console.log(table(
+      [0, 10, 25, 50, 100, 250, 500].map((floor, index, all) => {
+        const ceiling = all[index + 1] ?? Infinity;
+        const inBand = located.filter(
+          entry => (entry.place.nearestVenueKm ?? 0) >= floor && (entry.place.nearestVenueKm ?? 0) < ceiling
+        );
+        return {
+          'nearest venue km': ceiling === Infinity ? `${floor}+` : `${floor}-${ceiling}`,
+          scenes: inBand.length,
+          players: inBand.reduce((total, entry) => total + entry.component.size, 0),
+          'largest scene': inBand.reduce((most, entry) => Math.max(most, entry.component.size), 0),
+        };
+      })
+    ));
+
+    console.log('\nBiggest scenes');
+    console.log(table(
+      [...places]
+        .sort((a, b) => b.component.size - a.component.size)
+        .slice(0, 12)
+        .map(({ component, place }) => ({
+          component: component.id,
+          players: component.size,
+          matches: component.matchCount,
+          venues: component.venueCount,
+          located: place.locatedVenues,
+          latitude: place.latitude?.toFixed(4) ?? '-',
+          longitude: place.longitude?.toFixed(4) ?? '-',
+          'spread km': place.spreadKm?.toFixed(1) ?? '-',
+          'nearest km': place.nearestVenueKm?.toFixed(1) ?? '-',
+        }))
+    ));
   }
 
   if (command === 'validate' || command === 'all') {
