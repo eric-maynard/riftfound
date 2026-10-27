@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { ratingDisplay, UNRANKED_LABEL } from '../ranking';
+import { ratingDisplay, sceneTooSmallExplanation, UNRANKED_LABEL } from '../ranking';
 import type {
   TournamentField,
   TournamentMatch,
@@ -7,6 +7,7 @@ import type {
   TournamentResults,
   TournamentRoster,
   TournamentRound,
+  TournamentScene,
 } from '../../types/tournament';
 import {
   fieldComposition,
@@ -20,6 +21,8 @@ import {
   NOT_FINAL_REASON,
   rosterColumns,
   rosterNote,
+  sceneLine,
+  type SceneLine,
   roundIsFinal,
   roundStatusLabel,
   sectionLabel,
@@ -444,5 +447,150 @@ describe('roster', () => {
     // both show ratings that this event did not produce.
     expect(rosterNote(roster(), null)).toContain('counts towards a rating');
     expect(rosterNote(roster(), results({ status: 'none' }))).toContain('no games were recorded');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Which scene the event belongs to
+// ---------------------------------------------------------------------------
+
+function scene(overrides: Partial<TournamentScene> = {}): TournamentScene {
+  return {
+    status: 'scene',
+    matchPlayers: 14,
+    placedPlayers: 14,
+    componentCount: 1,
+    componentId: 'ce3da9bead6',
+    regionLabel: 'Simi Valley, CA',
+    componentSize: 1688,
+    ratedPlayers: 6,
+    comparable: true,
+    playersInScene: 14,
+    ...overrides,
+  };
+}
+
+/**
+ * `sceneLine` is a discriminated union, so a test reads the branch it means
+ * rather than a field that may not be there - which is the whole point of the
+ * union: there is no name on a line that has no scene.
+ */
+function asScene(line: SceneLine) {
+  if (line.kind !== 'scene') throw new Error(`expected a scene, got ${line.kind}`);
+  return line;
+}
+
+function asPending(line: SceneLine) {
+  if (line.kind !== 'pending') throw new Error(`expected pending, got ${line.kind}`);
+  return line;
+}
+
+describe('the scene line', () => {
+  it('names the scene and sizes it by the scene, not by the event', () => {
+    const line = asScene(sceneLine(scene(), 8));
+    // The id travels on the line, so the page builds both links from it
+    // without asserting that a nullable field is not null.
+    expect(line.componentId).toBe('ce3da9bead6');
+    expect(line.name).toBe('Simi Valley, CA');
+    // 1,688 is the whole scene; 14 is this event. The summary must be the
+    // former, or the line is only the field size under a new name.
+    expect(line.summary).toBe('1,688 players · 6 rated');
+    expect(line.partial).toBe(false);
+  });
+
+  it('says what the claim rests on, in the hint rather than inline', () => {
+    const line = asScene(sceneLine(scene(), 8));
+    expect(line.hint).toContain('14 of the 14 players who played here');
+    // The reason an event *has* a scene at all, which is the only thing that
+    // makes this line a fact rather than a guess.
+    expect(line.hint).toContain('chain of recorded games');
+  });
+
+  it('prints zero rated rather than omitting it', () => {
+    // The common case at this coverage: a real scene with nobody over the bar.
+    expect(asScene(sceneLine(scene({ ratedPlayers: 0 }), 8)).summary).toBe(
+      '1,688 players · 0 rated'
+    );
+  });
+
+  it('falls back to the id, never to a home city', () => {
+    // A scene whose stores are not geocoded has no name. The ladder's own
+    // picker shows the id in that state; inventing one from a member's
+    // regionLabel would name the same scene differently on every event page.
+    expect(asScene(sceneLine(scene({ regionLabel: null }), 8)).name).toBe('Scene ce3da9bead6');
+    expect(asScene(sceneLine(scene({ regionLabel: '   ' }), 8)).name).toBe('Scene ce3da9bead6');
+  });
+
+  it('flags a split event instead of asserting one scene', () => {
+    // An event's pairings connect the players they pair, not all of them, and
+    // the engine places a player from the history it last replayed - so this
+    // state is reachable and must not read as unanimous.
+    const line = asScene(sceneLine(scene({ componentCount: 2, playersInScene: 11 }), 8));
+    expect(line.partial).toBe(true);
+    expect(line.hint).toContain('11 of the 14 players');
+    expect(line.hint).toContain('1 other scene');
+  });
+
+  it('carries the scene-size caveat in the ladder own words', () => {
+    // Verbatim `sceneTooSmallExplanation`, the sentence the ladder this line
+    // links to already uses for the same fact - not a second wording of it.
+    const line = asScene(sceneLine(scene({ componentSize: 4, comparable: false }), 8));
+    expect(line.hint).toContain(sceneTooSmallExplanation(4, 8));
+    expect(line.hint).toContain('too small to order anyone (8 players needed)');
+    // The ratings are still real, which is the half a reader needs most.
+    expect(line.hint).toContain('The rating itself stands');
+  });
+
+  it('adds no size caveat to a scene big enough to order', () => {
+    expect(asScene(sceneLine(scene(), 8)).hint).not.toContain('too small to order');
+  });
+
+  it('says nothing at all when nothing was played', () => {
+    // An upcoming event, and the ~29% of finished events whose organiser never
+    // ran pairings. There is no scene, and a line saying so would be the same
+    // absence the page already reports, twice.
+    const line = sceneLine(
+      scene({
+        status: 'no-matches',
+        matchPlayers: 0,
+        placedPlayers: 0,
+        componentCount: 0,
+        componentId: null,
+      }),
+      8
+    );
+    expect(line.kind).toBe('none');
+  });
+
+  it('tells no scene apart from not placed yet', () => {
+    // Games were played; the ladder has not replayed them. Only the second
+    // claim is true, and it is worth one line rather than silence.
+    const line = asPending(
+      sceneLine(
+        scene({ status: 'unplaced', placedPlayers: 0, componentCount: 0, componentId: null }),
+        8
+      )
+    );
+    expect(line.hint).toContain('has not placed any of the 14 players');
+    expect(line.hint).toContain('refit');
+    // And no name at all: the union has none to read on this branch, which is
+    // what stops a page printing an empty one.
+    expect('name' in line).toBe(false);
+  });
+
+  it('reads a lone player as singular', () => {
+    const line = asPending(
+      sceneLine(
+        scene({
+          status: 'unplaced',
+          matchPlayers: 1,
+          placedPlayers: 0,
+          componentCount: 0,
+          componentId: null,
+        }),
+        8
+      )
+    );
+    expect(line.hint).toContain('has not placed the player');
   });
 });

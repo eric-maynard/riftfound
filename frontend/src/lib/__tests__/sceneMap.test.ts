@@ -20,7 +20,6 @@ import {
   sceneBounds,
   sceneCoverageSentence,
   sceneScope,
-  scenePath,
   filterScenes,
   formatSpread,
   UNNAMED_SCENE_LABEL,
@@ -162,13 +161,9 @@ describe('links to the ladder', () => {
   it('uses the scope the ladder already takes', () => {
     // A scene *is* a connected component, so the scope is the one
     // /api/rankings has always accepted. Spelled in one place so the map and
-    // the ladder cannot drift.
+    // the ladder cannot drift. The *paths* are tested in ranking.test.ts,
+    // beside the module they live in.
     expect(sceneScope('c00a489935b')).toBe('component:c00a489935b');
-    expect(scenePath('c00a489935b')).toBe('/rankings?region=c00a489935b');
-  });
-
-  it('encodes an id that needs it', () => {
-    expect(scenePath('a b&c')).toBe('/rankings?region=a%20b%26c');
   });
 });
 

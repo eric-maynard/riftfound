@@ -31,9 +31,9 @@ src/
 │   ├── ScenesPage.tsx    # The map of scenes, and the list that is its a11y twin
 │   └── PlayerPage.tsx    # Summary block, chart, per-set breakdown, match history
 ├── lib/
-│   ├── ranking.ts        # Pure helpers (scope, formatting, record, chart geometry)
+│   ├── ranking.ts        # Pure helpers (scope, scene links, formatting, record, chart geometry)
 │   ├── sceneMap.ts       # Pure helpers for the map (radii, bounds, copy, filter)
-│   ├── tournament.ts     # Pure helpers for the event page
+│   ├── tournament.ts     # Pure helpers for the event page, incl. its scene line
 │   ├── calendarDates.ts  # FullCalendar date markers -> local dates
 │   ├── eventColors.ts    # One chip colour per event type, measured
 │   └── geolocation.ts    # "Use my current location" as a pure state machine
@@ -396,7 +396,11 @@ names one scene.
   are words rather than colour - the same rule the result pips follow.
 - **The selection is in the URL** (`?scene=<componentId>`), so a view of one
   scene is shareable, and written with `replace` so panning does not fill the
-  back button with a history entry per dot.
+  back button with a history entry per dot. The parameter name lives in
+  `lib/ranking.ts` (`SCENE_MAP_PARAM`, with `sceneMapPath`) because this page
+  is no longer its only writer - an event page links in with its own scene
+  already selected, and two spellings of `scene` would be a link that selects
+  nothing. Why `lib/ranking.ts` and not here: see the bundling note below.
 - **Why Leaflet.** 42KB gzipped, no token, no WebGL, against Mapbox GL JS's
   ~800KB and a client-side token the frontend does not carry (the Mapbox token
   is server-side, behind `/api/events/geocode`, and should stay there). The
@@ -405,7 +409,18 @@ names one scene.
   only page pulling in a library nobody else uses and it sits behind a preview
   flag - eager, it would put a map library in the bundle every *calendar*
   visitor downloads. Measured: the main bundle stays at 148.9KB gzipped and the
-  map is a 47KB chunk fetched only when the page opens.
+  map is a 47KB chunk fetched only when the page opens. (Re-measured
+  2026-10-27 after the merges since: 151.88KB main, 47.23KB map.)
+- **Rollup hoists a shared module into the eager chunk whole**, which is the
+  trap this route sets for anything outside it. The event page's scene line
+  needed one path builder from `lib/sceneMap.ts`, and importing it put *all* of
+  that module - its copy, its geometry, its coverage sentences - into the main
+  bundle, +4.7KB gzipped, with nothing tree-shaken. So the links into a scene
+  (`scenePath`, `sceneMapPath`, `SCENE_MAP_PARAM`) live in `lib/ranking.ts`
+  instead, which already owns scopes: `lib/sceneMap.ts` stays lazy and the
+  whole scene line costs **0.71KB** (152.59KB against the 151.88KB base).
+  Import a map helper from an eager module and measure, or the lazy route
+  quietly stops being one.
 - **The basemap is OpenStreetMap's keyless raster, darkened in CSS.**
   CARTO's dark basemap was the first choice and was rejected on evidence:
   `basemaps.cartocdn.com/dark_all` now serves tiles reading "API KEY REQUIRED"
@@ -464,6 +479,58 @@ names one scene.
   page would have nothing on it, and unknown names render as plain text beside
   `Unranked`. On a *pairing*, where there is no `known` flag, a name links when
   it carries a rating.
+- **The page names the scene the event belongs to**, under the venue, with the
+  scene's size and a link into its ladder (`component:<id>`, through
+  `scenePath`) plus a `Map` link into `/rankings/map` with that scene already
+  selected (`sceneMapPath`, which shares `ScenesPage`'s own `scene` parameter
+  so one spelling cannot drift from the other).
+  - **It is a fact, not a guess, and the reason is structural.** A scene is a
+    connected component of the co-play graph and an event's own matches are
+    edges in it, so every player a chain of this event's pairings links is in
+    the same component by construction. The API does the counting and sends
+    `scene` on `/api/events/:id/tournament`, so the page adds **no** request
+    and derives nothing.
+  - **The roster is not counted**, by the API and therefore here: a player who
+    signed up and never sat down contributed no edge, so this event says
+    nothing about their scene.
+  - **Three honest absences, and only one of them prints.** No recorded
+    matches - an upcoming event, or one of the ~29% whose organiser never ran
+    pairings - prints **nothing**: the page already says the event has no
+    standings, and a line reading "no scene" where no game was played is the
+    same absence twice. Pairings whose players the engine has not placed yet
+    print one muted `Not placed yet` with the reason on hover, because "this
+    event has no scene" and "the ladder has not caught up with it" are
+    different claims and only the second is true. A scene prints its name.
+  - **A split event is flagged, not smoothed over.** `componentCount > 1` adds
+    a `mostly` chip - a word in the scene list's own flag idiom, never colour
+    alone - whose hint says how many other scenes and why. It is reachable:
+    an event's pairings connect the players they pair rather than all of them,
+    and the engine places a player from the history it last replayed. Checked
+    against production, it is rare - 7 played events of 5 to 53 players, all
+    unanimous.
+  - **The name is the component's, never a player's.** The API reads it off
+    the engine's `COMPONENT#` item; a member's own `regionLabel` is their home
+    region, and one 5,405-player scene's players carry four different ones. An
+    unnamed scene falls back to `Scene <id>`, the way the ladder's picker
+    does, rather than borrowing a city from whoever turned up.
+  - **The roster table's `Scene` column is now `Region`**, with a hint saying
+    so. Its cells were always `player.regionLabel` - that player's home region
+    - so a column of them under the header "Scene" asserted several scenes
+    where there is one, and beside the new line it would have been a flat
+    contradiction. (`/rankings`' own `Scene` column has the same contents and
+    is left alone: it is load-bearing copy there with its own documented
+    reasoning, and changing it is a separate decision.)
+  - **The whole line is gated on `isRankingsPreview`** - a stricter rule than
+    the player links on this page, which render for everyone. This page is
+    reachable without the flag, the trophy that leads here is not, and a
+    labelled row called "Scene" with two links into the section is an
+    advertisement for it in a way a player's name is not. Both links go
+    through `carryPreview`.
+  - Measured at 390px: two rows, right edge 197px of 375; with the longest
+    production label ("North West Community Development Council, 03") three
+    rows reaching 342px inside a 359px panel, and no page-level horizontal
+    scroll. Contrast over the real composited ancestors: name and `Map` cyan
+    11.41:1, label and size summary 7.22:1, the `mostly` chip 7.09:1.
 - **Strength of field never prints a bare mean.** The rated subset is
   systematically the regulars, so the number always carries `ratedShare`'s
   story - "1,219 mean, across the 7 rated players of 14" - and the three groups

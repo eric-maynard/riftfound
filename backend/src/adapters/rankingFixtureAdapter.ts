@@ -439,7 +439,10 @@ function decodeCursor(cursor: string | undefined): number {
 export function createFixtureRankingStore(data: FixtureData = LAUNCH_FIXTURE_DATA): RankingStore {
   const byId = new Map(data.players.map((player) => [player.playerId, player]));
 
-  return {
+  // Named rather than returned inline so one method can call another -
+  // `getComponent` reads `listSceneCatalogue`, because the one thing a fixture
+  // must not do is derive the same answer twice.
+  const store: RankingStore = {
     kind: 'fixture',
 
     async getLeaderboard(scope: Scope, limit: number, cursor?: string): Promise<LeaderboardPage> {
@@ -615,6 +618,21 @@ export function createFixtureRankingStore(data: FixtureData = LAUNCH_FIXTURE_DAT
         .map((entry, index) => ({ ...entry, isGiant: index === 0 }));
     },
 
+    /**
+     * One scene's catalogue entry, read off the same derivation the catalogue
+     * uses rather than a second one.
+     *
+     * The catalogue is a handful of entries here, so filtering it costs
+     * nothing and - more to the point - guarantees the two cannot disagree.
+     * In the DynamoDB adapter these are genuinely two reads (a GetItem against
+     * a Query) of one stored item; here they are two readings of one
+     * computation, which is the same promise by the only means a fixture has.
+     */
+    async getComponent(componentId: string): Promise<SceneCatalogueEntry | null> {
+      const catalogue = await store.listSceneCatalogue!();
+      return catalogue.find((entry) => entry.componentId === componentId) ?? null;
+    },
+
     async listComponents() {
       const out = new Map<string, { regionLabel: string | null; componentSize: number | null; ratedPlayers: number; totalPlayers: number }>();
       for (const player of data.players) {
@@ -632,6 +650,8 @@ export function createFixtureRankingStore(data: FixtureData = LAUNCH_FIXTURE_DAT
       return out;
     },
   };
+
+  return store;
 }
 
 export const fixtureRankingStore = createFixtureRankingStore();

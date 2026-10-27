@@ -6,9 +6,16 @@ import type {
   TournamentResults,
   TournamentRound,
   TournamentRoster,
+  TournamentScene,
   TournamentSidePlayer,
 } from '../types/tournament';
-import { UNRANKED_LABEL } from './ranking';
+// `sceneTooSmallExplanation` is the ladder's own sentence for a scene too
+// small to order, reused verbatim: the event line links to that ladder, so a
+// second wording of the same caveat would be a second answer. Deliberately
+// *not* the map's `sceneComparableHint`, which says the same thing - the map
+// module is lazy-loaded and importing from it would drag it into the eager
+// bundle (see `scenePath` in ./ranking).
+import { sceneTooSmallExplanation, UNRANKED_LABEL } from './ranking';
 
 /**
  * Pure helpers behind the event page.
@@ -373,4 +380,143 @@ export function formatClock(iso: string | null | undefined): string {
     hour: 'numeric',
     minute: '2-digit',
   });
+}
+
+// ---------------------------------------------------------------------------
+// Which scene the event belongs to
+// ---------------------------------------------------------------------------
+
+/**
+ * A discriminated union rather than one shape with empty strings in it, so the
+ * page cannot read a name off a state that has none, and so the scene case
+ * carries its `componentId` as a plain string - the one the two links are
+ * built from - instead of making the caller assert that a nullable field is
+ * not null.
+ */
+export type SceneLine =
+  /** Render nothing. */
+  | { kind: 'none' }
+  /** Render one muted line; `hint` says why there is no scene yet. */
+  | { kind: 'pending'; hint: string }
+  | {
+      kind: 'scene';
+      /** The link target for both the ladder and the map. */
+      componentId: string;
+      /** The scene's name, or `Scene <id>` when the engine has no label. */
+      name: string;
+      /** `5,405 players · 39 rated` - the scene's own size, never this event's. */
+      summary: string;
+      /** The hover hint: what the claim rests on, and any caveat on it. */
+      hint: string;
+      /** True when the event's placed players do not all agree on the scene. */
+      partial: boolean;
+    };
+
+/**
+ * The scene line, decided once.
+ *
+ * ## What the line asserts, and what it must not
+ *
+ * A scene is a connected component of the co-play graph, and **an event's own
+ * matches are edges in that graph**, so every player joined by a chain of
+ * pairings at this event is in the same component by construction. That is
+ * what makes "this event's scene" a fact rather than a guess, and it is why
+ * the API derives it from the players who *played* and not from the field:
+ * someone who signed up and never sat down contributed no edge, so this event
+ * says nothing about which scene they are in.
+ *
+ * The construction has one hole and it is not the roster. An event's pairings
+ * connect the players they pair, not all of them - one round of eight players
+ * is four disjoint edges - and the engine places a player from the history it
+ * last replayed, which on a capture newer than the last refit is a history
+ * without this event in it. So `componentCount` can exceed 1, the API names
+ * the dominant scene, and this function says `partial` so the page can qualify
+ * the claim instead of asserting it. Checked against production: 7 played
+ * events across 2 scenes, 5 to 53 players, every one unanimous.
+ *
+ * ## Why there are three answers and not two
+ *
+ * `null` would collapse three genuinely different states into one silence:
+ *
+ * - **no matches.** An upcoming event, or one of the ~29% of finished events
+ *   whose organiser never ran pairings. There is nothing to say, and the page
+ *   says nothing - a line reading "no scene" where no game was ever played is
+ *   furniture, and the page already says the event has no standings.
+ * - **unplaced.** Pairings exist and nobody in them is placed yet. That is
+ *   worth one muted line, because it is the difference between "this event has
+ *   no scene" and "the ladder has not caught up with it", and only the second
+ *   is true.
+ * - **a scene**, unanimous or dominant.
+ *
+ * The caller still decides whether to render any of it: Rankings is unlisted,
+ * so this line exists only inside the preview flag.
+ */
+export function sceneLine(scene: TournamentScene, minComponentSize: number): SceneLine {
+  if (scene.status === 'no-matches') {
+    return { kind: 'none' };
+  }
+
+  if (scene.status === 'unplaced' || scene.componentId === null) {
+    return {
+      kind: 'pending',
+      // Said as a fact about the ladder rather than about the event: the games
+      // happened, and it is our replay that has not reached them.
+      hint:
+        `The ladder has not placed ${
+          scene.matchPlayers === 1
+            ? 'the player'
+            : `any of the ${scene.matchPlayers.toLocaleString()} players`
+        } who played here yet, so this event has no scene on it. The ratings refit daily.`,
+    };
+  }
+
+  // A scene with no geocoded store has no name, and that is the engine's
+  // normal output rather than a gap to paper over - so the id stands in, the
+  // way the ladder's own picker does it, and nothing is invented from a
+  // player's home city.
+  const name =
+    scene.regionLabel && scene.regionLabel.trim().length > 0
+      ? scene.regionLabel.trim()
+      : `Scene ${scene.componentId}`;
+
+  const parts: string[] = [];
+  if (scene.componentSize !== null) {
+    parts.push(`${scene.componentSize.toLocaleString()} ${plural(scene.componentSize, 'player')}`);
+  }
+  if (scene.ratedPlayers !== null) {
+    // Printed even at zero: at this coverage that is the common case and it is
+    // informative, exactly as it is on the map's own scene summary.
+    parts.push(`${scene.ratedPlayers.toLocaleString()} rated`);
+  }
+
+  const partial = scene.componentCount > 1;
+  const basis =
+    `${scene.playersInScene.toLocaleString()} of the ${scene.matchPlayers.toLocaleString()} ` +
+    `${plural(scene.matchPlayers, 'player')} who played here ` +
+    `${scene.playersInScene === 1 ? 'is' : 'are'} in this scene. ` +
+    'A scene is a set of players a chain of recorded games links together, so an ' +
+    "event's own matches put its players in one.";
+
+  // The size caveat, in the ladder's own words. Asked only when the scene is
+  // genuinely too small: a settled rating in a scene of four is a real number
+  // with no position behind it, and that is a different thing from the
+  // evidence problems `ratingExplanation` covers.
+  const tooSmall = scene.comparable
+    ? null
+    : sceneTooSmallExplanation(scene.componentSize, minComponentSize);
+
+  const split = partial
+    ? ` The rest are in ${(scene.componentCount - 1).toLocaleString()} other ` +
+      `${plural(scene.componentCount - 1, 'scene')}, which happens when the ladder has not ` +
+      'replayed this event yet.'
+    : '';
+
+  return {
+    kind: 'scene',
+    componentId: scene.componentId,
+    name,
+    summary: parts.join(' · '),
+    hint: [basis + split, tooSmall].filter((part): part is string => part !== null).join(' '),
+    partial,
+  };
 }

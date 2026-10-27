@@ -8,6 +8,7 @@ import type {
   TournamentResults,
   TournamentRoster,
   TournamentRound,
+  TournamentScene,
   TournamentSidePlayer,
 } from '../types/tournament';
 import { ApiError, getEvent, getEventTournament } from '../services/api';
@@ -20,6 +21,8 @@ import {
   ratingDisplay,
   ratingExplanation,
   recordSpoken,
+  sceneMapPath,
+  scenePath,
   UNRANKED_LABEL,
 } from '../lib/ranking';
 import {
@@ -38,6 +41,7 @@ import {
   rosterNote,
   roundIsFinal,
   roundStatusLabel,
+  sceneLine,
   sectionLabel,
   sideOutcome,
   standingRecord,
@@ -46,7 +50,7 @@ import {
   unlistedByes,
   trimmedReason,
 } from '../lib/tournament';
-import { carryPreview } from '../lib/preview';
+import { carryPreview, isRankingsPreview } from '../lib/preview';
 
 /**
  * One event: what it is, who is in it, and what happened.
@@ -185,6 +189,7 @@ function EventDetailPage() {
             <span>{formatDateTime(startDate)}</span>
           </p>
           <EventWhere event={event} />
+          {detail && <EventScene scene={detail.scene} minComponentSize={detail.field.minComponentSize} />}
         </div>
 
         {/* With no facts at all there is no field block: the panel below
@@ -290,6 +295,103 @@ function EventWhere({ event }: { event: Event | null }) {
       {event.location ?? event.organizer ?? 'Venue unknown'}
       {event.address && <span className="event-address">{event.address}</span>}
       {!event.address && place && <span className="event-address">{place}</span>}
+    </p>
+  );
+}
+
+/**
+ * Which scene this event belongs to, and the way into that scene's ladder.
+ *
+ * ## Why this line can exist at all
+ *
+ * A scene is a connected component of the co-play graph, so "which scene is
+ * this event in" is normally a question about *people*, answered per player.
+ * It is answerable about an **event** because the event's own matches are
+ * edges in that graph: every player a chain of this event's pairings links is
+ * in the same component by construction. The API does that counting (it holds
+ * the profiles) and publishes the dominant scene with the counts it rests on,
+ * so nothing here votes, infers or geocodes.
+ *
+ * ## The gating, which is not optional
+ *
+ * **Rankings is unlisted, and this event page is reachable without the flag.**
+ * The trophy that leads here is already gated on `isRankingsPreview`
+ * (CalendarPage, DayEventsModal), so a reader who arrives *without* the
+ * parameter did not come through Rankings - from a shared link, say - and must
+ * see no trace of the section. Hence the predicate, and hence `carryPreview`
+ * on both links: the flag is not persisted anywhere, so a link that dropped it
+ * would land on a ladder with no mode switch and no way back (lib/preview.ts).
+ *
+ * Note this is a *stricter* rule than the player links on this page follow -
+ * those render for everyone, because a name with no link reads as missing data
+ * where an absent line reads as nothing at all. A whole labelled row called
+ * "Scene" is an advertisement for the section in a way a player's name is not.
+ *
+ * ## Two links, because they answer different questions
+ *
+ * The name goes to the scene's ladder (`component:<id>`, via `scenePath`) -
+ * "who is good here". `Map` goes to `/rankings/map` with this scene already
+ * selected, which is "where is this scene", and is a link rather than a second
+ * ladder because the map's selection lives in its URL precisely so one scene
+ * is shareable. Both paths are the ones those pages already define.
+ */
+function EventScene({
+  scene,
+  minComponentSize,
+}: {
+  scene: TournamentScene;
+  /** The published scene-size gate, so the caveat quotes the real number. */
+  minComponentSize: number;
+}) {
+  const { search } = useLocation();
+  // Read before anything else: an unflagged reader gets no line, no request
+  // and no mention of Rankings.
+  if (!isRankingsPreview(search)) return null;
+
+  const line = sceneLine(scene, minComponentSize);
+
+  // Nothing was ever paired here - an upcoming event, or one of the ~29% whose
+  // organiser never ran pairings. The page already says the event has no
+  // standings; a line saying it has no scene either would be the same absence
+  // twice, and the honest thing to do with a question that has no answer is
+  // not to pose it.
+  if (line.kind === 'none') return null;
+
+  // Games were played and nobody in them is placed yet. Worth one muted line,
+  // because "this event has no scene" and "the ladder has not caught up with
+  // this event" are different claims and only the second is true.
+  if (line.kind === 'pending') {
+    return (
+      <p className="event-scene">
+        <span className="event-scene-label">Scene</span>
+        <span className="event-scene-pending" title={line.hint}>
+          Not placed yet
+        </span>
+      </p>
+    );
+  }
+
+  return (
+    <p className="event-scene">
+      <span className="event-scene-label">Scene</span>
+      <Link
+        className="event-scene-name"
+        to={carryPreview(scenePath(line.componentId), search)}
+        title={line.hint}
+      >
+        {line.name}
+      </Link>
+      {line.summary && <span className="event-scene-summary">{line.summary}</span>}
+      {/* The caveat is a word, not a colour, and it carries its own reason -
+          the same rule the result pips and the map's flags follow. */}
+      {line.partial && (
+        <span className="event-scene-partial" title={line.hint}>
+          mostly
+        </span>
+      )}
+      <Link className="event-scene-map" to={carryPreview(sceneMapPath(line.componentId), search)}>
+        Map
+      </Link>
     </p>
   );
 }
@@ -861,6 +963,10 @@ function PairingSide({
 // Roster
 // ---------------------------------------------------------------------------
 
+const REGION_HINT =
+  "Where this player usually plays - their own home region, not this event's scene. " +
+  'Players in one scene often sit in several.';
+
 function RosterSection({
   roster,
   results,
@@ -894,7 +1000,17 @@ function RosterSection({
                 <th scope="col">Player</th>
                 <th scope="col">Rating</th>
                 <th scope="col" className="numeric">Games</th>
-                <th scope="col">Scene</th>
+                {/* "Region", not "Scene" - and the rename is a correctness
+                    fix, not a preference. The cell is `player.regionLabel`,
+                    which is that *player's* own home region: measured on the
+                    live board, one 5,405-player scene holds players labelled
+                    across four of them, so a column of these under the header
+                    "Scene" says four scenes where there is one. With the
+                    event's actual scene now named in the header above, the two
+                    would have been a flat contradiction. */}
+                <th scope="col">
+                  <abbr className="col-hint" title={REGION_HINT}>Region</abbr>
+                </th>
                 {columns.checkIn && <th scope="col">Checked in</th>}
                 {columns.waitlist && <th scope="col" className="numeric">Waitlist</th>}
                 {columns.registeredAt && <th scope="col">Signed up</th>}

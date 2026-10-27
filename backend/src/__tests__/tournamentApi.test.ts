@@ -1,8 +1,12 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import app from '../app.js';
 import { setRankingStore } from '../services/rankingService.js';
-import { setTournamentStore } from '../services/tournamentService.js';
-import { fixtureRankingStore } from '../adapters/rankingFixtureAdapter.js';
+import { getTournament, setTournamentStore } from '../services/tournamentService.js';
+import {
+  createFixtureRankingStore,
+  fixtureRankingStore,
+} from '../adapters/rankingFixtureAdapter.js';
+import type { RankingStore } from '../adapters/rankingStore.js';
 import {
   createFixtureTournamentStore,
   fixtureTournamentStore,
@@ -47,7 +51,11 @@ describe('GET /api/events/:externalId/tournament - a played event', () => {
     const { status, body } = await get(`/api/events/${PLAYED}/tournament`);
     expect(status).toBe(200);
 
-    const { event, results, roster, players, field } = body.data;
+    const { event, results, roster, players, field, scene } = body.data;
+
+    // The scene is part of the one response a page renders top to bottom, so
+    // nothing re-derives "which scene is this" client side.
+    expect(scene).toMatchObject({ status: 'scene', componentId: 'c-bay' });
 
     // Event info comes off the fact, not off the event row - the facts outlive
     // the rows, so a page still renders for an event that has aged out.
@@ -308,6 +316,9 @@ describe('GET /api/events/:externalId/tournament - an upcoming event', () => {
     expect(body.data.roster.source).toBe('registrants');
     expect(body.data.roster.entries.length).toBe(12);
     expect(body.data.event.tournamentId).toBe('upcoming-sanjose-1');
+    // `scene` is on the payload even here, carrying its own reason: nothing
+    // was paired, so there is no scene, and that is not a null to guess at.
+    expect(body.data.scene.status).toBe('no-matches');
   });
 
   it('dates every signup, so a page can show the registration order', async () => {
@@ -608,3 +619,216 @@ describe('GET /api/events/tournament-availability', () => {
     expect(Object.keys(body.data).length).toBe(2);
   });
 });
+
+/**
+ * Which scene an event belongs to.
+ *
+ * Called through the service rather than over HTTP, deliberately: this suite
+ * already sits near the general rate limiter's per-process ceiling, and these
+ * are assertions about a derivation, not about a route. The route's own
+ * contract - that `scene` is on the payload at all - is pinned in the played
+ * and upcoming blocks above.
+ */
+describe('the scene an event belongs to', () => {
+  it('reads the scene off the players who played, not off the field', async () => {
+    const detail = await getTournament(PLAYED);
+    // Seven in the field; six of them the engine has placed, and the seventh
+    // (`u-fieldguest-1`) it has never seen - which is most of a real field.
+    expect(detail?.scene).toEqual({
+      status: 'scene',
+      matchPlayers: 7,
+      placedPlayers: 6,
+      componentCount: 1,
+      componentId: 'c-bay',
+      regionLabel: 'San Francisco Bay Area',
+      componentSize: 23,
+      ratedPlayers: 6,
+      comparable: true,
+      playersInScene: 6,
+    });
+  });
+
+  it('names the scene from the component, never from a player', async () => {
+    const detail = await getTournament(PLAYED);
+    // `PlayerRecord.regionLabel` is the *player's* home region and differs
+    // between members of one scene - measured on the live board, one
+    // 5,405-player component holds players labelled across four regions. The
+    // label has to come off the component's own catalogue item, or the same
+    // scene gets a different name on every event page and a different name
+    // again on the ladder this links to.
+    const catalogue = await fixtureRankingStore.getComponent!('c-bay');
+    expect(detail?.scene.regionLabel).toBe(catalogue?.regionLabel);
+  });
+
+  it('claims no scene for an event with no recorded matches', async () => {
+    // An upcoming event: a roster and nothing else. Every entry may be in a
+    // different scene or in none, and this event is no evidence either way.
+    const upcoming = await getTournament(UPCOMING);
+    expect(upcoming?.roster?.entries.length).toBeGreaterThan(0);
+    expect(upcoming?.scene).toMatchObject({
+      status: 'no-matches',
+      matchPlayers: 0,
+      componentId: null,
+      regionLabel: null,
+      comparable: false,
+    });
+
+    // A finished event whose organiser never ran pairings - the ~29%. The
+    // answer is the same one, and it is a fact rather than an error.
+    const listingOnly = await getTournament(LISTING_ONLY);
+    expect(listingOnly?.results?.status).toBe('none');
+    expect(listingOnly?.scene.status).toBe('no-matches');
+  });
+
+  it('still finds the scene when the pairings were trimmed away', async () => {
+    // `trimmed: true` drops the rounds to stay under DynamoDB's item limit and
+    // keeps the standings whole, so a Swiss record is the only witness left
+    // that anyone played at all.
+    const detail = await getTournament(TRIMMED);
+    expect(detail?.results?.trimmed).toBe(true);
+    expect(detail?.results?.rounds).toEqual([]);
+    expect(detail?.scene).toMatchObject({ status: 'scene', componentId: 'c-bay' });
+    expect(detail?.scene.matchPlayers).toBeGreaterThan(0);
+  });
+
+  it('reports players it cannot place rather than inventing a scene', async () => {
+    // The engine refits daily and places a player from the history it last
+    // replayed, so a capture newer than the last refit has pairings full of
+    // players with no component. That is "the ladder has not caught up", not
+    // "this event has no scene", and the two have to be tellable apart.
+    setRankingStore(createFixtureRankingStore({ players: [], matches: {}, boards: {}, ratings: {} }));
+    try {
+      const detail = await getTournament(PLAYED);
+      expect(detail?.scene).toMatchObject({
+        status: 'unplaced',
+        matchPlayers: 7,
+        placedPlayers: 0,
+        componentCount: 0,
+        componentId: null,
+      });
+    } finally {
+      setRankingStore(fixtureRankingStore);
+    }
+  });
+
+  it('survives a store with no component catalogue at all', async () => {
+    // `getComponent` is optional on the store, like `listSceneCatalogue`, so a
+    // deploy whose items predate the GSI1 keys has to come back with the scene
+    // and no name rather than a 500. The size still arrives, because the
+    // engine denormalises `componentSize` onto every profile.
+    const noCatalogue: RankingStore = { ...fixtureRankingStore, getComponent: undefined };
+    setRankingStore(noCatalogue);
+    try {
+      const detail = await getTournament(PLAYED);
+      expect(detail?.scene).toMatchObject({
+        status: 'scene',
+        componentId: 'c-bay',
+        regionLabel: null,
+        componentSize: 23,
+        ratedPlayers: null,
+        comparable: true,
+      });
+    } finally {
+      setRankingStore(fixtureRankingStore);
+    }
+  });
+
+  it('names the dominant scene and says how many there were', async () => {
+    // Reachable two ways: an event's pairings connect the players they pair
+    // rather than all of them (one round of eight is four disjoint edges), and
+    // a stale refit can leave two players here carrying the components they
+    // had before this event. Four production events of 8-53 players and three
+    // more of 5-15 all came back unanimous, so this is rare - but a payload
+    // that could not say so would assert something it does not know.
+    setTournamentStore(createFixtureTournamentStore(splitSceneFixture()));
+    try {
+      const detail = await getTournament(SPLIT);
+      expect(detail?.scene).toMatchObject({
+        status: 'scene',
+        matchPlayers: 4,
+        placedPlayers: 4,
+        componentCount: 2,
+        // c-bay has three of the four, so it wins; the count is what lets the
+        // page qualify the claim.
+        componentId: 'c-bay',
+        playersInScene: 3,
+      });
+    } finally {
+      setTournamentStore(fixtureTournamentStore);
+    }
+  });
+});
+
+/** One event pairing three Bay players against one Puget Sound player. */
+const SPLIT = 'split-scene-1';
+
+function splitSceneFixture() {
+  const field = [
+    { teamId: 's-1', playerId: 'p-kira', displayName: 'Kirabosc', tagLine: 'NA1' },
+    { teamId: 's-2', playerId: 'p-volto', displayName: 'Voltomancer', tagLine: 'EUW' },
+    { teamId: 's-3', playerId: 'p-mari', displayName: 'Marigold', tagLine: 'NA1' },
+    { teamId: 's-4', playerId: 'p-adria', displayName: 'Adrian', tagLine: 'NA1' },
+  ];
+  const side = (teamId: string, outcome: string, gameWins: number) => ({ teamId, outcome, gameWins });
+
+  return {
+    results: {
+      [SPLIT]: {
+        externalId: SPLIT,
+        tournamentId: null,
+        eventStartDate: '2026-10-20T02:00:00.000Z',
+        eventType: 'Nexus Night',
+        playFormat: 'CONSTRUCTED',
+        shopExternalId: 1041,
+        latitude: 37.8716,
+        longitude: -122.2727,
+        status: 'final' as const,
+        roundCount: 1,
+        playerCount: 4,
+        openMatches: 0,
+        trimmed: false,
+        sourceUpdatedAt: null,
+        capturedAt: '2026-10-20T06:00:00.000Z',
+        players: field,
+        standings: field.map((player, index) => ({
+          rank: index + 1,
+          teamId: player.teamId,
+          matchPoints: 3 - index,
+          matchWins: index < 2 ? 1 : 0,
+          matchLosses: index < 2 ? 0 : 1,
+          matchDraws: 0,
+          opponentMatchWinPct: null,
+          gameWinPct: null,
+          opponentGameWinPct: null,
+        })),
+        rounds: [
+          {
+            section: 0,
+            roundNumber: 1,
+            status: 'FINALIZED',
+            byeTeamIds: [],
+            matches: [
+              {
+                matchId: 'm-1',
+                tableNumber: 1,
+                status: 'COMPLETED',
+                bye: false,
+                sides: [side('s-1', 'WIN', 2), side('s-2', 'LOSS', 0)],
+                games: [],
+              },
+              {
+                matchId: 'm-2',
+                tableNumber: 2,
+                status: 'COMPLETED',
+                bye: false,
+                sides: [side('s-3', 'WIN', 2), side('s-4', 'LOSS', 1)],
+                games: [],
+              },
+            ],
+          },
+        ],
+      },
+    },
+    rosters: {},
+  };
+}

@@ -74,6 +74,47 @@ export function buildScope(setId: string | null, componentId: string | null): st
   return parts.length === 0 ? ALL_SETS : parts.join('#');
 }
 
+/**
+ * The ladder path for one scene. The preview flag is added by the caller.
+ *
+ * This and `sceneMapPath` below are the two links into a scene, and they live
+ * here rather than in `lib/sceneMap.ts` - which is the page that uses them
+ * most - for a bundling reason worth stating. `lib/sceneMap.ts` is reached
+ * only from `/rankings/map`, the app's one `React.lazy` route, and Rollup
+ * hoists a module shared between an eager and a lazy chunk into the eager one
+ * *whole*. The event page's scene line is eager, so importing one path builder
+ * from there put that entire module - its copy, its geometry, its coverage
+ * sentences - into the bundle every calendar visitor downloads. Measured: with
+ * the import, 152.59KB gzipped against a 151.88KB base; with the builders
+ * here, the whole scene line costs **0.71KB** and `lib/sceneMap.ts` stays in
+ * the lazy chunk (47.20KB, where it was). They are scope plumbing and this
+ * module already owns scopes, so they belong here.
+ */
+export function scenePath(componentId: string): string {
+  return `/rankings?region=${encodeURIComponent(componentId)}`;
+}
+
+/**
+ * The query parameter the scene map keeps its selection in.
+ *
+ * Named here rather than only in `ScenesPage` because that page is no longer
+ * the only writer: an event page links *into* the map with one scene already
+ * selected, and two spellings of `scene` would be a link that quietly selects
+ * nothing. `ScenesPage`'s own `URL_PARAMS` reads this.
+ */
+export const SCENE_MAP_PARAM = 'scene';
+
+/**
+ * The map path with one scene selected.
+ *
+ * The map's selection lives in its URL precisely so a view of one scene is
+ * shareable, so linking to it from elsewhere is reuse rather than a second
+ * mechanism.
+ */
+export function sceneMapPath(componentId: string): string {
+  return `/rankings/map?${SCENE_MAP_PARAM}=${encodeURIComponent(componentId)}`;
+}
+
 export function parseScope(raw: string | null | undefined): { setId: string | null; componentId: string | null } {
   const out: { setId: string | null; componentId: string | null } = { setId: null, componentId: null };
   if (!raw || raw === ALL_SETS) return out;
