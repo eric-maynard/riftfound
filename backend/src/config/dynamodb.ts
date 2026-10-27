@@ -167,6 +167,29 @@ export const COMPONENT_CATALOGUE_PARTITION = 'COMPONENT';
 export const VENUE_CATALOGUE_PARTITION = 'VENUE';
 export const SCENE_CATALOGUE_PARTITION = 'SCENE';
 
+/**
+ * One component's own catalogue item, by id.
+ *
+ * The GSI1 partition above is for *listing* the catalogue; this is the other
+ * access pattern, and it is the cheap one: a reader who already holds a
+ * component id - an event page that has just worked out which scene its
+ * players are in, say - wants that one item, not 1,235 of them. A GetItem is
+ * ~1 read unit against the Query's ~46, which is the difference between the
+ * scene line on an event page being free and it being the most expensive
+ * thing on the response.
+ *
+ * `'PROFILE'` is `PLAYER_PROFILE_SK`'s spelling and the scraper writes the
+ * same word (`scraper/src/dynamodb.ts`, `componentKeys`); it is repeated here
+ * rather than borrowed from the player helper because the two are different
+ * contracts that happen to agree.
+ */
+export function componentProfileKeys(componentId: string) {
+  return {
+    PK: `${COMPONENT_CATALOGUE_PARTITION}#${componentId}`,
+    SK: 'PROFILE',
+  };
+}
+
 // --- Tournament facts (written by the scraper's playriftboundResults pass) ---
 // RESULTS#<externalId> / RESULTS#<externalId>  - standings, pairings, per-game
 // ROSTER#<externalId>  / ROSTER#<externalId>   - dated registrations

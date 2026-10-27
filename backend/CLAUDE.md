@@ -313,6 +313,12 @@ comes back unlocated and the map says so.
 because the ratio between them is the caveat the page prints, and it cannot be
 derived from a list that has already been filtered.
 
+`getComponent(componentId)` is the other access pattern on the same items: one
+`COMPONENT#<id>` GetItem for a caller that already holds the id, ~1 read unit
+against this Query's ~46. The event page's scene line is that caller - see
+"An event's scene" - and it is optional on the store for the same reason this
+is.
+
 `listSceneCatalogue` is **optional** on `RankingStore`, like `listSetCatalogue`
 and for the same reason: those items only became enumerable once they carried
 GSI1 keys. A store without it, or one whose Query fails, reports
@@ -399,6 +405,9 @@ Standings / Pairings / Roster top to bottom with nothing re-derived client-side:
   matches, and every `COMPLETED` one of the other 46 is a bye) - read the
   round's. Three things the capture carries awkwardly are normalised here
   rather than by each consumer: see "One shape per fact" below.
+- `scene` - which connected component this event belongs to. **Always
+  present**, carrying its own reason when there is none (see "An event's
+  scene").
 - `roster` - null when none was captured. `source: 'registrants'` carries
   `registeredAt` per entry; `source: 'participants'` is a post-event recovery
   and has none.
@@ -423,6 +432,74 @@ engine has never seen this player" from "seen, but no position yet".
 
 Profiles are fetched with one `RankingStore.getPlayers()` BatchGet for the whole
 field - never a GetItem per player.
+
+### An event's scene
+
+`detail.scene` answers "which scene is this event in", and it is answerable at
+all because of one property of the data: **a scene is a connected component of
+the co-play graph, and an event's own matches are edges in that graph.** Every
+player a chain of this event's pairings links is therefore in the same
+component by construction. No voting, no geography, no heuristic.
+
+The derivation (`resolveScene` in `services/tournamentService.ts`) is a count
+over data the response already holds: the players with a recorded pairing here
+are looked up in the profiles the field BatchGet fetched, their `componentId`s
+are tallied, and the dominant one is published with the counts it rests on.
+
+**The roster is deliberately not counted.** A player who signed up and never
+sat down contributed no edge, so this event is no evidence about which scene
+they are in - they may be in another, or in none, never having been replayed.
+On one live upcoming event 15 of 22 of the field were `known: false`; on
+another, 5 of 5. `matchPlayers` publishes the set the answer was taken over.
+
+**The pairings are the witness, and the standings are the fallback.** A bye is
+already out of `matches` (it is the absence of a match and contributes no
+edge). For a `trimmed: true` capture, where the rounds were dropped to stay
+under the 400KB item limit and the standings stayed whole, a non-zero Swiss
+record is the only remaining witness. The one case that misses is a player
+whose whole tournament was byes - Riot scores a bye as a match win - which is
+left as a stated imprecision rather than guessed at, because it only arises on
+an event large enough to have been trimmed, where it does not occur.
+
+**`componentCount` is published because unanimity is not guaranteed, and the
+hole is worth knowing.** The event's matches connect the players they *pair*,
+not all of them - one round of eight players is four disjoint edges, so a short
+event's own pairing graph need not be connected - and the engine places a
+player from the history it last replayed, so a capture newer than the last
+refit can leave two players here carrying the components they had before it.
+Measured against production, both are rare: **7 played events across 2 scenes,
+5 to 53 players each, every one unanimous** (`componentCount: 1`), which is
+consistent with 0 of 56,257 recorded games crossing a scene. So the dominant
+component is named, ties break on the id, and `playersInScene /
+placedPlayers` is what lets a page qualify the claim instead of asserting it.
+
+**The label comes off the component, never off a player.** This is the one
+thing the field profiles cannot supply, and it is the reason for the single
+extra read. `PlayerRecord.regionLabel` is the *player's* home region: on the
+live board, component `c2e62a47563` holds players labelled `Central Singapore
+Community Development Council, 01`, `North West …, 03`, `South West …, 05` and
+`South East …, 04` - four names for one scene, two to four of them turning up
+on any one event. The engine's `COMPONENT#<id>` item carries the component's
+own `regionLabel`, a modal city over **all** its members, so that is what is
+read, through the new optional `RankingStore.getComponent` - a GetItem,
+**~1 read unit** against the ~46 `listSceneCatalogue` costs, skipped entirely
+when there is no scene (every upcoming event, and the ~29% with no pairings).
+`null` is the normal value for a scene whose stores are not geocoded, and a
+store without the method, or a failed read, reports the scene with no name
+rather than a 500.
+
+**Known drift, not introduced here:** `/api/rankings`'s `component.regionLabel`
+and `components[]` come from `listComponents()`, which reads whichever
+*player's* label the global board's first page happened to carry, so the ladder
+can head a scene with a different name than `/api/rankings/map` and this
+endpoint give the same scene (`ce3da9bead6` read `Simi Valley, CA` on the
+ladder and `New York, New York` on the map on 2026-10-27). The engine also
+writes a third label on `RANKING_META#component:<id>`, a modal over the
+**rated** members only. The catalogue item's is the one over all members and is
+the one to converge on.
+
+No route changed, so `cacheTournamentFacts` (300 / 900) still applies
+unaltered - the scene rides the response it was added to.
 
 ### One shape per fact
 

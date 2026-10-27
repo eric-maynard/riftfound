@@ -147,6 +147,33 @@ export interface RankingStore {
    * those are different answers.
    */
   listSceneCatalogue?(): Promise<SceneCatalogueEntry[]>;
+
+  /**
+   * One scene's catalogue item, by id, or null when there is none.
+   *
+   * The same items `listSceneCatalogue` enumerates, read one at a time - and
+   * it exists because a caller that already *has* a component id should not
+   * pay for the catalogue to find its name. The event page's scene line is
+   * that caller: it works out which component an event's players are in from
+   * the profiles the tournament endpoint already fetched, and then needs
+   * exactly one thing it does not have, the component's **own** `regionLabel`.
+   *
+   * That label cannot be taken off a player. `PlayerRecord.regionLabel` is the
+   * *player's* home region, so two members of one component carry different
+   * ones - measured on the live board, `c2e62a47563` holds players labelled
+   * `North West Community Development Council, 03` and `Central Singapore
+   * Community Development Council, 01`. Naming a scene from whichever of its
+   * members turned up at one event would give the same scene a different name
+   * on every event page, and a different name again from the heading of the
+   * ladder the line links to - two names for one scope, which this codebase
+   * has already paid for once (`Everywhere` beside `All scenes`).
+   *
+   * Optional for the same reason `listSceneCatalogue` is: the `COMPONENT#`
+   * items only became readable as a catalogue once they carried GSI1 keys, and
+   * a store without them - or a GetItem that fails - must report "no label"
+   * rather than take a page down. A null here is never an error.
+   */
+  getComponent?(componentId: string): Promise<SceneCatalogueEntry | null>;
 }
 
 /**

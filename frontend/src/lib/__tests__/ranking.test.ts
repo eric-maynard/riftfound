@@ -57,6 +57,9 @@ import {
   splitByRating,
   UNRANKED_NO_GAMES_EXPLANATION,
   winRate,
+  scenePath,
+  sceneMapPath,
+  SCENE_MAP_PARAM,
 } from '../ranking';
 
 const NOW = Date.parse('2026-10-25T12:00:00Z');
@@ -99,6 +102,20 @@ describe('scope round-tripping', () => {
     expect(parseScope('set:radiance#component:c-bay')).toEqual({ setId: 'radiance', componentId: 'c-bay' });
     expect(parseScope('all')).toEqual({ setId: null, componentId: null });
     expect(parseScope(null)).toEqual({ setId: null, componentId: null });
+  });
+
+  it('builds the two links into one scene', () => {
+    // The ladder, and the map with that scene already selected. Both are
+    // spelled once, here, because three surfaces now generate them - the
+    // scene map's list, its detail panel, and an event page's scene line.
+    expect(scenePath('c00a489935b')).toBe('/rankings?region=c00a489935b');
+    expect(sceneMapPath('c00a489935b')).toBe('/rankings/map?scene=c00a489935b');
+    expect(SCENE_MAP_PARAM).toBe('scene');
+  });
+
+  it('encodes an id that needs it', () => {
+    expect(scenePath('a b&c')).toBe('/rankings?region=a%20b%26c');
+    expect(sceneMapPath('a b&c')).toBe('/rankings/map?scene=a%20b%26c');
   });
 });
 

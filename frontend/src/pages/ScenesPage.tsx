@@ -10,10 +10,10 @@ import {
   sceneComparableHint,
   sceneCoverageSentence,
   sceneLabel,
-  scenePath,
   scenePlaceHint,
   sceneSummary,
 } from '../lib/sceneMap';
+import { SCENE_MAP_PARAM, scenePath } from '../lib/ranking';
 import { carryPreview } from '../lib/preview';
 
 /**
@@ -77,7 +77,10 @@ interface MapState {
 const EMPTY: MapState = { scenes: [], unlocated: [], coverage: null };
 
 /** The selected scene lives in the URL, so a view of one scene is shareable. */
-const URL_PARAMS = { SCENE: 'scene', QUERY: 'q' } as const;
+// `SCENE` is shared with `sceneMapPath` in lib/sceneMap.ts, which is how an
+// event page links in here with one scene already selected. Two spellings of
+// it would be a link that selects nothing.
+const URL_PARAMS = { SCENE: SCENE_MAP_PARAM, QUERY: 'q' } as const;
 
 function ScenesPage() {
   const location = useLocation();

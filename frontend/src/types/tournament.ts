@@ -214,6 +214,61 @@ export interface TournamentField {
   minComponentSize: number;
 }
 
+/**
+ * Why this event has a scene, or why it has not. None is an error.
+ *
+ * - `scene` - someone who played a recorded pairing here is placed in a scene.
+ * - `no-matches` - nothing was paired here: an upcoming event, an event with
+ *   no capture, or the ~29% of finished ones whose organiser never ran
+ *   pairings through Riot's software.
+ * - `unplaced` - pairings exist and no player in them is placed yet. The
+ *   engine refits daily, so this is the normal state of a fresh capture.
+ */
+export type TournamentSceneStatus = 'scene' | 'no-matches' | 'unplaced';
+
+/**
+ * The scene this event belongs to.
+ *
+ * A scene is a connected component of the co-play graph, and an event's own
+ * matches are edges in it, so the scene is **read off the players who played
+ * here** rather than voted on - the API does the counting (see
+ * `backend/src/models/tournament.ts`). Two fields carry the parts of that
+ * which are not certain:
+ *
+ * - `matchPlayers` / `placedPlayers` - the roster is deliberately not counted.
+ *   A player who signed up and never sat down contributed no edge, so this
+ *   event says nothing about which scene they are in.
+ * - `componentCount` - normally 1. It can be more, because an event's pairings
+ *   connect the players they pair rather than all of them, and because the
+ *   engine places a player from the history it last replayed. Verified against
+ *   production: 7 played events across 2 scenes, 5 to 53 players each, all
+ *   unanimous.
+ *
+ * `regionLabel` is the **component's own** name, not any player's: members of
+ * one scene carry different home labels (one 5,405-player scene's players span
+ * four of them), so naming the scene from whoever turned up would give it a
+ * different name on every event page and a different name again on the ladder
+ * this links to.
+ */
+export interface TournamentScene {
+  status: TournamentSceneStatus;
+  /** Players who played at least one recorded pairing here. */
+  matchPlayers: number;
+  /** Of those, how many the engine has placed in a scene. */
+  placedPlayers: number;
+  /** Distinct scenes among the placed players. 1 is the normal case. */
+  componentCount: number;
+  componentId: string | null;
+  regionLabel: string | null;
+  /** Players in the whole scene, not at this event. */
+  componentSize: number | null;
+  ratedPlayers: number | null;
+  /** The scene is big enough for its own ladder to be ordered. */
+  comparable: boolean;
+  /** Of `placedPlayers`, how many are in `componentId`. */
+  playersInScene: number;
+}
+
 export interface TournamentDetail {
   event: TournamentEventContext;
   /** Null when no results capture exists - the normal upcoming case. */
@@ -221,6 +276,8 @@ export interface TournamentDetail {
   roster: TournamentRoster | null;
   players: TournamentPlayer[];
   field: TournamentField;
+  /** Always present, carrying its own reason when there is no scene. */
+  scene: TournamentScene;
 }
 
 export interface TournamentDetailResponse {

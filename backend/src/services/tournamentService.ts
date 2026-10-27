@@ -22,6 +22,7 @@ import {
   type TournamentResults,
   type TournamentRoster,
   type TournamentRound,
+  type TournamentScene,
   type TournamentSidePlayer,
   type TournamentStanding,
 } from '../models/tournament.js';
@@ -211,6 +212,159 @@ function summariseField(players: TournamentPlayer[]): TournamentField {
 }
 
 // ---------------------------------------------------------------------------
+// Which scene an event belongs to
+// ---------------------------------------------------------------------------
+
+/**
+ * The players who actually **played** at this event.
+ *
+ * This is the whole of the honesty in `resolveScene`, so it is worth being
+ * precise about why it is not simply the field.
+ *
+ * A scene is a connected component of the co-play graph, and the graph's edges
+ * are *matches*. A player on the roster who never sat down contributed no
+ * edge, so nothing about this event says anything about which component they
+ * are in - they may be in another one, or in none at all, having never been
+ * replayed. Measured on a live upcoming event, 15 of 22 of the field were
+ * `known: false`; on another, 5 of 5. Letting those decide the scene would be
+ * reading an answer off players who were not part of the question.
+ *
+ * Two sources, in order of how directly each one witnesses a match:
+ *
+ * 1. **The pairings.** `sides[].player` is the authority: a side of a
+ *    published match is a player who played it. Byes are already out of
+ *    `matches` by the time this runs (they leave in `round.byes`, which is the
+ *    absence of a match and contributes no edge).
+ * 2. **The standings, when the pairings were trimmed.** `trimmed: true` means
+ *    the round detail was dropped to keep the item under DynamoDB's 400KB
+ *    limit while the standings stayed whole, so the only remaining witness is
+ *    a Swiss record. A row with no wins, losses or draws played nothing.
+ *
+ * The one thing the standings route cannot see is a player whose entire
+ * tournament was byes: Riot scores a bye as a match win, so such a row reads
+ * as having played. It is left as a known imprecision rather than guessed at,
+ * because it only applies to an event big enough to have been trimmed - which
+ * is hundreds of players over a dozen rounds - where a bye-only record does
+ * not occur, and because the alternative (a games-played threshold) would
+ * invent a rule the capture does not support.
+ */
+function matchPlayerIds(results: TournamentResults | null): Set<string> {
+  const ids = new Set<string>();
+  if (!results) return ids;
+
+  for (const round of results.rounds) {
+    for (const match of round.matches) {
+      for (const side of match.sides) {
+        if (side.player?.playerId) ids.add(side.player.playerId);
+      }
+    }
+  }
+  if (ids.size > 0) return ids;
+
+  for (const standing of results.standings) {
+    if (!standing.player) continue;
+    const decided =
+      (standing.matchWins ?? 0) + (standing.matchLosses ?? 0) + (standing.matchDraws ?? 0);
+    if (decided > 0) ids.add(standing.player.playerId);
+  }
+  return ids;
+}
+
+/** The three no-scene answers share every field but the reason. */
+function noScene(
+  status: 'no-matches' | 'unplaced',
+  matchPlayers: number,
+  placedPlayers: number,
+  componentCount: number
+): TournamentScene {
+  return {
+    status,
+    matchPlayers,
+    placedPlayers,
+    componentCount,
+    componentId: null,
+    regionLabel: null,
+    componentSize: null,
+    ratedPlayers: null,
+    comparable: false,
+    playersInScene: 0,
+  };
+}
+
+/**
+ * The scene this event belongs to, read off the players who played in it.
+ *
+ * The derivation is a count, not an inference: every player with a recorded
+ * pairing here is looked up in the profiles this response already fetched, and
+ * their `componentId`s are tallied. Normally there is exactly one, because the
+ * event's own matches are edges joining those players - see `TournamentScene`
+ * in `models/tournament.ts` for the two ways that can still come out split,
+ * and why the count is published rather than smoothed over.
+ *
+ * **The dominant component wins, with its share published beside it.** Ties
+ * break on the component id so the answer cannot depend on map iteration
+ * order; `playersInScene` against `placedPlayers` is what lets the page say
+ * how settled the answer is instead of asserting it.
+ *
+ * The one thing this cannot get from the profiles is the component's **own**
+ * name, so there is a single extra read for it - a GetItem on
+ * `COMPONENT#<id>`, ~1 read unit against the ~46 the whole catalogue costs,
+ * and on a route that is already edge-cached for 15 minutes. It is skipped
+ * entirely when there is no scene, which is every upcoming event and the ~29%
+ * of finished ones with no pairings, so the common case pays nothing.
+ */
+async function resolveScene(
+  results: TournamentResults | null,
+  byPlayerId: Map<string, TournamentPlayer>
+): Promise<TournamentScene> {
+  const played = matchPlayerIds(results);
+
+  const tally = new Map<string, number>();
+  // The size the *profiles* report for each component, as the fallback for a
+  // deploy whose store has no component catalogue: the engine denormalises
+  // `componentSize` onto every profile, so the figure survives even when the
+  // name does not.
+  const sizeFromProfiles = new Map<string, number | null>();
+  let placedPlayers = 0;
+
+  for (const playerId of played) {
+    const componentId = byPlayerId.get(playerId)?.componentId ?? null;
+    if (!componentId) continue;
+    placedPlayers += 1;
+    tally.set(componentId, (tally.get(componentId) ?? 0) + 1);
+    if (!sizeFromProfiles.has(componentId)) {
+      sizeFromProfiles.set(componentId, byPlayerId.get(playerId)?.componentSize ?? null);
+    }
+  }
+
+  if (played.size === 0) return noScene('no-matches', 0, 0, 0);
+  if (tally.size === 0) return noScene('unplaced', played.size, 0, 0);
+
+  const [componentId, playersInScene] = [...tally.entries()].sort(
+    (a, b) => b[1] - a[1] || a[0].localeCompare(b[0])
+  )[0];
+
+  const store = getRankingStore();
+  const catalogue = store.getComponent ? await store.getComponent(componentId) : null;
+  const componentSize = catalogue?.componentSize ?? sizeFromProfiles.get(componentId) ?? null;
+
+  return {
+    status: 'scene',
+    matchPlayers: played.size,
+    placedPlayers,
+    componentCount: tally.size,
+    componentId,
+    regionLabel: catalogue?.regionLabel ?? null,
+    componentSize,
+    ratedPlayers: catalogue?.ratedCount ?? null,
+    // The same gate every other surface reads, so a scene the ladder refuses
+    // to order is not described as orderable here.
+    comparable: isComparable(componentSize),
+    playersInScene,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // GET /api/events/:externalId/tournament
 // ---------------------------------------------------------------------------
 
@@ -282,14 +436,20 @@ export async function getTournament(externalId: string): Promise<TournamentDetai
     if (enriched) byTeamId.set(player.teamId, enriched);
   }
 
+  // Normalised first, then read: the scene is derived from the *published*
+  // pairings, so it can never be computed from a bye or a duplicate match
+  // this layer is about to drop.
+  const publishedResults = results ? toResults(results, byTeamId) : null;
+
   const detail: TournamentDetail = {
     event: toEventContext(externalId, roster ?? (results as EventResultsRecord)),
-    results: results ? toResults(results, byTeamId) : null,
+    results: publishedResults,
     roster: roster ? toRoster(roster, byPlayerId) : null,
     // Standings order when we have it, otherwise registration order: both are
     // orders a page can render straight down without sorting anything.
     players: orderPlayers([...byPlayerId.values()], results, roster),
     field: summariseField([...byPlayerId.values()]),
+    scene: await resolveScene(publishedResults, byPlayerId),
   };
 
   return detail;

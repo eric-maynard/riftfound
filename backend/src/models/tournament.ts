@@ -358,6 +358,83 @@ export interface TournamentField {
   minGamesToPublishRating: number;
 }
 
+/**
+ * Why an event has a scene, or why it has not.
+ *
+ * Three answers, and none of them is an error:
+ *
+ * - `scene` - at least one player who played a recorded pairing here is placed
+ *   in a connected component, so the event has a scene.
+ * - `no-matches` - nothing was ever paired here. The ~29% of finished events
+ *   whose organiser never ran pairings through Riot's software
+ *   (`results.status === 'none'`), an event with no results capture at all, and
+ *   every upcoming event, which has a roster and nothing else.
+ * - `unplaced` - pairings exist, and not one of the players in them carries a
+ *   `componentId`. The engine refits daily and only places a player it has
+ *   replayed, so this is the normal state of an event captured since the last
+ *   refit.
+ */
+export type TournamentSceneStatus = 'scene' | 'no-matches' | 'unplaced';
+
+/**
+ * Which scene this event belongs to.
+ *
+ * **A scene is a connected component of the co-play graph** (see
+ * `scraper/src/ranking/graph.ts`), and an event's own matches are edges in
+ * that graph - so the players who played here are joined to each other *by
+ * this event*, and the scene is read off them rather than voted on.
+ *
+ * Two things that sounds like but is not:
+ *
+ * 1. **It is not "every player at the event".** A roster entry who never
+ *    played is no edge at all: they may be placed in another component
+ *    entirely, or have no rating item to be placed in. Only players with a
+ *    recorded pairing here are counted, which is why `matchPlayers` is
+ *    published beside the scene rather than `field.totalPlayers` being reused.
+ * 2. **It is not guaranteed unanimous, and the reasoning that says it is has a
+ *    hole worth knowing.** The event's matches connect the players they pair,
+ *    not all of them: one round of eight players is four disjoint edges, so
+ *    the event's own pairing graph need not be connected, and two halves of a
+ *    short event can sit in different components unless play elsewhere joins
+ *    them. There is a second, more common route to the same state: the engine
+ *    places a player from the history it last replayed, so until it refits
+ *    with this event's capture in hand, two players here can still carry the
+ *    components they had before it. So `componentCount` is published and the
+ *    dominant component is named. Measured against production this is rare -
+ *    components are large (1,235 of them over 27,318 players) and 0 of 56,257
+ *    recorded games cross one - but "rare" is not "impossible", and a payload
+ *    that could not say so would make the page assert something it does not
+ *    know.
+ */
+export interface TournamentScene {
+  status: TournamentSceneStatus;
+  /** Distinct players who played at least one recorded pairing at this event. */
+  matchPlayers: number;
+  /** Of those, how many the engine has placed in a component. */
+  placedPlayers: number;
+  /** Distinct components among the placed players. 1 is the normal case. */
+  componentCount: number;
+  /** The dominant component's id, or null unless `status === 'scene'`. */
+  componentId: string | null;
+  /**
+   * The **component's own** region label - a modal city name off the engine's
+   * `COMPONENT#` item, e.g. `Rockhampton, Australia`. Deliberately not any
+   * player's `regionLabel`, which is that player's home city and differs
+   * between members of one scene. Null when the catalogue has no item, no
+   * label, or could not be read: a scene whose stores are not geocoded has no
+   * name, and that is normal.
+   */
+  regionLabel: string | null;
+  /** Players in the whole scene, not at this event. */
+  componentSize: number | null;
+  /** Rated players in the whole scene, when the catalogue knows. */
+  ratedPlayers: number | null;
+  /** The scene is big enough (`CONFIDENCE.minComponentSize`) to be ordered. */
+  comparable: boolean;
+  /** Of `placedPlayers`, how many are in `componentId`. */
+  playersInScene: number;
+}
+
 export interface TournamentDetail {
   event: TournamentEventContext;
   /** Null when no results capture exists - normal for an upcoming event. */
@@ -367,6 +444,13 @@ export interface TournamentDetail {
   /** Every distinct player across both facts, enriched. The canonical list. */
   players: TournamentPlayer[];
   field: TournamentField;
+  /**
+   * Which scene this event belongs to. **Always present**, carrying its own
+   * reason when there is no scene, so a reader branches on a field rather than
+   * on a null and can tell "nobody played here" from "nobody here is placed
+   * yet" - which read completely differently on a page.
+   */
+  scene: TournamentScene;
 }
 
 /** One event's answer to "is there anything to show here?". */

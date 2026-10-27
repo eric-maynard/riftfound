@@ -8,6 +8,7 @@ import {
   PLAYER_PROFILE_SK,
   PLAYER_MATCH_SK_PREFIX,
   COMPONENT_CATALOGUE_PARTITION,
+  componentProfileKeys,
   GetCommand,
   QueryCommand,
   BatchGetCommand,
@@ -553,6 +554,29 @@ export const dynamoRankingStore: RankingStore = {
     }
 
     return entries;
+  },
+
+  async getComponent(componentId: string): Promise<SceneCatalogueEntry | null> {
+    // One GetItem, ~1 read unit, and the same `toSceneCatalogueEntry` mapping
+    // the catalogue Query uses - so a scene named on an event page and the
+    // same scene drawn on the map can never read two different labels off one
+    // item.
+    try {
+      const client = getDynamoClient();
+      const result = await client.send(
+        new GetCommand({ TableName: getTableName(), Key: componentProfileKeys(componentId) })
+      );
+      if (!result.Item) return null;
+      return toSceneCatalogueEntry(result.Item as Item);
+    } catch (error) {
+      // Same posture as `listSceneCatalogue`: the caller reads null as "we
+      // have no label for this scene", which is a state it already has to
+      // render (the engine writes `regionLabel: null` for a scene whose stores
+      // are not geocoded). A 500 here would take down a whole event page for
+      // the sake of one line on it.
+      console.warn('[ranking] component profile read failed:', error);
+      return null;
+    }
   },
 
   async listComponents() {

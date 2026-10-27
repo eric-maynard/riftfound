@@ -174,10 +174,20 @@ export function sceneScope(componentId: string): string {
   return `component:${componentId}`;
 }
 
-/** The ladder path for a scene. The preview flag is added by the caller. */
-export function scenePath(componentId: string): string {
-  return `/rankings?region=${encodeURIComponent(componentId)}`;
-}
+/*
+ * `scenePath`, `sceneMapPath` and `SCENE_MAP_PARAM` deliberately live in
+ * `lib/ranking.ts` instead of here, even though this is the page that reads
+ * them most. They are links into the Rankings section, and the event page -
+ * which is in the **eager** bundle - needs two of them for its scene line.
+ * This module is otherwise reached only from `/rankings/map`, the one lazy
+ * route, and Rollup hoists a module shared between an eager and a lazy chunk
+ * into the eager one *whole*: importing one path builder from here put all of
+ * this file (its copy, its geometry, its coverage sentences) into the bundle
+ * every calendar visitor downloads. The link builders are scope plumbing and
+ * `lib/ranking.ts` already owns scopes, so that is where they went - which
+ * keeps this module in the lazy chunk and the whole scene line down to
+ * 0.71KB gzipped on the eager one.
+ */
 
 /**
  * Filter the scene list by a free-text query.

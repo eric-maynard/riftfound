@@ -3460,6 +3460,103 @@ td.is-unsettled .rating-value,
   color: var(--color-text-muted);
 }
 
+/* Which scene the event belongs to, under the venue that is the other half of
+   "where was this".
+
+   A flex row that wraps rather than a line of inline text with separators: the
+   longest region label in the corpus is "North West Community Development
+   Council, 03", which at 390px is most of a line on its own, so the size
+   summary and the two links have to be allowed to fall to the next line
+   instead of pushing the page sideways. `overflow-wrap: anywhere` on the name
+   is the backstop for a label with no space in it at all - a region label is
+   upstream free text and nothing guarantees it breaks.
+
+   Measured at 390px over the real composited ancestors: the name's cyan
+   11.41:1 on the panel, the label and the size summary 7.22:1, the `mostly`
+   chip's ink 7.09:1 on --chip-draw, and the Map link 11.41:1. The line sets in
+   two rows ("SCENE  San Francisco Bay Area" / "23 players · 6 rated  MAP")
+   with its right edge at 197px of a 375px viewport; with the longest label in
+   the corpus - "North West Community Development Council, 03" - it takes three
+   rows, reaching 342px inside a panel whose own edge is 359px, and the
+   document's scrollWidth still equals its clientWidth. */
+.event-scene {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.2rem 0.45rem;
+  margin-top: 0.4rem;
+  font-size: var(--t-meta);
+}
+
+.event-scene-label {
+  font-size: var(--t-label);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--color-text-muted);
+}
+
+.event-scene-name {
+  min-width: 0;
+  font-weight: 600;
+  color: var(--color-cyan);
+  text-decoration: none;
+  overflow-wrap: anywhere;
+}
+
+.event-scene-name:hover,
+.event-scene-name:focus-visible {
+  text-decoration: underline;
+}
+
+.event-scene-summary {
+  color: var(--color-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* "mostly": the event's placed players do not all agree on the scene. A word
+   in the scene list's own flag chip, never a colour on its own, with the
+   reason on hover - the same rule the result pips follow. */
+.event-scene-partial {
+  padding: 0.05rem 0.35rem;
+  font-size: var(--t-label);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--color-text-muted-lifted);
+  background-color: var(--chip-draw);
+  border-radius: 0.25rem;
+  cursor: help;
+}
+
+/* Games were played and the ladder has not placed anyone in them yet. The
+   dotted underline is this section's one idiom for "there is a reason, and it
+   is on hover" - the same one `.unranked` uses. */
+.event-scene-pending {
+  color: var(--color-text-muted);
+  cursor: help;
+  text-decoration: underline dotted;
+  text-underline-offset: 2px;
+}
+
+/* The secondary way in: the same scene on the map, already selected. Padded so
+   it is a touchable target on a phone without the chrome of a button - it is a
+   link in a sentence, not a control. */
+.event-scene-map {
+  padding: 0.1rem 0.3rem;
+  font-size: var(--t-label);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--color-cyan);
+  text-decoration: none;
+}
+
+.event-scene-map:hover,
+.event-scene-map:focus-visible {
+  text-decoration: underline;
+}
+
 .event-strength {
   grid-area: strength;
 }
