@@ -366,3 +366,134 @@ export function gamesPerMatchByType(
     }))
     .sort((a, b) => b.matches - a.matches);
 }
+
+/**
+ * What a tier weight would actually be acting on.
+ *
+ * Reported *before* any sweep, because the distribution is the first thing that
+ * decides whether weighting can help at all. Up-weighting a tier that holds 1%
+ * of the matches cannot improve a ladder of players whose median record is 5
+ * matches; it can only add variance to the few players who happened to attend.
+ *
+ * `playersAffected` is the number of players with at least one match in the
+ * tier, and `exclusivePlayers` the number whose *whole* record is in it - those
+ * are the players a tier weight simply rescales, with no effect on their rating
+ * at all, because a rating is identified by differences.
+ */
+export function matchDistributionByTier(observations: ObservationSet): {
+  tier: string;
+  matches: number;
+  matchShare: number;
+  players: number;
+  exclusivePlayers: number;
+  medianMatchesPerPlayer: number;
+}[] {
+  const tiers = new Map<string, { matches: number; perPlayer: Map<number, number> }>();
+  const totalPerPlayer = new Map<number, number>();
+  for (let i = 0; i < observations.playerA.length; i++) {
+    const tier = observations.events[observations.event[i]].tournamentType ?? 'Unknown';
+    let row = tiers.get(tier);
+    if (!row) tiers.set(tier, (row = { matches: 0, perPlayer: new Map() }));
+    row.matches++;
+    for (const player of [observations.playerA[i], observations.playerB[i]]) {
+      row.perPlayer.set(player, (row.perPlayer.get(player) ?? 0) + 1);
+      totalPerPlayer.set(player, (totalPerPlayer.get(player) ?? 0) + 1);
+    }
+  }
+  const total = observations.playerA.length;
+  return [...tiers.entries()]
+    .map(([tier, row]) => {
+      const counts = [...row.perPlayer.values()].sort((a, b) => a - b);
+      let exclusive = 0;
+      for (const [player, count] of row.perPlayer) {
+        if (totalPerPlayer.get(player) === count) exclusive++;
+      }
+      return {
+        tier,
+        matches: row.matches,
+        matchShare: total > 0 ? row.matches / total : 0,
+        players: row.perPlayer.size,
+        exclusivePlayers: exclusive,
+        medianMatchesPerPlayer: counts.length > 0 ? counts[counts.length >> 1] : 0,
+      };
+    })
+    .sort((a, b) => b.matches - a.matches);
+}
+
+/**
+ * Sweep candidate tier-weight tables against held-out accuracy.
+ *
+ * This is the gate on the whole idea: weighting changes how far each result
+ * moves a rating, so it changes calibration, and a table that feels principled
+ * can still predict worse. The variants are built from whichever tiers are
+ * actually present, so the sweep is meaningful on any window - including one
+ * where the competitive tiers have no events at all, in which case the ladder
+ * variants collapse to the neutral table and say so by scoring identically.
+ */
+export function sweepTierWeights(
+  observations: ObservationSet,
+  cutoffDay: number,
+  overrides: Partial<WhrOptions> = {}
+): { label: string; weights: Record<string, number>; result: ValidationResult }[] {
+  // The product ordering, strongest evidence first. Tiers absent from the data
+  // contribute nothing, which is exactly what makes the result honest.
+  const ladder = [
+    'World Championship',
+    'Continental',
+    'Regional',
+    'Showdown Series',
+    'Challenge Series',
+    'Nexus Cup',
+    'Summoner Skirmish',
+    'Pre-Rift',
+    'Nexus Night',
+    'Open Play',
+    'Learn to Play',
+  ];
+  const present = new Set(
+    observations.events.map(event => event.tournamentType).filter((type): type is string => Boolean(type))
+  );
+
+  /** Geometric ladder: the top present tier gets `top`, each step down divides. */
+  const ladderWeights = (top: number, step: number): Record<string, number> => {
+    const weights: Record<string, number> = {};
+    let rank = 0;
+    for (const tier of ladder) {
+      if (!present.has(tier)) continue;
+      weights[tier] = Number((top / step ** rank).toFixed(4));
+      rank++;
+    }
+    return weights;
+  };
+
+  const variants: { label: string; weights: Record<string, number> }[] = [
+    { label: 'neutral (DEFAULT)', weights: {} },
+    { label: 'ladder, 1.5x per tier', weights: ladderWeights(1, 1.5) },
+    { label: 'ladder, 2x per tier', weights: ladderWeights(1, 2) },
+    // The crudest version of the request: competitive play counts double,
+    // casual play counts half, everything else as now.
+    {
+      label: 'competitive 2x / casual 0.5x',
+      weights: {
+        'World Championship': 2,
+        Continental: 2,
+        Regional: 2,
+        'Showdown Series': 2,
+        'Challenge Series': 2,
+        'Nexus Cup': 2,
+        'Summoner Skirmish': 1.5,
+        'Open Play': 0.5,
+        'Learn to Play': 0.5,
+      },
+    },
+    // The sealed/constructed split as a weight rather than a dimension, for
+    // comparison with the measured per-format result.
+    { label: 'Pre-Rift 0.5x', weights: { 'Pre-Rift': 0.5 } },
+  ];
+
+  return variants.map(variant => ({
+    label: variant.label,
+    weights: variant.weights,
+    result: validate(observations, cutoffDay, { ...overrides, tierWeights: variant.weights }),
+  }));
+}

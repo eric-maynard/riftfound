@@ -43,8 +43,12 @@ const envSchema = z.object({
   PLAYRIFTBOUND_RESULTS_ENABLED: z.string().transform(v => v !== 'false').default('true'),
   // Event pages fetched per run; the rest roll over to the next run
   PLAYRIFTBOUND_RESULTS_MAX_EVENTS_PER_RUN: z.string().transform(Number).default('250'),
-  // How far back to look for finished events still awaiting a results capture
-  PLAYRIFTBOUND_RESULTS_LOOKBACK_DAYS: z.string().transform(Number).default('21'),
+  // How far back to look for finished events still awaiting a results capture.
+  // Bounded above by deleteOldEvents(60) - a capture needs an event row as its
+  // candidate - and below by when `prb-` rows start existing (2026-10-01).
+  // See DEFAULT_LOOKBACK_DAYS in sources/playriftboundResults.ts for the
+  // measurements behind 45.
+  PLAYRIFTBOUND_RESULTS_LOOKBACK_DAYS: z.string().transform(Number).default('45'),
 
   // Fourth pass: player ratings (see ranking/). A batch refit of the whole
   // history, not an incremental update - so it runs on its own slow cadence
@@ -78,6 +82,27 @@ const envSchema = z.object({
   RANKING_OBSERVATION_LEVEL: z.enum(['game-shared', 'game', 'match']).default('game-shared'),
   // Total weight of one match. Swept against held-out log loss; 1 is the default.
   RANKING_WEIGHT_SCALE: z.string().transform(Number).default('1'),
+  // JSON override for the per-event-tier weight on a match's evidence, keyed on
+  // the mapped eventType: {"World Championship": 2, "Learn to Play": 0.5}.
+  // Shipped empty - every tier counts the same - because the competitive tiers
+  // have no finished events to measure on and the tiers that do exist measured
+  // no better weighted. See DEFAULT_TIER_WEIGHTS in ranking/whr.ts and
+  // "./ranking-metrics.sh validate", which sweeps it.
+  RANKING_TIER_WEIGHTS: z.string().optional(),
+  // Weight for a tier the table does not mention, including every value Riot
+  // adds to its enum later. 1 on purpose: defaulting an unknown tier low would
+  // silently discount a whole new tier of real competitive play.
+  RANKING_DEFAULT_TIER_WEIGHT: z.string().transform(Number).default('1'),
+  // How many players a VENUE# item denormalises, ordered by matches played
+  // there. 25 covers the median venue (22 players) outright; the alternative -
+  // one item per (player, venue) pair - is 12,885 rows regionally for a list a
+  // map drill-down truncates anyway. See ranking/items.ts.
+  RANKING_VENUE_TOP_PLAYERS: z.string().transform(Number).default('25'),
+  // Louvain resolution used by the scene re-clustering CLI. gamma = 1 is the
+  // measured stability optimum (12.1% churn, against 19.7% at 0.5 and 21.8% at
+  // 2). Only read by scripts/metrics/scene-recluster.sh - a refit never
+  // clusters; it reads the stored assignment. See ranking/scenes.ts.
+  RANKING_SCENE_RESOLUTION: z.string().transform(Number).default('1'),
   RANKING_MAX_ITERATIONS: z.string().transform(Number).default('60'),
   // Safety cap on the replay, so an unexpectedly large history cannot OOM the Lambda.
   RANKING_MAX_MATCHES: z.string().transform(Number).default('2000000'),

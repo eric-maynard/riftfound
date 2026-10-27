@@ -6,7 +6,9 @@ import type {
   RankingMeta,
   RankingRow,
   RankingSnapshot,
+  SceneProfile,
   SetProfile,
+  VenueProfile,
 } from './ranking/items.js';
 
 /**
@@ -172,6 +174,7 @@ export function sanitizePlayerProfile<T extends PlayerProfile>(profile: T): T {
     displayName: sanitizeText(profile.displayName),
     tagLine: sanitizeText(profile.tagLine),
     regionLabel: sanitizeText(profile.regionLabel),
+    sceneLabel: sanitizeText(profile.sceneLabel),
     setRatings,
   };
 }
@@ -192,6 +195,7 @@ export function sanitizeRankingRow<T extends RankingRow>(row: T): T {
     displayName: sanitizeText(row.displayName),
     tagLine: sanitizeText(row.tagLine),
     regionLabel: sanitizeText(row.regionLabel),
+    sceneLabel: sanitizeText(row.sceneLabel),
   };
 }
 
@@ -216,6 +220,27 @@ export function sanitizeSetProfile<T extends SetProfile>(set: T): T {
 }
 
 /**
+ * A venue item. The name is a shop-table label and the roster carries player
+ * display names, so both go through the same policy as everything else.
+ */
+export function sanitizeVenueProfile<T extends VenueProfile>(venue: T): T {
+  return {
+    ...venue,
+    name: sanitizeText(venue.name),
+    sceneLabel: sanitizeText(venue.sceneLabel),
+    topPlayers: venue.topPlayers.map(entry => ({
+      ...entry,
+      displayName: sanitizeText(entry.displayName),
+      tagLine: sanitizeText(entry.tagLine),
+    })),
+  };
+}
+
+export function sanitizeSceneProfile<T extends SceneProfile>(scene: T): T {
+  return { ...scene, label: sanitizeText(scene.label) };
+}
+
+/**
  * The whole snapshot, at the storage boundary.
  *
  * The converter in ranking/snapshot.ts already cleans every item it builds.
@@ -233,6 +258,8 @@ export function sanitizeRankingSnapshot(snapshot: RankingSnapshot): RankingSnaps
     metas: snapshot.metas.map(sanitizeRankingMeta),
     components: snapshot.components.map(sanitizeComponentProfile),
     sets: snapshot.sets.map(sanitizeSetProfile),
+    venues: snapshot.venues.map(sanitizeVenueProfile),
+    scenes: snapshot.scenes.map(sanitizeSceneProfile),
   };
 }
 

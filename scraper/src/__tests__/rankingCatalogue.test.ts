@@ -3,9 +3,9 @@ import { fakeTable, queryGsi1 } from './helpers/fakeDynamo.js';
 import type { RankingSnapshot } from '../ranking/items.js';
 
 /**
- * The catalogue items the rating pass publishes - `SET#<id>` and
- * `COMPONENT#<id>` - have to be *enumerable*, not just fetchable by an id the
- * reader already has.
+ * The catalogue items the rating pass publishes - `SET#<id>`, `COMPONENT#<id>`,
+ * `VENUE#<shopExternalId>` and `SCENE#<sceneId>` - have to be *enumerable*, not
+ * just fetchable by an id the reader already has.
  *
  * They were not. Verified live, `SET#s4` and `SET#s5` carried the whole
  * authoritative set catalogue (name, release date, match and rated counts) and
@@ -38,6 +38,8 @@ import {
   saveRankingSnapshotDynamoDB,
   SET_CATALOGUE_PARTITION,
   COMPONENT_CATALOGUE_PARTITION,
+  VENUE_CATALOGUE_PARTITION,
+  SCENE_CATALOGUE_PARTITION,
 } from '../dynamodb.js';
 
 const GENERATED_AT = '2026-10-25T12:00:00.000Z';
@@ -50,6 +52,61 @@ function snapshot(): RankingSnapshot {
     matchLogEvents: [],
     rankings: [],
     metas: [],
+    venues: [
+      {
+        venue: 'shop:1234',
+        shopExternalId: 1234,
+        name: 'Martinez, CA',
+        latitude: 38.0194,
+        longitude: -122.1341,
+        players: 209,
+        ratedPlayers: 123,
+        matches: 1870,
+        events: 94,
+        firstSeen: '2026-10-01T18:00:00.000Z',
+        lastSeen: '2026-10-24T18:00:00.000Z',
+        sceneId: 's-0000',
+        sceneLabel: 'Martinez, CA',
+        scenePurity: 0.993,
+        topPlayers: [
+          { playerId: 'uuid-1', displayName: 'Player One', tagLine: 'NA1', matches: 42, rating: 1620, rated: true },
+        ],
+        topPlayersTruncated: true,
+        generatedAt: GENERATED_AT,
+      },
+      {
+        venue: 'shop:99',
+        shopExternalId: 99,
+        name: null,
+        latitude: 37.77,
+        longitude: -122.42,
+        players: 7,
+        ratedPlayers: 0,
+        matches: 12,
+        events: 2,
+        firstSeen: '2026-10-05T18:00:00.000Z',
+        lastSeen: '2026-10-06T18:00:00.000Z',
+        sceneId: 's-0000',
+        sceneLabel: 'Martinez, CA',
+        scenePurity: 1,
+        topPlayers: [],
+        topPlayersTruncated: false,
+        generatedAt: GENERATED_AT,
+      },
+    ],
+    scenes: [
+      {
+        sceneId: 's-0000',
+        label: 'Martinez, CA',
+        venueCount: 2,
+        playerCount: 216,
+        ratedCount: 123,
+        matchCount: 1882,
+        medianPurity: 0.9965,
+        assignedAt: '2026-10-20T00:00:00.000Z',
+        generatedAt: GENERATED_AT,
+      },
+    ],
     components: [
       {
         componentId: 'c-0000',
@@ -138,15 +195,56 @@ describe('the ranking catalogue items are enumerable via GSI1', () => {
     expect(items.map(item => item.PK)).toEqual(['COMPONENT#c-0000', 'COMPONENT#c-0001']);
   });
 
-  it('keeps the two catalogues in separate partitions', async () => {
+  it('returns the whole venue catalogue from one GSI1 query', async () => {
+    // A map's first render is "every venue with a pin". Without this key it is a
+    // Scan - the same retrofit SET# and COMPONENT# needed, done before anything
+    // depends on inferring the list.
+    await saveRankingSnapshotDynamoDB(snapshot(), 1);
+
+    const items = queryGsi1(VENUE_CATALOGUE_PARTITION);
+    expect(items.map(item => item.shopExternalId)).toEqual([1234, 99]);
+    expect(items.every(item => item.entityType === 'VENUE_PROFILE')).toBe(true);
+    // Keyed on the shop id, never on venueKey's `geo:` coordinate fallback.
+    expect(items.map(item => item.PK)).toEqual(['VENUE#1234', 'VENUE#99']);
+    expect(items.every(item => item.SK === 'PROFILE')).toBe(true);
+    // What a store page and a map pin need, in one read.
+    const busiest = items[0];
+    expect(busiest.name).toBe('Martinez, CA');
+    expect(busiest.sceneId).toBe('s-0000');
+    expect(busiest.scenePurity).toBe(0.993);
+    expect((busiest.topPlayers as unknown[])).toHaveLength(1);
+    expect(busiest.topPlayersTruncated).toBe(true);
+  });
+
+  it('returns the whole scene catalogue from one GSI1 query', async () => {
+    await saveRankingSnapshotDynamoDB(snapshot(), 1);
+
+    const items = queryGsi1(SCENE_CATALOGUE_PARTITION);
+    expect(items.map(item => item.sceneId)).toEqual(['s-0000']);
+    expect(items.every(item => item.entityType === 'SCENE_PROFILE')).toBe(true);
+    expect(items.map(item => item.PK)).toEqual(['SCENE#s-0000']);
+    // assignedAt is when the *assignment* was made, not when the refit ran.
+    expect(items[0].assignedAt).toBe('2026-10-20T00:00:00.000Z');
+    expect(items[0].generatedAt).toBe(GENERATED_AT);
+  });
+
+  it('keeps the four catalogues in separate partitions', async () => {
     await saveRankingSnapshotDynamoDB(snapshot(), 1);
 
     const sets = queryGsi1(SET_CATALOGUE_PARTITION);
     const components = queryGsi1(COMPONENT_CATALOGUE_PARTITION);
+    const venues = queryGsi1(VENUE_CATALOGUE_PARTITION);
+    const scenes = queryGsi1(SCENE_CATALOGUE_PARTITION);
     expect(sets).toHaveLength(2);
     expect(components).toHaveLength(2);
-    expect(sets.some(item => item.entityType === 'COMPONENT_PROFILE')).toBe(false);
-    expect(components.some(item => item.entityType === 'SET_PROFILE')).toBe(false);
+    expect(venues).toHaveLength(2);
+    expect(scenes).toHaveLength(1);
+    const entityTypes = (items: Record<string, unknown>[]) =>
+      new Set(items.map(item => item.entityType));
+    expect(entityTypes(sets)).toEqual(new Set(['SET_PROFILE']));
+    expect(entityTypes(components)).toEqual(new Set(['COMPONENT_PROFILE']));
+    expect(entityTypes(venues)).toEqual(new Set(['VENUE_PROFILE']));
+    expect(entityTypes(scenes)).toEqual(new Set(['SCENE_PROFILE']));
   });
 
   it('indexes rows written over an un-indexed predecessor', async () => {
@@ -169,5 +267,18 @@ describe('the ranking catalogue items are enumerable via GSI1', () => {
 
     expect((queryGsi1(SET_CATALOGUE_PARTITION)).map(item => item.setId)).toEqual(['s4']);
     expect((queryGsi1(COMPONENT_CATALOGUE_PARTITION)).map(item => item.componentId)).toEqual(['c-0000']);
+  });
+
+  it('removes a venue whose last match aged out, and a scene a re-clustering retired', async () => {
+    // Otherwise the catalogue Query keeps serving a pin with no data behind it.
+    await saveRankingSnapshotDynamoDB(snapshot(), 1);
+
+    const narrowed = snapshot();
+    narrowed.venues = narrowed.venues.slice(0, 1);
+    narrowed.scenes = [];
+    await saveRankingSnapshotDynamoDB(narrowed, 1);
+
+    expect((queryGsi1(VENUE_CATALOGUE_PARTITION)).map(item => item.shopExternalId)).toEqual([1234]);
+    expect(queryGsi1(SCENE_CATALOGUE_PARTITION)).toHaveLength(0);
   });
 });

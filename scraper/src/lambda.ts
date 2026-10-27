@@ -45,6 +45,7 @@ import {
 import { runPlayriftboundResultsPass } from './sources/playriftboundResults.js';
 import { refitDue, runRankingPass } from './ranking/pass.js';
 import { parsePrereleaseTypes } from './ranking/sets.js';
+import { parseTierWeights } from './ranking/whr.js';
 import {
   findCancelledPlayriftboundEvents,
   findCancelledUvsEvents,
@@ -790,6 +791,9 @@ async function runRanking(context: Context): Promise<{ statusCode: number; body:
     return { statusCode: 200, body: JSON.stringify({ message: 'ratings require DynamoDB' }) };
   }
 
+  const tierWeights = parseTierWeights(env.RANKING_TIER_WEIGHTS);
+  if (tierWeights.warning) console.warn(`[ranking] ${tierWeights.warning}; tiers left unweighted`);
+
   const runId = await startScrapeRun();
   try {
     const summary = await runRankingPass({
@@ -807,6 +811,8 @@ async function runRanking(context: Context): Promise<{ statusCode: number; body:
         driftEloPerSqrtDay: env.RANKING_DRIFT_ELO_PER_SQRT_DAY,
         observationLevel: env.RANKING_OBSERVATION_LEVEL,
         weightScale: env.RANKING_WEIGHT_SCALE,
+        tierWeights: tierWeights.weights,
+        defaultTierWeight: env.RANKING_DEFAULT_TIER_WEIGHT,
         maxIterations: env.RANKING_MAX_ITERATIONS,
       },
       snapshot: {
@@ -815,6 +821,7 @@ async function runRanking(context: Context): Promise<{ statusCode: number; body:
         minComponentSize: env.RANKING_MIN_COMPONENT_SIZE,
         maxComponentLadders: env.RANKING_MAX_COMPONENT_LADDERS,
         minSetMatches: env.RANKING_MIN_SET_MATCHES,
+        venueTopPlayers: env.RANKING_VENUE_TOP_PLAYERS,
       },
     });
 

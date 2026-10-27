@@ -13,7 +13,11 @@ import {
   latestRating,
   natToElo,
   observationWeights,
+  parseTierWeights,
   ratingOnDay,
+  tierWeightFor,
+  DEFAULT_TIER_WEIGHTS,
+  DEFAULT_WHR_OPTIONS,
 } from '../ranking/whr.js';
 import { connectivityReport, findComponents } from '../ranking/graph.js';
 import { validate } from '../ranking/validate.js';
@@ -296,6 +300,96 @@ describe('observation weights', () => {
     // has to count exactly once rather than disappearing.
     expect(observationWeights(MatchResult.BWin, [], { observationLevel: 'game-shared', weightScale: 1 })).toEqual([0, 1]);
     expect(observationWeights(MatchResult.Draw, [], { observationLevel: 'game-shared', weightScale: 1 })).toEqual([0.5, 0.5]);
+  });
+});
+
+describe('event tier weights', () => {
+  /**
+   * The mechanism, not the policy. The shipped table is empty on purpose - see
+   * DEFAULT_TIER_WEIGHTS and "is an event tier worth a weight?" in
+   * scraper/CLAUDE.md - so what has to be pinned is that the knob does exactly
+   * what it claims when someone sets it, and nothing at all when they do not.
+   */
+  it('ships neutral: every tier counts the same until someone says otherwise', () => {
+    expect(DEFAULT_TIER_WEIGHTS).toEqual({});
+    expect(DEFAULT_WHR_OPTIONS.defaultTierWeight).toBe(1);
+    expect(tierWeightFor('World Championship', DEFAULT_WHR_OPTIONS)).toBe(1);
+    expect(tierWeightFor('Learn to Play', DEFAULT_WHR_OPTIONS)).toBe(1);
+  });
+
+  it('gives an unknown or future tier the default weight, never zero', () => {
+    // Riot's enum grows - eight of its eleven values were unmapped here until
+    // 2026-10-26 - so an unrecognised tier must not be silently discounted.
+    const options = { tierWeights: { 'Nexus Night': 2 }, defaultTierWeight: 1 };
+    expect(tierWeightFor('Some Future Tier', options)).toBe(1);
+    expect(tierWeightFor(null, options)).toBe(1);
+    expect(tierWeightFor('Nexus Night', options)).toBe(2);
+  });
+
+  it('scales a match\'s whole evidence, leaving the win/loss split alone', () => {
+    const level = { observationLevel: 'game-shared' as const, weightScale: 1 };
+    const [a1, b1] = observationWeights(MatchResult.AWin, [1, 2, 1], level, 1);
+    const [a2, b2] = observationWeights(MatchResult.AWin, [1, 2, 1], level, 2);
+    expect(a2).toBeCloseTo(a1 * 2, 10);
+    expect(b2).toBeCloseTo(b1 * 2, 10);
+    expect(a2 + b2).toBeCloseTo(2, 10);
+    expect(observationWeights(MatchResult.AWin, [1, 2, 1], level, 0)).toEqual([0, 0]);
+  });
+
+  it('a weighted tier narrows the posterior, which is why it is not a free knob', () => {
+    // Up-weighting a tier is arithmetically the same as having played those
+    // matches more often, so it narrows the uncertainty the publishing bar is
+    // set on - a rating can clear the bar on no extra real evidence.
+    const observations = build([
+      dominanceLadder('d1', '2026-10-01', ['p1', 'p2', 'p3', 'p4']),
+      dominanceLadder('d2', '2026-10-02', ['p1', 'p2', 'p3', 'p4']),
+    ]);
+    const neutral = fitWhr(observations, {});
+    const weighted = fitWhr(observations, { tierWeights: { 'Nexus Night': 3 } });
+    const index = observations.players.indexOf('p2');
+    expect(latestRating(weighted, index).sigma).toBeLessThan(latestRating(neutral, index).sigma);
+    // The order is unchanged: a weight is evidence volume, not a thumb on one
+    // player's side.
+    const order = (fit: ReturnType<typeof fitWhr>) =>
+      observations.players
+        .map((_, p) => p)
+        .sort((x, y) => latestRating(fit, y).rating - latestRating(fit, x).rating)
+        .map(p => observations.players[p]);
+    expect(order(weighted)).toEqual(order(neutral));
+  });
+
+  it('a tier with no events in the window cannot change the fit at all', () => {
+    // The whole measured finding about the requested ordering: zero of 56,257
+    // production matches are in any tier above Nexus Night, so a table keyed on
+    // those tiers is a weight on an empty set.
+    const observations = build([dominanceLadder('d1', '2026-10-01', ['p1', 'p2', 'p3', 'p4'])]);
+    const neutral = fitWhr(observations, {});
+    const absent = fitWhr(observations, {
+      tierWeights: { 'World Championship': 4, Continental: 3, Regional: 2 },
+    });
+    for (let p = 0; p < observations.players.length; p++) {
+      expect(latestRating(absent, p).rating).toBeCloseTo(latestRating(neutral, p).rating, 12);
+      expect(latestRating(absent, p).sigma).toBeCloseTo(latestRating(neutral, p).sigma, 12);
+    }
+  });
+
+  it('survives a malformed override rather than taking the pass down', () => {
+    expect(parseTierWeights(undefined).weights).toEqual({});
+    expect(parseTierWeights('').weights).toEqual({});
+    expect(parseTierWeights('{"Nexus Night": 2}').weights).toEqual({ 'Nexus Night': 2 });
+
+    const broken = parseTierWeights('not json');
+    expect(broken.weights).toEqual({});
+    expect(broken.warning).toMatch(/not valid JSON/);
+
+    const array = parseTierWeights('[1,2]');
+    expect(array.warning).toMatch(/not a JSON object/);
+
+    // One bad entry is dropped individually; it cannot blank the whole table.
+    const partial = parseTierWeights('{"Nexus Night": 2, "Pre-Rift": -1, "Open Play": "x"}');
+    expect(partial.weights).toEqual({ 'Nexus Night': 2 });
+    expect(partial.warning).toMatch(/Pre-Rift/);
+    expect(partial.warning).toMatch(/Open Play/);
   });
 });
 

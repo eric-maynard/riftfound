@@ -74,8 +74,8 @@ connected component*, so if play is clustered a global ladder is not meaningful.
 ```bash
 ./ranking-metrics.sh connectivity --remote   # measure the co-play graph
 ./ranking-metrics.sh communities --remote    # Louvain communities vs connected components
-./ranking-metrics.sh venues --remote         # per-venue aggregates (what a map view needs)
-./ranking-metrics.sh validate --remote       # held-out accuracy vs Riot's tiebreakers
+./ranking-metrics.sh venues --remote         # per-venue aggregates + the scene assignment in force
+./ranking-metrics.sh validate --remote       # held-out accuracy, knob sweeps, event-tier weights
 ./ranking-metrics.sh bar --remote            # how many players clear each publishing bar
 ./ranking-metrics.sh fit --remote            # dry-run refit summary (writes nothing)
 ./ranking-metrics.sh all --remote            # everything
@@ -93,6 +93,18 @@ geography, how the partition moves as coverage grows and how much the labels
 churn on a subsample. Nothing it computes is published: `componentId` still
 means a connected component. `--resolution` and `--metro-radius-km` tune it.
 
+`venues` prints the per-store aggregates the `VENUE#` items are built from, and
+the **scene in force** for each - read from the stored assignment, never
+recomputed, so the report cannot disagree with what the items say. If no
+assignment exists it says so, and every venue and player item carries a null
+scene until one does.
+
+`validate` also sweeps the **event-tier weights**, and prints the match
+distribution by tier first, because that is what decides whether weighting can
+help: up-weighting a tier that holds 1% of the matches cannot improve a ladder,
+only add variance. The shipped table is neutral; see
+[scraper/CLAUDE.md](../../scraper/CLAUDE.md), "is an event tier worth a weight?".
+
 All read-only; `fit` is a dry run and never writes derived items. The `--file`
 form reads NDJSON of `{externalId, results, roster}` objects, which is how a
 complete region can be measured before the production results backfill reaches
@@ -103,6 +115,113 @@ Shares its graph, model and validation code with the production rating pass
 (`scraper/src/ranking/`), so the numbers in a report are the numbers the ladder
 was actually built from. Design notes and the current measured values are in
 [scraper/CLAUDE.md](../../scraper/CLAUDE.md).
+
+### Re-clustering scenes (the runbook)
+
+```bash
+./scene-recluster.sh --remote                      # propose and diff; writes nothing
+./scene-recluster.sh --remote --show               # print the assignment in force and stop
+./scene-recluster.sh --remote --write              # accept the proposal
+./scene-recluster.sh --remote --rollback --write   # restore the assignment it replaced
+./scene-recluster.sh --remote --resolution 1.5     # sweep the knob (1 is the measured optimum)
+./scene-recluster.sh --remote --max-moves 60       # list more of the stores that would move
+./scene-recluster.sh --remote --json               # machine-readable, for an agent driving it
+```
+
+A **scene** is a Louvain community of the co-play graph, projected onto stores: a
+store belongs to one scene, a scene has a ranking, an event happens at a store.
+The assignment is **persisted**, read by every rating refit, and rewritten only
+by this script.
+
+**This is not a cron job and must not become one.** A partition refitted on 90%
+of the same matches moves 12-18% of its labels, so a scene recomputed every
+refit would reshuffle the UI's scene selector daily. Persisting it is what makes
+a store's scene stable; running this script is what makes it change.
+
+#### When to re-cluster
+
+Good reasons, roughly in order of how often they come up:
+
+- **The data has materially grown.** A new region has filled in, or the results
+  backfill has reached a month it had nothing for. Scene boundaries drawn on 10%
+  coverage are not wrong so much as premature.
+- **A set rotation or a new event tier has changed who plays whom.** The
+  measurement that motivated this design showed the partition is partly a
+  property of the window's event mix: deleting the prerelease tier moved
+  community ARI to 0.54. A real change in the mix is a real change in the
+  scenes.
+- **Someone reports a store in the wrong scene**, and `--show` plus
+  `./ranking-metrics.sh venues --remote` confirm its purity is low.
+
+Bad reasons: a modularity number you would like to be higher, a quiet week, or
+tidiness. Every re-clustering spends reader trust in the scene labels.
+
+#### What to look at before accepting
+
+The script prints a diff and then a verdict. **Read the diff, not the
+modularity** - a partition can have excellent modularity and still rename every
+scene, which is the only failure a reader actually notices.
+
+| what | where | accept when |
+|---|---|---|
+| **venue churn** | "venues that would move" | under ~10%. The CLI warns over 10% and says STOP over 25% |
+| **scene ids carried over** | "scene ids carried over" vs the live scene count | at least 70%. Ids are carried by venue-set Jaccard (>= 0.5), so a low rate means the scenes were redrawn and any saved link to a scene breaks |
+| **the moved list** | highest purity first | the movers are boundary stores, not whole cities. A store moving at **high** purity means the clustering genuinely changed its mind, which is the row to understand before accepting |
+| **median venue purity** | "median venue purity A -> B" | stays high. 99.3% was measured on a complete region; "a store belongs to one scene" is only honest while this holds |
+| **stores per scene** | the "stores per scene" row | **3 or more**. A scene pools several stores - that is what makes it a scene rather than a venue. The CLI says STOP below 3, ahead of every other gate, because it is the one check a first run cannot skip |
+| **modularity** | the proposed line | above ~0.3, the level the literature treats as real community structure. Below that there is no scene structure to publish - usually too little coverage. **Very high** modularity (>0.95) alongside a low stores-per-scene is the same symptom, not reassurance |
+| **resolution** | the proposed line | the same as last time, unless you mean to change it. gamma = 1 is the measured stability optimum (12.1% churn, against 19.7% at 0.5 and 21.8% at 2), so churn from a knob change is self-inflicted |
+
+#### What a bad result looks like
+
+- **Churn over 25% with most ids retired.** This is a re-partition, not a
+  refresh. The usual cause is a large new event tier entering the window, or a
+  resolution change. Re-run at the default resolution before accepting anything.
+- **Modularity under 0.3.** The graph has no density structure to find yet.
+  Expected at low coverage: the chronological coverage table in
+  scraper/CLAUDE.md shows what partial coverage does.
+- **Median purity falling sharply.** Stores are being split across scenes, so
+  the one-store-one-scene claim is weakening. Worth understanding before it
+  reaches a store page.
+- **A single scene swallowing most venues.** Compare "proposed" against the live
+  line. A largest community of 11-17% was invariant across every coverage level
+  measured; one at 60% means something is wrong with the graph, not with the
+  scenes.
+- **Hundreds of scenes with two stores each.** The failure the first production
+  dry run actually hit: 2,149 venues clustered into 1,042 scenes at modularity
+  0.9844, against a complete region's 390 venues in 51 communities at 0.83. The
+  results backfill had not captured the cross-venue edges that join stores into
+  a scene. Wait for coverage; a fragmented graph produces *more* communities and
+  *higher* modularity, so both reassuring-looking numbers move the wrong way.
+
+#### Accepting, and rolling back
+
+Writing an assignment changes **nothing a reader sees, immediately**. The scene
+fields on the stored items are rewritten by the next rating refit (up to
+`RANKING_REFIT_INTERVAL_HOURS`, default 24). So the order is: write, read the
+diff once more, and let the refit pick it up.
+
+Rollback is one command:
+
+```bash
+./scene-recluster.sh --remote --rollback --write
+```
+
+Each write keeps the assignment it replaced, **one level deep**, so there is
+exactly one undo. Roll back before running another re-clustering if you are not
+sure - a second write replaces the stored predecessor and the first assignment
+is gone.
+
+If an assignment is ever unreadable, the refit logs it and publishes null scenes
+rather than failing: the ladder is unaffected and the fix is to re-cluster.
+
+#### Driving this from an agent
+
+A prompt that covers the whole procedure, including the stop conditions and the
+rollback, is in
+[prompts/recluster-scenes.md](prompts/recluster-scenes.md). `--json` emits the
+proposal, the diff and the verdict notes as one object, so an agent can apply
+the gates above without parsing tables.
 
 ### Geocoding Metrics (Google API Usage)
 
@@ -175,7 +294,10 @@ Output includes:
 | Observation level sweep | Match vs per-game weighting, compared out of sample |
 | Games per match by type | How much per-game Bo3 detail organizers actually record. Strongly type-dependent, so any pooled figure is an artefact of the window's event mix. |
 | Pooled vs per-type fit | Whether one rating across sealed (Pre-Rift) and constructed (Nexus Night / Summoner Skirmish) events costs accuracy - i.e. whether `format` is worth a rating dimension |
+| Match distribution by tier | Matches, players, and players whose *whole* record is in one tier - what a tier weight would actually act on |
+| Tier weight sweep | Candidate event-tier weight tables against held-out accuracy, log loss and Brier. The gate on whether weighting a tier helps at all |
 | Publishing bar | Players admitted at each (min games, max uncertainty) pair |
+| Per-venue aggregates | Players, rated players, matches, events and the scene in force per store - the `VENUE#` items a map reads |
 
 Every type-keyed number from this feed depends on its window: `tournamentType`
 composition swings hard between prerelease fortnights and normal months, so pass

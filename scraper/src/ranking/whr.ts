@@ -124,6 +124,33 @@ export interface WhrOptions {
   observationLevel: 'game' | 'game-shared' | 'match';
   /** Total weight of one match. 1 by default; swept against held-out log loss. */
   weightScale: number;
+  /**
+   * Per-tier multiplier on a match's total evidence, keyed on our `eventType`
+   * label (the mapped form of Riot's `tournamentType` - see
+   * sources/playriftbound.ts).
+   *
+   * The intuition is sound: a result at a Championship ought to say more about
+   * true skill than a casual Learn to Play, and the model otherwise treats
+   * every match as one observation. Mechanically this is just a scale on the
+   * match's observation weight, so a tier at 2 moves both players' ratings
+   * roughly as if the match had been played twice, and *narrows* their
+   * posterior SD accordingly - which is why it is not a free knob: it also
+   * decides who clears the publishing bar.
+   *
+   * **The default is all-ones, i.e. off, and that is a measurement not a
+   * placeholder.** See DEFAULT_TIER_WEIGHTS.
+   */
+  tierWeights: Record<string, number>;
+  /**
+   * Weight for a tier absent from `tierWeights`, including `Other` and every
+   * value Riot adds to the enum after this was written.
+   *
+   * 1 on purpose. The alternative - defaulting an unknown tier low - would
+   * silently discount a whole new tier of real competitive play the first time
+   * Riot ships one, and the enum demonstrably grows (eight of its eleven values
+   * were unmapped here until 2026-10-26).
+   */
+  defaultTierWeight: number;
   maxIterations: number;
   /** Convergence tolerance on the largest rating change in one sweep, in natural units. */
   tolerance: number;
@@ -131,16 +158,102 @@ export interface WhrOptions {
   maxStep: number;
 }
 
+/**
+ * Tier weights, shipped **neutral**: every tier counts the same.
+ *
+ * This is the honest default, not an un-finished one, and the reasoning is
+ * worth keeping because the knob looks obviously right:
+ *
+ * 1. **The tiers the ordering is about do not exist in the data yet.** Riot's
+ *    enum has eleven values and six of them are competitive tiers
+ *    (`NEXUS_CUP`, `CHALLENGE_SERIES`, `SHOWDOWN_SERIES`, `REGIONAL`,
+ *    `CONTINENTAL`, `WORLD_CHAMPIONSHIP`). Counted across 47,179 stored `prb-`
+ *    events spanning -59/+90 days on 2026-10-26: **zero** of any of them. A
+ *    weight on `World Championship` is a weight on an empty set.
+ * 2. **For the tiers that do exist, weighting measured worse.** See
+ *    `./ranking-metrics.sh validate`, which sweeps this table against held-out
+ *    accuracy, log loss and Brier. The numbers and the reason are in
+ *    scraper/CLAUDE.md under "Measured: is an event tier worth a weight?".
+ * 3. **It interacts with sparsity, not just with ordering.** The median player
+ *    has 5 matches. Up-weighting a rare tier means a handful of matches
+ *    dominate a few players' curves and narrow their posterior SD - which can
+ *    move them past the publishing bar on *less* real evidence. Higher variance
+ *    reads as a sharper ladder and is not one.
+ *
+ * `RANKING_TIER_WEIGHTS` sets it without a code change, so the table can be
+ * turned on the day the competitive tiers have finished events to measure it
+ * on. The ordering to try then is the product one -
+ * World Championship > Continental > Regional > the series tiers >
+ * Summoner Skirmish > Nexus Night > Open Play / Learn to Play - and the gate is
+ * the same validate run, not the intuition.
+ */
+export const DEFAULT_TIER_WEIGHTS: Record<string, number> = {};
+
 export const DEFAULT_WHR_OPTIONS: WhrOptions = {
   priorSigmaElo: 150,
   eloOrigin: DEFAULT_ELO_ORIGIN,
   driftEloPerSqrtDay: 4,
   observationLevel: 'game-shared',
   weightScale: 1,
+  tierWeights: DEFAULT_TIER_WEIGHTS,
+  defaultTierWeight: 1,
   maxIterations: 60,
   tolerance: 1e-4,
   maxStep: 2,
 };
+
+/**
+ * The multiplier for one event's tier.
+ *
+ * Keyed on the mapped `eventType`, not on Riot's raw enum, because that is what
+ * the fact rows carry - a results fact denormalises `eventType` off the event
+ * row precisely so a replay can see it after the row is gone.
+ */
+export function tierWeightFor(
+  eventType: string | null | undefined,
+  options: Pick<WhrOptions, 'tierWeights' | 'defaultTierWeight'>
+): number {
+  if (!eventType) return options.defaultTierWeight;
+  const weight = options.tierWeights[eventType];
+  return typeof weight === 'number' && Number.isFinite(weight) && weight >= 0
+    ? weight
+    : options.defaultTierWeight;
+}
+
+/**
+ * Parse a `RANKING_TIER_WEIGHTS` override: `{"World Championship": 2, ...}`.
+ *
+ * A malformed override logs and falls back rather than taking the pass down,
+ * the same rule `RANKING_SET_TABLE` follows. A negative or non-finite weight is
+ * dropped individually, so one bad entry cannot blank the table.
+ */
+export function parseTierWeights(
+  raw: string | undefined
+): { weights: Record<string, number>; warning?: string } {
+  if (!raw || raw.trim() === '') return { weights: DEFAULT_TIER_WEIGHTS };
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+      return { weights: DEFAULT_TIER_WEIGHTS, warning: 'RANKING_TIER_WEIGHTS is not a JSON object' };
+    }
+    const weights: Record<string, number> = {};
+    const bad: string[] = [];
+    for (const [tier, value] of Object.entries(parsed as Record<string, unknown>)) {
+      const weight = Number(value);
+      if (Number.isFinite(weight) && weight >= 0) weights[tier] = weight;
+      else bad.push(tier);
+    }
+    return {
+      weights,
+      warning: bad.length > 0 ? `RANKING_TIER_WEIGHTS ignored for ${bad.join(', ')}` : undefined,
+    };
+  } catch (error) {
+    return {
+      weights: DEFAULT_TIER_WEIGHTS,
+      warning: `RANKING_TIER_WEIGHTS is not valid JSON (${error instanceof Error ? error.message : error})`,
+    };
+  }
+}
 
 /** One likelihood term in a player's own block. */
 interface Term {
@@ -187,13 +300,24 @@ function sigmoid(x: number): number {
  * 3.2% of them, measured - falls back to a match-level observation, so a result
  * Riot published without game detail still counts exactly once rather than
  * disappearing from the fit.
+ *
+ * `tierWeight` scales the whole match (see WhrOptions.tierWeights). A weight of
+ * 0 contributes no likelihood term, so `fitWhr` skips the match rather than
+ * recording a zero-information one - but the match and game *counters* have
+ * already been incremented by then, so such a player reads as having played
+ * while sitting at the prior with prior-width uncertainty. That is a coherent
+ * state (attendance recorded, no evidence used) and it fails the publishing
+ * bar, which is the right outcome; it is still a reason not to use 0 as a way
+ * of excluding a tier.
  */
 export function observationWeights(
   result: number,
   gameWinners: number[],
-  options: Pick<WhrOptions, 'observationLevel' | 'weightScale'>
+  options: Pick<WhrOptions, 'observationLevel' | 'weightScale'>,
+  tierWeight = 1
 ): [number, number] {
-  const scale = options.weightScale;
+  const scale = options.weightScale * tierWeight;
+  if (scale === 0) return [0, 0];
   if (options.observationLevel !== 'match' && gameWinners.length > 0) {
     const perGame = options.observationLevel === 'game-shared' ? scale / gameWinners.length : scale;
     let a = 0;
@@ -294,7 +418,12 @@ export function fitWhr(observations: ObservationSet, overrides: Partial<WhrOptio
     const day = observations.events[observations.event[i]].day;
     const ta = dayIndex[a].get(day)!;
     const tb = dayIndex[b].get(day)!;
-    const [wa, wb] = observationWeights(observations.result[i], observations.gameWinners[i], options);
+    const [wa, wb] = observationWeights(
+      observations.result[i],
+      observations.gameWinners[i],
+      options,
+      tierWeightFor(observations.events[observations.event[i]].tournamentType, options)
+    );
     if (wa === 0 && wb === 0) continue;
     weight[a] += wa + wb;
     weight[b] += wa + wb;

@@ -26,13 +26,21 @@
  */
 
 import { readFileSync } from 'node:fs';
-import { loadEventNames } from '../database.js';
+import { loadEventNames, loadSceneAssignment } from '../database.js';
 import { ObservationBuilder, dayNumber, type ObservationSet } from './observations.js';
 import { connectivityReport, type ConnectivityReport } from './graph.js';
 import { communityReport, venueAggregates, type CommunityReport } from './communities.js';
 import { buildEras, DEFAULT_PRERELEASE_OPTIONS, parseSetTable, parsePrereleaseTypes, type SetEra } from './sets.js';
 import { replayDates, replayFacts, resolveVenueLabels, runRankingPass } from './pass.js';
-import { gamesPerMatchByType, sweepObservationLevel, sweepPriorSigma, validate, validateByType } from './validate.js';
+import {
+  gamesPerMatchByType,
+  matchDistributionByTier,
+  sweepObservationLevel,
+  sweepPriorSigma,
+  sweepTierWeights,
+  validate,
+  validateByType,
+} from './validate.js';
 import { buildSnapshot, DEFAULT_SNAPSHOT_OPTIONS } from './snapshot.js';
 import type { EventResults, EventRoster } from '../database.js';
 
@@ -373,15 +381,36 @@ async function main(): Promise<void> {
         ? [...venues].map(v => v.players).sort((a, b) => a - b)[Math.floor(venues.length / 2)]
         : 0,
     }]));
+    // The scene a venue belongs to comes from the *persisted* assignment, not
+    // from a fit run here - that is the whole point of the assignment, and
+    // printing a freshly-computed one would make this report disagree with the
+    // items. Use ./scene-recluster.sh to propose a new one.
+    const assignment = args.file ? null : await loadSceneAssignment().catch(() => null);
+    const sceneOfVenue = new Map((assignment?.venues ?? []).map(row => [row.venue, row.sceneId]));
+    const purityOfVenue = new Map((assignment?.venues ?? []).map(row => [row.venue, row.purity]));
+    const labelOfScene = new Map((assignment?.scenes ?? []).map(row => [row.sceneId, row.label]));
+    console.log(
+      assignment
+        ? `\nScene assignment in force: ${assignment.venues.length} venues in ` +
+            `${assignment.scenes.length} scenes, made ${assignment.generatedAt}`
+        : '\nScene assignment in force: none - run ./scene-recluster.sh to create one. ' +
+            'Every venue and player item carries a null scene until then.'
+    );
+
     console.log('\nBusiest venues');
-    console.log(table(venues.slice(0, 15).map(venue => ({
-      venue: venue.venue,
-      players: venue.players,
-      matches: venue.matches,
-      events: venue.events,
-      latitude: venue.latitude?.toFixed(4) ?? '-',
-      longitude: venue.longitude?.toFixed(4) ?? '-',
-    }))));
+    console.log(table(venues.slice(0, 15).map(venue => {
+      const sceneId = sceneOfVenue.get(venue.venue) ?? null;
+      return {
+        venue: venue.venue,
+        players: venue.players,
+        matches: venue.matches,
+        events: venue.events,
+        latitude: venue.latitude?.toFixed(4) ?? '-',
+        longitude: venue.longitude?.toFixed(4) ?? '-',
+        scene: sceneId ? `${labelOfScene.get(sceneId) ?? '(unlabelled)'} ${sceneId}` : '-',
+        purity: sceneId ? percent(purityOfVenue.get(venue.venue) ?? 0) : '-',
+      };
+    })));
   }
 
   if (command === 'validate' || command === 'all') {
@@ -443,6 +472,34 @@ async function main(): Promise<void> {
       'type-only loss': row.restricted.logLoss.toFixed(4),
       'pooled - type (loss)': row.logLossDelta.toFixed(4),
     }))));
+
+    console.log('\n--- EVENT TIER WEIGHTS ---');
+    console.log(
+      '\nWhat a tier weight would act on (the distribution comes first: up-weighting a\n' +
+        'tier that holds 1% of the matches cannot improve a ladder, only add variance).\n' +
+        '"only tier" counts players whose entire record is in that tier - a weight\n' +
+        'rescales them and cannot change their rating, because a rating is differences.\n'
+    );
+    console.log(table(matchDistributionByTier(observations).map(row => ({
+      tier: row.tier,
+      matches: row.matches,
+      'share of matches': percent(row.matchShare),
+      players: row.players,
+      'only tier': row.exclusivePlayers,
+      'median matches/player': row.medianMatchesPerPlayer,
+    }))));
+
+    console.log('\nTier weight sweep (the gate: weighting changes calibration, not just order)');
+    console.log(table(sweepTierWeights(observations, cutoff).map(row => {
+      const whr = row.result.scores[0];
+      return {
+        table: row.label,
+        'tiers weighted': Object.keys(row.weights).length,
+        accuracy: percent(whr.accuracy),
+        'log loss': whr.logLoss.toFixed(4),
+        brier: whr.brier.toFixed(4),
+      };
+    })));
 
     console.log('\nObservation level sweep');
     console.log(table(sweepObservationLevel(observations, cutoff).map(row => {

@@ -36,6 +36,7 @@
 import { MatchResult, sliceMatches, type ObservationSet } from './observations.js';
 import { findComponents, venueKey, type ComponentAssignment } from './graph.js';
 import { fitWhr, latestRating, natToElo, ELO_PER_NAT, type WhrFit, type WhrOptions } from './whr.js';
+import { sceneLookup, type SceneAssignment } from './scenes.js';
 import { ALL_SCOPE, componentScope, setComponentScope, setScope, utcDate, type SetDefinition, type SetEra } from './sets.js';
 import {
   MATCH_LOG_VERSION,
@@ -51,13 +52,18 @@ import {
   type RankingRow,
   type RankingSnapshot,
   type RatingThresholds,
+  type SceneProfile,
   type ScopedRating,
   type SetProfile,
+  type VenueProfile,
+  type VenueRosterEntry,
 } from './items.js';
 import {
   sanitizeComponentProfile,
   sanitizeMatchLogEntry,
   sanitizePlayerProfile,
+  sanitizeSceneProfile,
+  sanitizeVenueProfile,
   sanitizeRankingMeta,
   sanitizeRankingRow,
   sanitizeSetProfile,
@@ -77,6 +83,18 @@ export interface SnapshotOptions {
   maxComponentLadders: number;
   /** Venue key -> human-readable label, resolved from the shops table. */
   venueLabels: Map<string, string>;
+  /**
+   * The persisted venue -> scene assignment, read not computed.
+   *
+   * Null means "no re-clustering has been run", and every scene field comes out
+   * null rather than being invented. The refit never clusters: see
+   * ranking/scenes.ts for why a per-refit partition is unshippable (12-18%
+   * label churn) and why this is the one piece of cross-refit state the pass
+   * carries.
+   */
+  sceneAssignment?: SceneAssignment | null;
+  /** How many players a venue item denormalises, ordered by matches there. */
+  venueTopPlayers: number;
   whr: Partial<WhrOptions>;
   /** Events whose per-player match log still has to be emitted. */
   matchLogEvents: Set<string>;
@@ -126,6 +144,11 @@ export const DEFAULT_SNAPSHOT_OPTIONS: Omit<
   minComponentSize: 8,
   maxComponentLadders: 50,
   minSetMatches: 50,
+  // 25 covers the median venue's 22 players outright; the maximum is 209 and
+  // the rest is the long tail of one-night attendees a map drill-down
+  // truncates anyway.
+  venueTopPlayers: 25,
+  sceneAssignment: null,
 };
 
 export interface SnapshotDiagnostics {
@@ -144,6 +167,12 @@ export interface SnapshotDiagnostics {
   skippedEras: { eraId: string; matches: number }[];
   matchLogEntries: number;
   matchLogEventsWritten: number;
+  /** Venue items emitted, which is the count of venues with a real shop id. */
+  venueCount: number;
+  /** Scenes from the persisted assignment that this snapshot's venues populate. */
+  sceneCount: number;
+  /** True when no re-clustering has been run, so every scene field is null. */
+  scenesUnassigned: boolean;
   thresholds: RatingThresholds;
 }
 
@@ -358,8 +387,19 @@ export function buildSnapshot(
     return venue ? options.venueLabels.get(venue) ?? null : null;
   };
 
+  // Scenes are *read*, never fitted here. A null assignment leaves every scene
+  // field null rather than inventing one - see ranking/scenes.ts.
+  const scenes = sceneLookup(options.sceneAssignment ?? null);
+  const sceneOf = (player: number): { sceneId: string | null; sceneLabel: string | null } => {
+    const venue = homeVenue.get(player);
+    const sceneId = venue ? scenes.sceneOfVenue.get(venue) ?? null : null;
+    return { sceneId, sceneLabel: sceneId ? scenes.labelOfScene.get(sceneId) ?? null : null };
+  };
+
   // Profiles.
   const profiles: PlayerProfile[] = [];
+  const ratedPlayer = new Uint8Array(playerCount);
+  const publishedRating = new Array<number | null>(playerCount).fill(null);
   const giantId = components.components[0]?.id ?? null;
   for (let p = 0; p < playerCount; p++) {
     if (allFit.matchesPlayed[p] === 0) continue; // roster-only attendee: no rating to state
@@ -375,6 +415,9 @@ export function buildSnapshot(
 
     const all = scopedRating(scopeFits[0], p, componentSize, priorSigmaElo, options);
     const venue = homeVenue.get(p);
+    ratedPlayer[p] = all.rated ? 1 : 0;
+    publishedRating[p] = all.rating;
+    const scene = sceneOf(p);
     profiles.push(
       sanitizePlayerProfile({
         playerId: observations.players[p],
@@ -404,6 +447,8 @@ export function buildSnapshot(
         regionLabel: regionFor(p),
         venueCount: venuesPerPlayer.get(p)?.size ?? 0,
         homeVenueId: venue?.startsWith('shop:') ? Number(venue.slice(5)) : null,
+        sceneId: scene.sceneId,
+        sceneLabel: scene.sceneLabel,
         setRatings,
         generatedAt,
         modelVersion: MODEL_VERSION,
@@ -551,6 +596,7 @@ export function buildSnapshot(
           componentId,
           componentSize,
           regionLabel: regionFor(p),
+          ...sceneOf(p),
           suppressPosition: componentSize < options.minComponentSize,
         },
       });
@@ -696,6 +742,154 @@ export function buildSnapshot(
     });
   });
 
+  // Venue directory, so a map's first render is one Query and a store page is
+  // one GetItem. Nothing here needs data the facts do not already carry: every
+  // match fact has a shop id plus coordinates.
+  //
+  // Keyed on `shopExternalId` only. `venueKey`'s `geo:` fallback is a 1km
+  // coordinate rounding, which is a fine graph node and a bad durable key - the
+  // id would move if the geocode moved - so an unresolved organizer is left off
+  // the map rather than given an id that will change under it.
+  interface VenueAccumulator {
+    shopExternalId: number;
+    latSum: number;
+    lonSum: number;
+    coordCount: number;
+    matches: number;
+    events: Set<string>;
+    first: number;
+    last: number;
+    matchesByPlayer: Map<number, number>;
+  }
+  const venueRows = new Map<string, VenueAccumulator>();
+  for (let i = 0; i < observations.playerA.length; i++) {
+    const meta = observations.events[observations.event[i]];
+    if (meta.shopExternalId === null || meta.shopExternalId === undefined) continue;
+    const key = venueKey(meta.shopExternalId, meta.latitude, meta.longitude);
+    let row = venueRows.get(key);
+    if (!row) {
+      venueRows.set(key, (row = {
+        shopExternalId: meta.shopExternalId,
+        latSum: 0,
+        lonSum: 0,
+        coordCount: 0,
+        matches: 0,
+        events: new Set(),
+        first: Number.POSITIVE_INFINITY,
+        last: Number.NEGATIVE_INFINITY,
+        matchesByPlayer: new Map(),
+      }));
+    }
+    if (meta.latitude !== null && meta.longitude !== null) {
+      row.latSum += meta.latitude;
+      row.lonSum += meta.longitude;
+      row.coordCount++;
+    }
+    row.matches++;
+    row.events.add(meta.externalId);
+    const at = meta.startDate.getTime();
+    if (at < row.first) row.first = at;
+    if (at > row.last) row.last = at;
+    for (const player of [observations.playerA[i], observations.playerB[i]]) {
+      row.matchesByPlayer.set(player, (row.matchesByPlayer.get(player) ?? 0) + 1);
+    }
+  }
+
+  const venueProfiles: VenueProfile[] = [];
+  const sceneTotals = new Map<string, { venues: number; players: Set<number>; rated: number; matches: number; purities: number[] }>();
+  for (const [key, row] of [...venueRows.entries()].sort((a, b) => (a[0] < b[0] ? -1 : 1))) {
+    const sceneId = scenes.sceneOfVenue.get(key) ?? null;
+    const scenePurity = sceneId ? scenes.purityOfVenue.get(key) ?? null : null;
+    // Ordered by matches played here, ties on the player UUID so the roster is
+    // stable between refits rather than reshuffling on a Map iteration order.
+    const roster = [...row.matchesByPlayer.entries()]
+      .sort((a, b) => b[1] - a[1] || (observations.players[a[0]] < observations.players[b[0]] ? -1 : 1));
+    const topPlayers: VenueRosterEntry[] = roster.slice(0, options.venueTopPlayers).map(([player, matches]) => ({
+      playerId: observations.players[player],
+      displayName: observations.displayNames[player],
+      tagLine: observations.tagLines[player],
+      matches,
+      rating: publishedRating[player],
+      rated: ratedPlayer[player] === 1,
+    }));
+    let ratedPlayers = 0;
+    for (const player of row.matchesByPlayer.keys()) if (ratedPlayer[player] === 1) ratedPlayers++;
+
+    venueProfiles.push(
+      sanitizeVenueProfile({
+        venue: key,
+        shopExternalId: row.shopExternalId,
+        name: options.venueLabels.get(key) ?? null,
+        latitude: row.coordCount > 0 ? row.latSum / row.coordCount : null,
+        longitude: row.coordCount > 0 ? row.lonSum / row.coordCount : null,
+        players: row.matchesByPlayer.size,
+        ratedPlayers,
+        matches: row.matches,
+        events: row.events.size,
+        firstSeen: new Date(row.first).toISOString(),
+        lastSeen: new Date(row.last).toISOString(),
+        sceneId,
+        sceneLabel: sceneId ? scenes.labelOfScene.get(sceneId) ?? null : null,
+        scenePurity,
+        topPlayers,
+        topPlayersTruncated: roster.length > topPlayers.length,
+        generatedAt,
+      })
+    );
+
+    if (sceneId) {
+      let totals = sceneTotals.get(sceneId);
+      if (!totals) {
+        sceneTotals.set(sceneId, (totals = { venues: 0, players: new Set(), rated: 0, matches: 0, purities: [] }));
+      }
+      totals.venues++;
+      totals.matches += row.matches;
+      if (scenePurity !== null) totals.purities.push(scenePurity);
+    }
+  }
+
+  // A scene's player counts come from *home* venue, not from every venue a
+  // player visited, so a scene's membership is a partition of players rather
+  // than an overlapping set of visitors.
+  for (let p = 0; p < playerCount; p++) {
+    if (allFit.matchesPlayed[p] === 0) continue;
+    const venue = homeVenue.get(p);
+    const sceneId = venue ? scenes.sceneOfVenue.get(venue) ?? null : null;
+    if (!sceneId) continue;
+    const totals = sceneTotals.get(sceneId);
+    if (!totals) continue;
+    totals.players.add(p);
+    if (ratedPlayer[p] === 1) totals.rated++;
+  }
+
+  // Scene directory. Built from the *stored* assignment, so every scene it
+  // names exists in the assignment an operator accepted - a scene cannot
+  // appear or vanish because a refit saw one more match.
+  const assignedAt = options.sceneAssignment?.generatedAt ?? generatedAt;
+  const sceneProfiles: SceneProfile[] = (options.sceneAssignment?.scenes ?? [])
+    .filter(scene => sceneTotals.has(scene.sceneId))
+    .map(scene => {
+      const totals = sceneTotals.get(scene.sceneId)!;
+      const purities = [...totals.purities].sort((a, b) => a - b);
+      const mid = purities.length >> 1;
+      return sanitizeSceneProfile({
+        sceneId: scene.sceneId,
+        label: scene.label,
+        venueCount: totals.venues,
+        playerCount: totals.players.size,
+        ratedCount: totals.rated,
+        matchCount: totals.matches,
+        medianPurity:
+          purities.length === 0
+            ? 0
+            : purities.length % 2 === 1
+              ? purities[mid]
+              : (purities[mid - 1] + purities[mid]) / 2,
+        assignedAt,
+        generatedAt,
+      });
+    });
+
   const diagnostics: SnapshotDiagnostics = {
     players: playerCount,
     playersWithMatches: components.playersWithMatches,
@@ -711,6 +905,9 @@ export function buildSnapshot(
     skippedEras,
     matchLogEntries: matchLog.length,
     matchLogEventsWritten: matchLogEvents.size,
+    venueCount: venueProfiles.length,
+    sceneCount: sceneProfiles.length,
+    scenesUnassigned: (options.sceneAssignment?.venues.length ?? 0) === 0,
     thresholds,
   };
 
@@ -724,6 +921,8 @@ export function buildSnapshot(
       metas,
       components: componentProfiles,
       sets: setProfiles,
+      venues: venueProfiles,
+      scenes: sceneProfiles,
     },
     diagnostics,
     components,

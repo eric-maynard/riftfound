@@ -29,6 +29,7 @@ import {
   loadEventFactsByDate,
   loadEventNames,
   loadMatchLogMarkers,
+  loadSceneAssignment,
   loadShopLabels,
   saveRankingSnapshot,
   setLastRankingRefit,
@@ -40,6 +41,7 @@ import { ObservationBuilder, type ObservationSet } from './observations.js';
 import { connectivityReport, venueKey, type ConnectivityReport } from './graph.js';
 import { buildSnapshot, DEFAULT_SNAPSHOT_OPTIONS, type SnapshotDiagnostics, type SnapshotOptions } from './snapshot.js';
 import { MATCH_LOG_VERSION } from './items.js';
+import type { SceneAssignment } from './scenes.js';
 import {
   buildEras,
   DEFAULT_PRERELEASE_OPTIONS,
@@ -74,6 +76,12 @@ export interface RankingPassOptions {
   /** Re-emit every event's match log, ignoring the markers. */
   rewriteMatchLog?: boolean;
   eras?: readonly SetEra[];
+  /**
+   * Override the stored venue -> scene assignment (tests and the re-clustering
+   * CLI's preview). `undefined` means "read whatever is stored", which is what
+   * production does; `null` means "there is no assignment".
+   */
+  sceneAssignment?: SceneAssignment | null;
 }
 
 export interface RankingPassSummary {
@@ -87,6 +95,11 @@ export interface RankingPassSummary {
   ratedPlayers: number;
   componentCount: number;
   giantComponentShare: number;
+  /** Venue items this refit would write, and the scenes they populate. */
+  venueCount: number;
+  sceneCount: number;
+  /** True when no re-clustering has been run yet, so every scene field is null. */
+  scenesUnassigned: boolean;
   scopes: { scope: string; rated: number; total: number }[];
   skippedEras: { eraId: string; matches: number }[];
   converged: boolean;
@@ -115,6 +128,9 @@ function emptySummary(): RankingPassSummary {
     ratedPlayers: 0,
     componentCount: 0,
     giantComponentShare: 0,
+    venueCount: 0,
+    sceneCount: 0,
+    scenesUnassigned: true,
     scopes: [],
     skippedEras: [],
     converged: false,
@@ -287,6 +303,19 @@ export async function runRankingPass(options: RankingPassOptions = {}): Promise<
 
   const venueLabels = await resolveVenueLabels(observations);
 
+  // Scenes are read, never fitted here. A missing or unreadable assignment is
+  // not a failure: every scene field comes out null and the ladder is
+  // unaffected, until an operator runs ./scene-recluster.sh.
+  const sceneAssignment =
+    options.sceneAssignment !== undefined
+      ? options.sceneAssignment
+      : await loadSceneAssignment().catch(error => {
+          console.warn(
+            `[ranking] scene assignment unavailable: ${error instanceof Error ? error.message : error}`
+          );
+          return null;
+        });
+
   const eventIds = [...new Set(observations.events.map(event => event.externalId))];
   const alreadyLogged = options.rewriteMatchLog
     ? new Set<string>()
@@ -299,6 +328,7 @@ export async function runRankingPass(options: RankingPassOptions = {}): Promise<
     eras,
     setTable: table,
     venueLabels,
+    sceneAssignment,
     matchLogEvents,
     whr: options.whr ?? {},
     generatedAt: now,
@@ -316,6 +346,13 @@ export async function runRankingPass(options: RankingPassOptions = {}): Promise<
       `${diagnostics.playersWithMatches} players clear the bar, ${diagnostics.componentCount} components, ` +
       `giant share ${(diagnostics.giantComponentShare * 100).toFixed(1)}%`
   );
+  console.log(
+    diagnostics.scenesUnassigned
+      ? `[ranking] ${diagnostics.venueCount} venues, scenes unassigned ` +
+          '(run scripts/metrics/scene-recluster.sh to create an assignment)'
+      : `[ranking] ${diagnostics.venueCount} venues across ${diagnostics.sceneCount} scenes ` +
+          `(assignment of ${sceneAssignment?.generatedAt ?? 'unknown date'})`
+  );
 
   if (options.dryRun) {
     summary.durationMs = Date.now() - startedAt;
@@ -332,7 +369,8 @@ export async function runRankingPass(options: RankingPassOptions = {}): Promise<
     `[ranking] wrote ${summary.writes.profiles} profiles, ${summary.writes.historyPoints} rating points, ` +
       `${summary.writes.matchLogEntries} match log entries for ${summary.writes.markers} new events, ` +
       `${summary.writes.rankingRows} ladder rows across ${summary.writes.metas} scopes, ` +
-      `${summary.writes.components} components, ${summary.writes.sets} sets ` +
+      `${summary.writes.components} components, ${summary.writes.sets} sets, ` +
+      `${summary.writes.venues} venues, ${summary.writes.scenes} scenes ` +
       `(pruned ${summary.writes.deletedRows} rows, ${summary.writes.deletedScopes} scopes)`
   );
 
@@ -344,6 +382,9 @@ function applyDiagnostics(summary: RankingPassSummary, diagnostics: SnapshotDiag
   summary.ratedPlayers = diagnostics.ratedPlayers;
   summary.componentCount = diagnostics.componentCount;
   summary.giantComponentShare = diagnostics.giantComponentShare;
+  summary.venueCount = diagnostics.venueCount;
+  summary.sceneCount = diagnostics.sceneCount;
+  summary.scenesUnassigned = diagnostics.scenesUnassigned;
   summary.scopes = diagnostics.scopes;
   summary.skippedEras = diagnostics.skippedEras;
   summary.converged = diagnostics.converged;

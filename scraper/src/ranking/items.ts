@@ -15,6 +15,8 @@
  * | leaderboard header | `RANKING_META#<scope>` | `PROFILE` |
  * | component profile | `COMPONENT#<id>` | `PROFILE` |
  * | set profile | `SET#<id>` | `PROFILE` |
+ * | venue profile | `VENUE#<shopExternalId>` | `PROFILE` |
+ * | scene profile | `SCENE#<sceneId>` | `PROFILE` |
  *
  * A leaderboard is **one item per player**, not a page of entries, so an
  * SK-ascending Query on `RANKING#<scope>` returns rank order directly with no
@@ -160,6 +162,20 @@ export interface PlayerProfile {
   venueCount: number;
   homeVenueId: number | null;
 
+  /**
+   * The scene their home venue belongs to, or null until an operator has run a
+   * re-clustering (see ranking/scenes.ts).
+   *
+   * **Not** `componentId` under another name. A component answers "are these
+   * two ratings on the same scale" and is 97.4% one blob; a scene is a Louvain
+   * community of the co-play graph, persisted between deliberate
+   * re-clusterings so the label does not move under a reader. A player's scene
+   * is their home venue's scene, which is well defined because venue -> scene
+   * is nearly a function (median 99.3% of a venue's play in one scene).
+   */
+  sceneId: string | null;
+  sceneLabel: string | null;
+
   /** Per-set ratings, keyed by set era id (the `<id>` in `set:<id>`). */
   setRatings: Record<string, ScopedRating>;
 
@@ -235,6 +251,9 @@ export interface RankingRow {
   componentId: string;
   componentSize: number;
   regionLabel: string | null;
+  /** The player's scene, denormalised so a board can be filtered without profile fetches. */
+  sceneId: string | null;
+  sceneLabel: string | null;
   /**
    * True when this row's rank should not be shown as a position.
    *
@@ -330,6 +349,116 @@ export interface SetProfile {
   generatedAt: string;
 }
 
+/** One player on a venue's denormalised roster. */
+export interface VenueRosterEntry {
+  playerId: string;
+  displayName: string | null;
+  tagLine: string | null;
+  /** Matches this player has played at this venue. The ordering key. */
+  matches: number;
+  /** Published rating, or null when the player is below the publishing bar. */
+  rating: number | null;
+  rated: boolean;
+}
+
+/**
+ * One store, as its own item: what a per-venue page and a map pin need.
+ *
+ * Keyed on `shopExternalId` and nothing else. `venueKey`'s `geo:` fallback -
+ * coordinates rounded to ~1km for an organizer that never resolved to a shop -
+ * is right for a graph node and wrong for a durable key, because the id would
+ * move if the geocode moved. So a venue item exists only for a real shop id,
+ * and unresolved organizers stay off the map until `shopMatch.ts` resolves
+ * them. Measured on the California sample: 390 of 390 venues had both a shop
+ * id and coordinates, so this excludes nothing real.
+ *
+ * `GSI1PK: 'VENUE'` makes the whole catalogue one Query, which is the first
+ * thing a map renders. That key is the lesson `SET#` and `COMPONENT#` had to
+ * learn the hard way: without it the items can only be fetched by an id the
+ * reader already has, and `/api/sets` was caught inferring set ids from player
+ * profiles because of it.
+ */
+export interface VenueProfile {
+  /** `shop:<externalId>`, the graph's own key, for joining to other reports. */
+  venue: string;
+  shopExternalId: number;
+  /** From the shops table: the city label, or null until reverse geocoding lands. */
+  name: string | null;
+  /**
+   * Mean of the coordinates of this venue's events.
+   *
+   * A store does not move, but the two sources geocode it ~20m apart, so the
+   * mean is the stable answer rather than whichever event was read last.
+   */
+  latitude: number | null;
+  longitude: number | null;
+
+  /** Distinct players with at least one match here. */
+  players: number;
+  /** Of those, how many clear the publishing bar. */
+  ratedPlayers: number;
+  matches: number;
+  events: number;
+  /** ISO, from the earliest and latest event played here. */
+  firstSeen: string;
+  lastSeen: string;
+
+  /**
+   * The scene this store belongs to, from the persisted assignment, and how
+   * true that is.
+   *
+   * `scenePurity` is the share of the venue's player-match participations that
+   * sat in the scene's community at clustering time - median 99.3% on the
+   * California sample, p10 76%. A single dominant id plus a purity number is
+   * an honest summary of a store's scene, not a lossy one. Both are null until
+   * an operator has run a re-clustering.
+   */
+  sceneId: string | null;
+  sceneLabel: string | null;
+  scenePurity: number | null;
+
+  /**
+   * Who plays here, capped and ordered by matches played at this venue.
+   *
+   * Denormalised deliberately. The alternative - one `VENUE#<id>` /
+   * `PLAYER#<id>` row per pair - is 12,885 items regionally and would be the
+   * first per-relationship item this pass writes, for a list a map drill-down
+   * truncates anyway. A venue has 22 players at the median and 209 at the
+   * maximum, so a cap of `RANKING_VENUE_TOP_PLAYERS` covers the median venue
+   * outright and the rest are the long tail of one-night attendees.
+   */
+  topPlayers: VenueRosterEntry[];
+  /** True when `topPlayers` was cut short, so a reader can say "and N others". */
+  topPlayersTruncated: boolean;
+
+  generatedAt: string;
+}
+
+/**
+ * One scene, as its own item, so a scene selector is one Query.
+ *
+ * A scene is a Louvain community of the co-play graph, **persisted** between
+ * deliberate re-clusterings rather than recomputed every refit - see
+ * ranking/scenes.ts for why that is the only shippable form. The counts here
+ * are recomputed on every refit from the stored assignment; the membership is
+ * not.
+ */
+export interface SceneProfile {
+  sceneId: string;
+  /** Modal city label of its venues, or null when none is geocoded yet. */
+  label: string | null;
+  venueCount: number;
+  /** Distinct players whose home venue is in this scene. */
+  playerCount: number;
+  ratedCount: number;
+  matchCount: number;
+  /** Median purity of this scene's venue assignments. */
+  medianPurity: number;
+  /** When the assignment that defines this scene was made. Not the refit time. */
+  assignedAt: string;
+  generatedAt: string;
+}
+
 /** Bookkeeping for one event's match-log emission. Makes the log idempotent. */
 export interface MatchLogMarker {
   eventExternalId: string;
@@ -348,4 +477,6 @@ export interface RankingSnapshot {
   metas: RankingMeta[];
   components: ComponentProfile[];
   sets: SetProfile[];
+  venues: VenueProfile[];
+  scenes: SceneProfile[];
 }

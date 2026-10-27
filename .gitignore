@@ -71,4 +71,11 @@ temp/
 .playwright-mcp/
 
 # Stray Playwright screenshots taken while testing
+# Screenshot scratch from browser-driven verification. These land in the repo
+# root because that is the working directory the browser tool writes to; they
+# are evidence for one session, never artefacts of the build.
 switch-events.png
+/monkey-test/
+/*-calendar.png
+/switch-*.png
+/icon-*.png
