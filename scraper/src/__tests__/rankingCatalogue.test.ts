@@ -119,6 +119,15 @@ function snapshot(): RankingSnapshot {
         venueCount: 373,
         isGiant: true,
         positionsSuppressed: false,
+        // The scene's place rides on this item so a map is one Query; see
+        // ranking/sceneMap.ts. A located scene and an unlocated one, because
+        // both are normal states and the catalogue has to carry either.
+        latitude: 37.804,
+        longitude: -122.271,
+        spreadKm: 133.4,
+        locatedVenues: 373,
+        locatedMatches: 26102,
+        topVenues: [{ shopExternalId: 4211, latitude: 38.0194, longitude: -122.1341, matchCount: 1882 }],
         generatedAt: GENERATED_AT,
       },
       {
@@ -132,6 +141,12 @@ function snapshot(): RankingSnapshot {
         venueCount: 1,
         isGiant: false,
         positionsSuppressed: true,
+        latitude: null,
+        longitude: null,
+        spreadKm: null,
+        locatedVenues: 0,
+        locatedMatches: 0,
+        topVenues: [],
         generatedAt: GENERATED_AT,
       },
     ],

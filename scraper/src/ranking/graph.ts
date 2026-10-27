@@ -57,6 +57,40 @@ export class DisjointSet {
   }
 }
 
+/**
+ * One venue's footprint inside a component.
+ *
+ * This is the whole of the location evidence a component has, and it is a
+ * by-product of the loop that already counts the component's venues - so
+ * collecting it costs one pass over nothing. It exists because *locating* a
+ * scene is otherwise a join nobody can afford: the coordinates live on the
+ * match facts, keyed by player, and there is no index from a component to its
+ * matches. The one place the two are in the same hand is right here, during
+ * the replay.
+ *
+ * `matchCount` is the weight, not a decoration. A component that plays 400
+ * matches at one store and 3 at another is *at* the first store, and a mean
+ * that ignored that would put it a town away from where its play happens.
+ */
+export interface ComponentVenue {
+  /** `venueKey` form: `shop:<id>` for a resolved store, `geo:…` otherwise. */
+  venue: string;
+  /** Null for a Riot organizer that never resolved to a shop row. */
+  shopExternalId: number | null;
+  /** Matches of *this* component played here. */
+  matchCount: number;
+  /**
+   * The **mean** of this venue's events' coordinates, or null when none of
+   * them carried any.
+   *
+   * The mean, not the latest, for the reason `VENUE#` already gives: a store
+   * does not move, but the two event sources geocode it ~20m apart, so
+   * "whichever event was read last" wobbles where a mean is stable.
+   */
+  latitude: number | null;
+  longitude: number | null;
+}
+
 export interface Component {
   id: string;
   /** Player indices, ascending. */
@@ -64,6 +98,13 @@ export interface Component {
   size: number;
   matchCount: number;
   venueCount: number;
+  /**
+   * Where this component plays, one entry per venue, descending by
+   * `matchCount` (venue key as the tiebreak, so the order is deterministic).
+   *
+   * `venueCount` is its length and stays as the field readers already use.
+   */
+  venues: ComponentVenue[];
 }
 
 export interface ComponentAssignment {
@@ -111,6 +152,30 @@ function componentId(players: string[], members: number[]): string {
   return `c${createHash('sha256').update(min).digest('hex').slice(0, 10)}`;
 }
 
+/** A `ComponentVenue` mid-accumulation: coordinates are summed, then averaged. */
+interface VenueTally {
+  venue: string;
+  shopExternalId: number | null;
+  matchCount: number;
+  latitudeSum: number;
+  longitudeSum: number;
+  locatedEvents: number;
+}
+
+function emptyVenueTally(venue: string, shopExternalId: number | null): VenueTally {
+  return { venue, shopExternalId, matchCount: 0, latitudeSum: 0, longitudeSum: 0, locatedEvents: 0 };
+}
+
+function resolveVenueTally(tally: VenueTally): ComponentVenue {
+  return {
+    venue: tally.venue,
+    shopExternalId: tally.shopExternalId,
+    matchCount: tally.matchCount,
+    latitude: tally.locatedEvents > 0 ? tally.latitudeSum / tally.locatedEvents : null,
+    longitude: tally.locatedEvents > 0 ? tally.longitudeSum / tally.locatedEvents : null,
+  };
+}
+
 /**
  * Connected components of the co-play graph.
  *
@@ -126,7 +191,7 @@ export function findComponents(
   const sets = new DisjointSet(players.length);
   const hasMatch = new Uint8Array(players.length);
   const matchesPerPlayer = new Int32Array(players.length);
-  const venuesPerComponent = new Map<number, Set<string>>();
+  const venuesPerComponent = new Map<number, Map<string, VenueTally>>();
 
   for (let i = 0; i < playerA.length; i++) {
     if (matchFilter && !matchFilter(i)) continue;
@@ -152,20 +217,36 @@ export function findComponents(
     const root = sets.find(playerA[i]);
     matchCountByRoot.set(root, (matchCountByRoot.get(root) ?? 0) + 1);
     const event = observations.events[observations.event[i]];
+    const key = venueKey(event.shopExternalId, event.latitude, event.longitude);
     let venues = venuesPerComponent.get(root);
-    if (!venues) venuesPerComponent.set(root, (venues = new Set()));
-    venues.add(venueKey(event.shopExternalId, event.latitude, event.longitude));
+    if (!venues) venuesPerComponent.set(root, (venues = new Map()));
+    let tally = venues.get(key);
+    if (!tally) venues.set(key, (tally = emptyVenueTally(key, event.shopExternalId)));
+    tally.matchCount++;
+    // Summed, then divided at the end: the mean of the venue's events'
+    // coordinates. An event with no coordinates contributes to neither sum, so
+    // it dilutes nothing - it simply leaves the venue unlocated if every event
+    // there is in that state.
+    if (event.latitude !== null && event.longitude !== null) {
+      tally.latitudeSum += event.latitude;
+      tally.longitudeSum += event.longitude;
+      tally.locatedEvents++;
+    }
   }
 
   const components: Component[] = [];
   for (const [root, members] of byRoot) {
     members.sort((a, b) => a - b);
+    const venues = [...(venuesPerComponent.get(root)?.values() ?? [])]
+      .map(resolveVenueTally)
+      .sort((a, b) => b.matchCount - a.matchCount || (a.venue < b.venue ? -1 : 1));
     components.push({
       id: componentId(players, members),
       members,
       size: members.length,
       matchCount: matchCountByRoot.get(root) ?? 0,
-      venueCount: venuesPerComponent.get(root)?.size ?? 0,
+      venueCount: venues.length,
+      venues,
     });
   }
   components.sort((a, b) => b.size - a.size || (a.id < b.id ? -1 : 1));

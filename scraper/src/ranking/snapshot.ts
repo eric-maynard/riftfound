@@ -37,6 +37,7 @@ import { MatchResult, sliceMatches, type ObservationSet } from './observations.j
 import { findComponents, venueKey, type ComponentAssignment } from './graph.js';
 import { fitWhr, latestRating, natToElo, ELO_PER_NAT, type WhrFit, type WhrOptions } from './whr.js';
 import { sceneLookup, type SceneAssignment } from './scenes.js';
+import { scenePlace, DEFAULT_SCENE_MAP_TOP_VENUES } from './sceneMap.js';
 import { ALL_SCOPE, componentScope, setComponentScope, setScope, utcDate, type SetDefinition, type SetEra } from './sets.js';
 import {
   MATCH_LOG_VERSION,
@@ -95,6 +96,11 @@ export interface SnapshotOptions {
   sceneAssignment?: SceneAssignment | null;
   /** How many players a venue item denormalises, ordered by matches there. */
   venueTopPlayers: number;
+  /**
+   * How many venues a component item denormalises for the scene map, ordered
+   * by matches of that component played there. See `ranking/sceneMap.ts`.
+   */
+  sceneMapTopVenues: number;
   whr: Partial<WhrOptions>;
   /** Events whose per-player match log still has to be emitted. */
   matchLogEvents: Set<string>;
@@ -148,6 +154,9 @@ export const DEFAULT_SNAPSHOT_OPTIONS: Omit<
   // the rest is the long tail of one-night attendees a map drill-down
   // truncates anyway.
   venueTopPlayers: 25,
+  // Five pins is what a reader can take in over one city before they stop
+  // reading as individual stores; see DEFAULT_SCENE_MAP_TOP_VENUES.
+  sceneMapTopVenues: DEFAULT_SCENE_MAP_TOP_VENUES,
   sceneAssignment: null,
 };
 
@@ -697,10 +706,15 @@ export function buildSnapshot(
     );
   }
 
-  // Component directory, so the region selector is one Query not a scan.
+  // Component directory, so the region selector and the scene map are one
+  // Query each rather than a scan. The place comes off the venue tallies the
+  // component walk already collected - see ranking/sceneMap.ts for why that
+  // is the only affordable place to locate a scene at all, and for the cases
+  // where it publishes nulls instead of a guess.
   const componentProfiles: ComponentProfile[] = components.components.map(component => {
     const label = modalRegion(component.members.map(member => regionFor(member)));
     return sanitizeComponentProfile({
+      ...scenePlace(component.venues, { topVenues: options.sceneMapTopVenues }),
       componentId: component.id,
       componentSize: component.size,
       playerCount: component.size,

@@ -7,6 +7,7 @@ import {
   rankingPK,
   PLAYER_PROFILE_SK,
   PLAYER_MATCH_SK_PREFIX,
+  COMPONENT_CATALOGUE_PARTITION,
   GetCommand,
   QueryCommand,
   BatchGetCommand,
@@ -20,6 +21,8 @@ import type {
   Page,
   PlayerRecord,
   RankingStore,
+  SceneCatalogueEntry,
+  SceneCatalogueVenue,
   SetCatalogueEntry,
   SetRatingRecord,
 } from './rankingStore.js';
@@ -237,6 +240,73 @@ function decodeCursor(cursor: string | undefined): string | null {
 const SEARCH_SCAN_PAGES = 4;
 const SEARCH_SCAN_PAGE_SIZE = 500;
 
+/**
+ * Pages of the component catalogue Query the scene map will follow.
+ *
+ * The Query is bounded by one GSI1 partition, so in practice this never binds
+ * - 1,235 items of ~250 bytes is a third of one 1MB page. It is here so the
+ * endpoint cannot loop indefinitely against a table that has grown in a way
+ * nobody expected, and four pages is ~16,000 scenes of headroom.
+ */
+const SCENE_CATALOGUE_PAGES = 4;
+
+/**
+ * A venue pin off a `COMPONENT#` item.
+ *
+ * Both coordinates are required - half a coordinate pair is not a position,
+ * and the alternative is a pin at 0,0 - so an entry missing either is dropped
+ * rather than defaulted.
+ */
+function readSceneVenue(value: unknown): SceneCatalogueVenue | null {
+  if (!value || typeof value !== 'object') return null;
+  const item = value as Item;
+  const latitude = readNumber(item, ['latitude', 'lat']);
+  const longitude = readNumber(item, ['longitude', 'lng', 'lon']);
+  if (latitude === null || longitude === null) return null;
+  return {
+    shopExternalId: readNumber(item, ['shopExternalId', 'shopId']),
+    latitude,
+    longitude,
+    matchCount: readNumber(item, ['matchCount', 'matches']) ?? 0,
+  };
+}
+
+function toSceneCatalogueEntry(item: Item): SceneCatalogueEntry | null {
+  const componentId =
+    readString(item, ['componentId']) ?? readString(item, ['PK'])?.replace(/^COMPONENT#/, '') ?? null;
+  if (!componentId) return null;
+
+  // A coordinate is only published as a pair. An item carrying one half is a
+  // bug upstream, and reading it as "latitude with longitude 0" would put the
+  // scene in the Gulf of Guinea rather than reporting it unlocated.
+  const latitude = readNumber(item, ['latitude', 'lat']);
+  const longitude = readNumber(item, ['longitude', 'lng', 'lon']);
+  const located = latitude !== null && longitude !== null;
+
+  const rawVenues = pick(item, ['topVenues']);
+  const topVenues = Array.isArray(rawVenues)
+    ? rawVenues.map(readSceneVenue).filter((venue): venue is SceneCatalogueVenue => venue !== null)
+    : [];
+
+  return {
+    componentId,
+    regionLabel: readString(item, ['regionLabel', 'region']),
+    componentSize: readNumber(item, ['componentSize', 'playerCount']),
+    playerCount: readNumber(item, ['playerCount', 'componentSize']),
+    ratedCount: readNumber(item, ['ratedCount', 'ratedPlayers']),
+    matchCount: readNumber(item, ['matchCount', 'matches']),
+    venueCount: readNumber(item, ['venueCount', 'venues']),
+    isGiant: readBoolean(item, ['isGiant']) ?? false,
+    latitude: located ? latitude : null,
+    longitude: located ? longitude : null,
+    spreadKm: located ? readNumber(item, ['spreadKm']) : null,
+    locatedVenues: readNumber(item, ['locatedVenues']),
+    locatedMatches: readNumber(item, ['locatedMatches']),
+    topVenues,
+    generatedAt: readString(item, ['generatedAt', 'updatedAt', 'computedAt']),
+  };
+}
+
 export const dynamoRankingStore: RankingStore = {
   kind: 'dynamodb',
 
@@ -435,6 +505,53 @@ export const dynamoRankingStore: RankingStore = {
       console.warn('[ranking] set catalogue query failed, falling back to discovery:', error);
       return [];
     }
+  },
+
+  async listSceneCatalogue(): Promise<SceneCatalogueEntry[]> {
+    // One shared GSI1 partition holds every component, so the whole catalogue
+    // is a single Query - the access pattern the items were given GSI1 keys
+    // for. Production holds 1,235 of them at ~250 bytes, so this is one Query
+    // returning ~300KB, around 38 read units, and it is paged rather than
+    // capped because a *partial* map is worse than a slow one: a reader cannot
+    // tell a missing scene from an unlocated one.
+    const client = getDynamoClient();
+    const entries: SceneCatalogueEntry[] = [];
+    let startKey: Record<string, unknown> | undefined;
+
+    try {
+      // A page cap rather than a trusting `while (startKey)`: the Query is
+      // bounded by one partition's size, but an endpoint that can loop
+      // forever against an unexpected table is not one to deploy. Four pages
+      // of a 1MB Query is ~16,000 of these items - an order of magnitude of
+      // headroom on today's 1,235.
+      for (let page = 0; page < SCENE_CATALOGUE_PAGES; page++) {
+        const result = await client.send(
+          new QueryCommand({
+            TableName: getTableName(),
+            IndexName: 'GSI1',
+            KeyConditionExpression: 'GSI1PK = :pk',
+            ExpressionAttributeValues: { ':pk': COMPONENT_CATALOGUE_PARTITION },
+            ...(startKey ? { ExclusiveStartKey: startKey } : {}),
+          })
+        );
+
+        for (const item of (result.Items ?? []) as Item[]) {
+          const entry = toSceneCatalogueEntry(item);
+          if (entry) entries.push(entry);
+        }
+
+        startKey = result.LastEvaluatedKey as Record<string, unknown> | undefined;
+        if (!startKey) break;
+      }
+    } catch (error) {
+      // A missing index or a transient failure must not take the map down with
+      // a 500: the service reads an empty catalogue as "cannot tell", which is
+      // the page's own state and says so. Same posture as listSetCatalogue.
+      console.warn('[ranking] scene catalogue query failed:', error);
+      return [];
+    }
+
+    return entries;
   },
 
   async listComponents() {

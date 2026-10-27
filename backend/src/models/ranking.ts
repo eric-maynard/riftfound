@@ -458,6 +458,111 @@ export interface ComponentSummary {
   comparable: boolean;
 }
 
+// ---------------------------------------------------------------------------
+// The scene map
+// ---------------------------------------------------------------------------
+
+/**
+ * One venue pin under a scene.
+ *
+ * No name, deliberately: the engine's `COMPONENT#` item does not carry one
+ * (see `ranking/items.ts`), and this API does not invent strings it was not
+ * given. A reader zooming in gets the store's position and how much of the
+ * scene's play happens there, which is what a pin is for.
+ */
+export interface SceneMapVenue {
+  /** Null for a Riot organizer that never resolved to a shop row. */
+  shopExternalId: number | null;
+  latitude: number;
+  longitude: number;
+  matchCount: number;
+}
+
+/**
+ * One scene on the map.
+ *
+ * A **located** scene (`latitude`/`longitude` non-null) is one whose venues
+ * carried coordinates; an **unlocated** one is not an error and not a gap in
+ * the data model - it is a scene none of whose stores has been geocoded, or
+ * one written by an engine that predates the place fields. The two are served
+ * in separate lists (`SceneMapResult`) precisely so a caller cannot render an
+ * unlocated scene by forgetting a null check.
+ *
+ * Why there is no fallback coordinate: the honest answers available for an
+ * unlocated scene are its region label's city centre (a different and weaker
+ * precision claim, and a Mapbox call per scene) or `0, 0` (a lie). Neither is
+ * published. See `services/rankingService.ts`.
+ */
+export interface SceneMapEntry {
+  componentId: string;
+  /** Modal city of the scene's venues, from the engine. Null until geocoded. */
+  regionLabel: string | null;
+  /** Players with at least one recorded match in this scene. */
+  playerCount: number;
+  /** Of those, the ones whose rating clears the publishing bar. */
+  ratedPlayers: number;
+  matchCount: number;
+  venueCount: number;
+  /** True for the largest scene in the corpus. */
+  isGiant: boolean;
+  /** Whether a position inside this scene means anything (`isComparable`). */
+  comparable: boolean;
+
+  /** Match-weighted spherical centroid of the located venues, or null. */
+  latitude: number | null;
+  longitude: number | null;
+  /**
+   * Match-weighted mean distance from that centroid, km.
+   *
+   * Published beside the pin because a scene is not always a point: on the
+   * measured California sample the largest community spread 133km, which is a
+   * corridor. A map should draw this, not hide it.
+   */
+  spreadKm: number | null;
+  /** Venues the centroid was computed from, against `venueCount`. */
+  locatedVenues: number;
+  /** Matches at a located venue, against `matchCount`. */
+  locatedMatches: number;
+  topVenues: SceneMapVenue[];
+}
+
+/**
+ * The whole map, in one answer.
+ *
+ * Split into located and unlocated rather than one list with nulls in it: the
+ * map draws the first, the page accounts for the second, and neither has to
+ * filter. `coverage` is what lets the page say *why* it is showing 40 pins for
+ * 1,235 scenes instead of leaving the reader to infer it.
+ */
+export interface SceneMapResult {
+  scenes: SceneMapEntry[];
+  unlocated: SceneMapEntry[];
+  coverage: SceneMapCoverage;
+}
+
+export interface SceneMapCoverage {
+  /** Scenes in the engine's catalogue. */
+  totalScenes: number;
+  /** Of those, the ones with a centroid. */
+  locatedScenes: number;
+  /** Players and matches in located scenes, and in all of them. */
+  locatedPlayers: number;
+  totalPlayers: number;
+  /** Scenes large enough for a position inside them to mean anything. */
+  comparableScenes: number;
+  minComponentSize: number;
+  /** When the engine last wrote the catalogue, when it records it. */
+  lastUpdated: string | null;
+  /**
+   * True when the catalogue could not be read at all - an engine that has
+   * never refitted, or a store with no catalogue reader.
+   *
+   * Distinguishes "no scene is located" from "we cannot tell", which are
+   * different answers and read differently on the page.
+   */
+  catalogueUnavailable: boolean;
+}
+
 /**
  * The one outcome vocabulary this API publishes, for a game or for a match.
  *

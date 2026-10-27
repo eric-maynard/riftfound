@@ -51,6 +51,10 @@ src/
 - `GET /api/events/geocode?q=` - Geocode city/zip for location filtering
 - `GET /api/rankings` - Leaderboard page for one `scope` (`all`, `set:<id>`,
   `component:<id>`, `set:<id>#component:<id>`), plus coverage and the component list
+- `GET /api/rankings/map` - Every scene with a place, for the map of scenes.
+  One GSI1 Query over the engine's whole `COMPONENT#` catalogue, no
+  parameters. Located and unlocated scenes come back in **separate lists**
+  (see "The scene map")
 - `GET /api/players/:playerId` - Profile, per-set ratings, component info.
   **Never 404s for a well-formed id**: a player the engine has never seen comes
   back as a `no-rating` profile with `known: false` (see "Never seen is not
@@ -230,6 +234,68 @@ have actually played.
 A component's own `comparable: false` is still served on the scope - the
 engine's `component-too-small` is a comparison problem, not an evidence one, and
 the rating is published either way.
+
+### The scene map
+
+`GET /api/rankings/map` answers "where are the competitive scenes" in one
+request, and the shape of the answer is the whole of its honesty.
+
+**One Query, no parameters.** The engine's `COMPONENT#<id>` items carry GSI1
+keys, so the whole catalogue is a single Query against one partition -
+**1,235 items for 46 read units**, measured against production on 2026-10-27.
+No scan, no profile fetches, no leaderboard pages. It takes no bounding box and
+no zoom on purpose: this is one cached answer every reader shares, and a
+viewport parameter would fragment the edge cache into a key per pan for a
+payload a browser can filter itself. `cacheRanking` applies, because the
+catalogue only moves when the engine refits.
+
+**The place is read, never derived here.** A component has no coordinates of
+its own; they live on the per-player `MATCH#` items, and there is no index from
+a component to its matches, so locating 1,235 scenes at request time would be a
+walk of the derived data. The engine does it during its replay, where every
+coordinate and every component membership is already in hand, and writes the
+answer onto the catalogue item - see scraper/CLAUDE.md, "Giving a connected
+component a place on a map", for the derivation and for why it is a
+match-weighted *spherical* centroid with a spread published beside it.
+
+**Located and unlocated are separate lists, and neither is an error.**
+`scenes` is what a map draws; `unlocated` is every scene whose own venues carry
+no coordinates. They are split rather than mixed-with-nulls so a caller cannot
+render an unlocated scene by forgetting a null check. Nothing is placed at a
+guessed point, and the two tempting fallbacks are both refused in
+`getSceneMap`:
+
+- *the region label's city.* `regionLabel` is a modal city name - a production
+  component reads `Rockhampton, Australia` with no geocoded event behind it -
+  so forward-geocoding it would present a city centre with the same authority
+  as a venue-weighted centroid, and spend a Mapbox call per scene to do it.
+- *`0, 0`.* A coordinate is only ever read as a pair, in the adapter, so a
+  half-written item reports unlocated rather than landing in the Gulf of
+  Guinea.
+
+**"We cannot tell" is not "nothing is located".** `coverage.catalogueUnavailable`
+is true when the catalogue could not be read at all - a store with no catalogue
+reader, or an engine that has never refitted - and the page renders a different
+sentence for it. Reporting "0 of 0 scenes" there would claim there are no
+scenes. This is the live state until the scraper is redeployed and refits:
+the `COMPONENT#` items exist and carry no place fields yet, so every scene
+comes back unlocated and the map says so.
+
+`coverage` counts the **whole** catalogue rather than the drawn subset -
+`locatedScenes` against `totalScenes`, `locatedPlayers` against `totalPlayers` -
+because the ratio between them is the caveat the page prints, and it cannot be
+derived from a list that has already been filtered.
+
+`listSceneCatalogue` is **optional** on `RankingStore`, like `listSetCatalogue`
+and for the same reason: those items only became enumerable once they carried
+GSI1 keys. A store without it, or one whose Query fails, reports
+`catalogueUnavailable` rather than a 500 - a map is not worth taking a page
+down for.
+
+Note what this deliberately does **not** change: `listComponents` still
+summarises the scenes on the global board's first page, which is what the
+ladder's picker wants and is a different question at a different cost. The two
+reads are separate on purpose.
 
 ### Never seen is not absent
 

@@ -218,3 +218,67 @@ export interface PlayerSearchHit {
 export interface PlayerSearchResponse {
   data: PlayerSearchHit[];
 }
+
+// --- The scene map ---------------------------------------------------------
+
+/**
+ * One venue pin under a scene. No name: the API does not carry one, because
+ * the engine's `COMPONENT#` item does not (see scraper/src/ranking/items.ts).
+ */
+export interface SceneMapVenue {
+  shopExternalId: number | null;
+  latitude: number;
+  longitude: number;
+  matchCount: number;
+}
+
+/**
+ * One scene on the map.
+ *
+ * A **located** scene has non-null coordinates derived from its own venues; an
+ * unlocated one arrives in a separate list and is never drawn. Both are this
+ * one type on purpose - the page lists both, and only the map cares which it
+ * has - so the null coordinates stay typed rather than narrowed away.
+ */
+export interface SceneMapEntry {
+  componentId: string;
+  regionLabel: string | null;
+  playerCount: number;
+  ratedPlayers: number;
+  matchCount: number;
+  venueCount: number;
+  isGiant: boolean;
+  /** Whether a position inside this scene means anything at all. */
+  comparable: boolean;
+  latitude: number | null;
+  longitude: number | null;
+  /** Match-weighted mean distance from the centroid, km. The pin's honesty. */
+  spreadKm: number | null;
+  locatedVenues: number;
+  locatedMatches: number;
+  topVenues: SceneMapVenue[];
+}
+
+export interface SceneMapCoverage {
+  totalScenes: number;
+  locatedScenes: number;
+  locatedPlayers: number;
+  totalPlayers: number;
+  comparableScenes: number;
+  minComponentSize: number;
+  lastUpdated: string | null;
+  /**
+   * True when the engine's catalogue could not be read at all, which is a
+   * different thing from every scene being unlocated and reads as a different
+   * sentence on the page.
+   */
+  catalogueUnavailable: boolean;
+}
+
+export interface SceneMapResponse {
+  data: {
+    scenes: SceneMapEntry[];
+    unlocated: SceneMapEntry[];
+    coverage: SceneMapCoverage;
+  };
+}

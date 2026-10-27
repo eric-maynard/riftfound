@@ -298,14 +298,79 @@ export interface RankingMeta {
 }
 
 /**
+ * One venue as a map pin: a position and a weight, and no free text.
+ *
+ * Deliberately carries **no name**. The scene's `regionLabel` is the label a
+ * map draws, and a venue name here would add a second free-text surface to an
+ * item that currently has exactly one - for a string no pin shows.
+ */
+export interface SceneMapVenue {
+  /** Null for a Riot organizer that never resolved to a shop row. */
+  shopExternalId: number | null;
+  latitude: number;
+  longitude: number;
+  /** Matches of this scene played at this venue. */
+  matchCount: number;
+}
+
+/**
+ * Where a scene is.
+ *
+ * A component has no coordinates of its own - it is a set of players, and a
+ * player is not a location - so this is derived from the venues its matches
+ * were played at, weighted by how much play each carries. The derivation, and
+ * the three cases in which it publishes nothing rather than guessing, are in
+ * `ranking/sceneMap.ts`.
+ *
+ * **Null is the normal value, not a failure.** Every one of these fields is
+ * absent on an item written before this shipped, and a scene whose venues
+ * carry no geocode is unlocated for good. Nothing may treat that as an error
+ * and nothing may fall back to a region label's city, to the first venue with
+ * a geocode, or to `0, 0`.
+ */
+export interface ScenePlace {
+  /** Match-weighted spherical centroid of the located venues, or null. */
+  latitude: number | null;
+  longitude: number | null;
+  /**
+   * Match-weighted mean great-circle distance from the centroid, km, to one
+   * decimal. 0 for a single-venue scene; null when there is no centroid.
+   *
+   * It is what keeps a single pin honest. On the complete California sample
+   * the largest community had a 133km mean venue spread - a corridor, not a
+   * city - and a map that drew that as a dot would be asserting a precision
+   * the scene does not have.
+   *
+   * A mean and not a maximum, so one travelling player's away-game cannot
+   * inflate a city scene into a region.
+   */
+  spreadKm: number | null;
+  /** Venues with coordinates. Read against `venueCount`: the ratio is the caveat. */
+  locatedVenues: number;
+  /** Matches played at a located venue. Read against `matchCount`. */
+  locatedMatches: number;
+  /** The busiest venues, descending, capped at `RANKING_SCENE_MAP_TOP_VENUES`. */
+  topVenues: SceneMapVenue[];
+}
+
+/**
  * One connected component of the co-play graph, as its own item.
  *
  * Exists so the region selector is one Query instead of a scan over the global
  * board. `componentSize` and `playerCount` are the same number - the count of
  * players with at least one match in the component - under both names the API
  * looks for.
+ *
+ * **It also carries the component's place**, via `ScenePlace`, which is what
+ * makes a map of scenes one Query rather than an unaffordable join. The
+ * reasoning is in `ranking/sceneMap.ts`; the short version is that a component
+ * has no coordinates of its own, the coordinates live on the match facts
+ * keyed by *player*, and the only place the two are in the same hand is the
+ * replay that produced this item. Published as part of this item rather than
+ * as a new one because a map's first render is "every scene with a pin", and
+ * this catalogue is already the one Query that answers "every scene".
  */
-export interface ComponentProfile {
+export interface ComponentProfile extends ScenePlace {
   componentId: string;
   componentSize: number;
   playerCount: number;

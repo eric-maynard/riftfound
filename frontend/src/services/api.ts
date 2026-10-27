@@ -5,6 +5,7 @@ import type {
   PlayerSearchResponse,
   RankingsResponse,
   RatingSeriesResponse,
+  SceneMapResponse,
   SetsResponse,
 } from '../types/ranking';
 import type {
@@ -98,6 +99,19 @@ export async function getRankings(options: {
   if (options.cursor) params.set('cursor', options.cursor);
   const query = params.toString();
   return fetchApi<RankingsResponse>(`/rankings${query ? `?${query}` : ''}`);
+}
+
+/**
+ * Every scene with a place, for the map.
+ *
+ * No parameters, deliberately - not a bounding box, not a zoom. The whole
+ * catalogue is one cached answer every reader shares (one DynamoDB Query, 46
+ * read units measured on production), where a viewport parameter would
+ * fragment the edge cache into a key per pan. Filtering a few hundred
+ * kilobytes is the browser's job.
+ */
+export async function getSceneMap(): Promise<SceneMapResponse> {
+  return fetchApi<SceneMapResponse>('/rankings/map');
 }
 
 export async function getPlayer(playerId: string): Promise<PlayerProfileResponse> {

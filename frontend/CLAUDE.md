@@ -21,14 +21,17 @@ src/
 │   ├── FormStrip.tsx     # Recent form as lettered result pips
 │   ├── DayEventsModal.tsx  # The "+N more" day list on phones
 │   ├── EventTrophyLink.tsx # The trophy on an event chip
+│   ├── SceneMap.tsx      # Leaflet canvas for /rankings/map - pins only
 │   └── RatingChart.tsx   # Inline-SVG rating-over-time chart
 ├── pages/
 │   ├── CalendarPage.tsx  # Main view with FullCalendar
 │   ├── EventDetailPage.tsx # Event info, standings, pairings, roster
 │   ├── RankingPage.tsx   # Ladder, scene summary, sparse/empty states
+│   ├── ScenesPage.tsx    # The map of scenes, and the list that is its a11y twin
 │   └── PlayerPage.tsx    # Summary block, chart, per-set breakdown, match history
 ├── lib/
 │   ├── ranking.ts        # Pure helpers (scope, formatting, record, chart geometry)
+│   ├── sceneMap.ts       # Pure helpers for the map (radii, bounds, copy, filter)
 │   ├── tournament.ts     # Pure helpers for the event page
 │   ├── calendarDates.ts  # FullCalendar date markers -> local dates
 │   └── eventColors.ts    # One chip colour per event type, measured
@@ -287,9 +290,76 @@ round trip.
   a browser.
 - A **map of the 390 known venues** is the likely next feature. Match rows carry
   their `data-shop-id`, and both pages are a flat column of sibling sections, so
-  a venues panel drops in without disturbing the layout.
+  a venues panel drops in without disturbing the layout. The map of *scenes*
+  shipped first (`/rankings/map`, below), because the engine publishes a scene
+  catalogue today and has written **zero** `VENUE#` items.
 - `RATING_ANCHOR` (1200) mirrors the engine's `ELO_ORIGIN`. Nothing else in the
   frontend hardcodes a rating value; the chart's axis is fitted to the data.
+
+### The scene map (`/rankings/map`)
+
+Where the competitive scenes are, and the way into each one's ladder. Reached
+from a `Scene map` link in the ladder's own filter row, beside the picker that
+names one scene.
+
+- **A pin is derived, never inferred.** A scene is a connected component of the
+  co-play graph and has no coordinates of its own; its pin is the
+  match-weighted centroid of the venues *its own games* were played at,
+  computed by the rating engine during its replay. Nothing in the frontend
+  geocodes anything, and nothing positions a scene from its name.
+- **A scene with no geocoded venue has no pin.** It is listed under the map
+  instead, flagged `not on the map` in words, and the coverage line leads the
+  page with how many of the scenes are drawn. A map showing 40 of 1,235 scenes
+  is otherwise silently wrong about the world. The API sends the two
+  populations as separate lists, so this is not a null check the page can
+  forget.
+- **Two radii, two quantities, and they are never swapped.** Each scene is
+  drawn twice: a **ground disc** whose radius is the scene's real `spreadKm`,
+  which scales with zoom because it is a distance and is absent entirely for a
+  single-venue scene; and a **pixel dot** sized by player count, which does not
+  scale with zoom because a count is not a distance. Drawing population as a
+  ground radius is how a map like this starts claiming a 4,654-player scene
+  covers a continent. `sceneDotRadius` square-roots the count so *areas*
+  compare - the measured corpus spans 2 to 4,654 players, a factor of 2,327,
+  where a linear radius would put the smallest scene under one pixel.
+- **The list is the accessibility surface, not a fallback.** The map is
+  `role="application"` with a label pointing at the list, because 1,200
+  unreachable SVG circles are worse than one honest label. Every scene is a
+  focusable 44px button in the list, the selected row carries the same cyan the
+  selected dot does, and both flags (`not on the map`, `too small to order`)
+  are words rather than colour - the same rule the result pips follow.
+- **The selection is in the URL** (`?scene=<componentId>`), so a view of one
+  scene is shareable, and written with `replace` so panning does not fill the
+  back button with a history entry per dot.
+- **Why Leaflet.** 42KB gzipped, no token, no WebGL, against Mapbox GL JS's
+  ~800KB and a client-side token the frontend does not carry (the Mapbox token
+  is server-side, behind `/api/events/geocode`, and should stay there). The
+  page needs ~1,200 circles on a basemap, not vector tiles.
+- **It is the one lazy route.** `React.lazy` in `App.tsx`, because it is the
+  only page pulling in a library nobody else uses and it sits behind a preview
+  flag - eager, it would put a map library in the bundle every *calendar*
+  visitor downloads. Measured: the main bundle stays at 148.9KB gzipped and the
+  map is a 47KB chunk fetched only when the page opens.
+- **The basemap is OpenStreetMap's keyless raster, darkened in CSS.**
+  CARTO's dark basemap was the first choice and was rejected on evidence:
+  `basemaps.cartocdn.com/dark_all` now serves tiles reading "API KEY REQUIRED"
+  across every one of them. There is no keyless *dark* OSM raster, so
+  `.scene-map .leaflet-tile` inverts and hue-rotates the tiles - no extra
+  request, attribution untouched, and the markers are deliberately outside the
+  filter so none of this file's contrast measurements are undone.
+  `VITE_MAP_TILE_URL` is the override and **is the production path**: Mapbox
+  raster tiles, which the project already pays for, one environment variable
+  and no new vendor. It is the thing to change before Rankings stops being
+  unlisted, since OSM's tile policy asks heavy consumers to run their own
+  cache.
+- `VITE_MAP_TILE_URL` / `VITE_MAP_TILE_ATTRIBUTION` are the **first**
+  `import.meta.env` use in the app (`src/vite-env.d.ts`); both are optional,
+  both have a working default, and neither is a secret - a tile URL with a
+  token in it is public in the bundle by construction, which is exactly why the
+  default needs none.
+- Pure logic is in `lib/sceneMap.ts` and tested without a DOM, including that
+  the dot scale is area-proportional, that the disc vanishes where there is no
+  extent, and that the three coverage sentences are three different answers.
 
 ### Event page (`/events/:externalId`)
 - Reached from the **trophy** on a day list, and only ever shown where it leads

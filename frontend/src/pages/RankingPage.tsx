@@ -99,6 +99,7 @@ const EMPTY_STATE: RankingState = {
 };
 
 function RankingPage() {
+  const { search } = useLocation();
   const [searchParams, setSearchParams] = useSearchParams();
   const setId = searchParams.get(URL_PARAMS.SET) ?? ALL_SETS;
   const regionParam = searchParams.get(URL_PARAMS.REGION);
@@ -225,6 +226,13 @@ function RankingPage() {
         />
 
         <PlayerSearch />
+
+        {/* The way to the map of scenes, beside the picker that names one.
+            `carryPreview` because the section is unlisted and a link without
+            the flag unmounts the mode switch under the reader. */}
+        <Link className="scene-map-link" to={carryPreview('/rankings/map', search)}>
+          Scene map
+        </Link>
       </div>
 
       {error && <div className="error-banner">{error}</div>}

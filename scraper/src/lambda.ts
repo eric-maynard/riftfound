@@ -822,6 +822,7 @@ async function runRanking(context: Context): Promise<{ statusCode: number; body:
         maxComponentLadders: env.RANKING_MAX_COMPONENT_LADDERS,
         minSetMatches: env.RANKING_MIN_SET_MATCHES,
         venueTopPlayers: env.RANKING_VENUE_TOP_PLAYERS,
+        sceneMapTopVenues: env.RANKING_SCENE_MAP_TOP_VENUES,
       },
     });
 

@@ -98,6 +98,11 @@ const envSchema = z.object({
   // one item per (player, venue) pair - is 12,885 rows regionally for a list a
   // map drill-down truncates anyway. See ranking/items.ts.
   RANKING_VENUE_TOP_PLAYERS: z.string().transform(Number).default('25'),
+  // How many venues a COMPONENT# item denormalises for the scene map, ordered
+  // by matches of that scene played there. The item is read in full on every
+  // map load, so this is a page-weight knob: five pins is what a reader can
+  // take in over one city. See ranking/sceneMap.ts.
+  RANKING_SCENE_MAP_TOP_VENUES: z.string().transform(Number).default('5'),
   // Louvain resolution used by the scene re-clustering CLI. gamma = 1 is the
   // measured stability optimum (12.1% churn, against 19.7% at 0.5 and 21.8% at
   // 2). Only read by scripts/metrics/scene-recluster.sh - a refit never

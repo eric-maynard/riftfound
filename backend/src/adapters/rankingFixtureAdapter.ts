@@ -6,6 +6,7 @@ import type {
   Page,
   PlayerRecord,
   RankingStore,
+  SceneCatalogueEntry,
   SetRatingRecord,
 } from './rankingStore.js';
 
@@ -35,6 +36,68 @@ export interface FixtureData {
 }
 
 export const EMPTY_FIXTURE_DATA: FixtureData = { players: [], matches: {}, ratings: {}, boards: { all: [] } };
+
+/** Stands in for the engine's `generatedAt` on a fixture catalogue item. */
+const FIXTURE_GENERATED_AT = '2026-10-27T00:00:00.000Z';
+
+/** A venue mid-tally while the fixture's scene catalogue is being derived. */
+interface FixtureVenueTally {
+  shopExternalId: number | null;
+  latitude: number | null;
+  longitude: number | null;
+  /**
+   * Match *participations*: each match is in both players' logs, so this is
+   * twice the match count and is halved at the end.
+   */
+  halfMatches: number;
+}
+
+/**
+ * A match-weighted spherical centroid and spread, for the fixture only.
+ *
+ * The engine's version (`scraper/src/ranking/sceneMap.ts`) is the real one and
+ * carries the refusals - no located venue, half a coordinate pair, an
+ * antipodal cancellation - with tests for each. This is the arithmetic alone,
+ * on data that has none of those cases in it, so the fixture's map agrees with
+ * the fixture's matches. Unit vectors rather than a mean of degrees even here,
+ * so the two cannot disagree by construction on anything real.
+ */
+function fixtureCentroid(
+  venues: { latitude: number; longitude: number; matchCount: number }[]
+): { latitude: number | null; longitude: number | null; spreadKm: number | null } {
+  if (venues.length === 0) return { latitude: null, longitude: null, spreadKm: null };
+
+  const rad = (degrees: number) => (degrees * Math.PI) / 180;
+  let x = 0;
+  let y = 0;
+  let z = 0;
+  let weight = 0;
+  for (const venue of venues) {
+    const w = Math.max(1, venue.matchCount);
+    const lat = rad(venue.latitude);
+    const lon = rad(venue.longitude);
+    x += w * Math.cos(lat) * Math.cos(lon);
+    y += w * Math.cos(lat) * Math.sin(lon);
+    z += w * Math.sin(lat);
+    weight += w;
+  }
+  const latitude = (Math.atan2(z / weight, Math.hypot(x / weight, y / weight)) * 180) / Math.PI;
+  const longitude = (Math.atan2(y / weight, x / weight) * 180) / Math.PI;
+
+  const distance = (lat: number, lon: number) => {
+    const dLat = rad(lat - latitude);
+    const dLon = rad(lon - longitude);
+    const a =
+      Math.sin(dLat / 2) ** 2 + Math.cos(rad(latitude)) * Math.cos(rad(lat)) * Math.sin(dLon / 2) ** 2;
+    return 2 * 6371.0088 * Math.asin(Math.min(1, Math.sqrt(a)));
+  };
+  const spread =
+    venues.reduce((total, venue) => total + Math.max(1, venue.matchCount) * distance(venue.latitude, venue.longitude), 0) /
+    weight;
+
+  const round = (value: number, places: number) => Math.round(value * 10 ** places) / 10 ** places;
+  return { latitude: round(latitude, 6), longitude: round(longitude, 6), spreadKm: round(spread, 1) };
+}
 
 // --- the sparse launch dataset ---------------------------------------------
 
@@ -452,6 +515,95 @@ export function createFixtureRankingStore(data: FixtureData = LAUNCH_FIXTURE_DAT
         if (match) ids.add(match[1]);
       }
       return [...ids];
+    },
+
+    /**
+     * The scene catalogue, derived from this fixture's own match log.
+     *
+     * Derived rather than declared, for the reason the whole fixture is
+     * generated from the match log outwards: a hand-written place would drift
+     * away from the matches the API serves beside it, and a map that disagreed
+     * with its own leaderboard is exactly the bug this adapter exists to catch
+     * before production does.
+     *
+     * The arithmetic mirrors the engine's (`scraper/src/ranking/sceneMap.ts`,
+     * where it is tested against the antimeridian and the refusals): a
+     * match-weighted spherical centroid over the venues, with a weighted mean
+     * distance as the spread. It is duplicated rather than shared because the
+     * two packages do not import each other and this is a stand-in for the
+     * engine by definition - and it is kept to the one case the fixture needs,
+     * so there is no second implementation of the refusals to go stale. A
+     * venue with no coordinates still counts towards `venueCount` and not
+     * towards the centroid, which is the one behaviour a reader could get
+     * wrong.
+     */
+    async listSceneCatalogue(): Promise<SceneCatalogueEntry[]> {
+      const byComponent = new Map<
+        string,
+        { regionLabel: string | null; componentSize: number | null; venues: Map<string, FixtureVenueTally> }
+      >();
+
+      for (const player of data.players) {
+        if (!player.componentId) continue;
+        const bucket =
+          byComponent.get(player.componentId) ??
+          { regionLabel: player.regionLabel, componentSize: player.componentSize, venues: new Map() };
+        byComponent.set(player.componentId, bucket);
+
+        for (const match of data.matches[player.playerId] ?? []) {
+          // Each match appears in both players' logs, so a venue's tally is
+          // halved to count matches rather than participations - the figure
+          // the engine's `matchCount` holds.
+          const key = match.shopId ?? `geo:${match.latitude},${match.longitude}`;
+          const tally = bucket.venues.get(key) ?? {
+            shopExternalId: match.shopId === null ? null : Number(match.shopId),
+            latitude: match.latitude,
+            longitude: match.longitude,
+            halfMatches: 0,
+          };
+          tally.halfMatches += 1;
+          bucket.venues.set(key, tally);
+        }
+      }
+
+      return [...byComponent.entries()]
+        .map(([componentId, bucket]) => {
+          const venues = [...bucket.venues.values()]
+            .map((tally) => ({ ...tally, matchCount: Math.round(tally.halfMatches / 2) }))
+            .sort((a, b) => b.matchCount - a.matchCount);
+          const located = venues.filter(
+            (venue): venue is (typeof venues)[number] & { latitude: number; longitude: number } =>
+              venue.latitude !== null && venue.longitude !== null
+          );
+          const inComponent = data.players.filter((player) => player.componentId === componentId);
+          const matchCount = venues.reduce((total, venue) => total + venue.matchCount, 0);
+          const place = fixtureCentroid(located);
+
+          return {
+            componentId,
+            regionLabel: bucket.regionLabel,
+            componentSize: bucket.componentSize,
+            playerCount: inComponent.length,
+            ratedCount: inComponent.filter((player) => !resolveVerdict(player).provisional).length,
+            matchCount,
+            venueCount: venues.length,
+            isGiant: false,
+            ...place,
+            locatedVenues: located.length,
+            locatedMatches: located.reduce((total, venue) => total + venue.matchCount, 0),
+            topVenues: located.slice(0, 5).map((venue) => ({
+              shopExternalId: venue.shopExternalId,
+              latitude: venue.latitude,
+              longitude: venue.longitude,
+              matchCount: venue.matchCount,
+            })),
+            generatedAt: FIXTURE_GENERATED_AT,
+          };
+        })
+        // Biggest first, and `isGiant` on the biggest: the engine marks the
+        // largest component and the page reads that flag.
+        .sort((a, b) => (b.componentSize ?? 0) - (a.componentSize ?? 0))
+        .map((entry, index) => ({ ...entry, isGiant: index === 0 }));
     },
 
     async listComponents() {
