@@ -3,13 +3,22 @@ import { useSearchParams } from 'react-router-dom';
 import FullCalendar from '@fullcalendar/react';
 import dayGridPlugin from '@fullcalendar/daygrid';
 import interactionPlugin from '@fullcalendar/interaction';
-import type { EventClickArg, EventHoveringArg, DatesSetArg, MoreLinkArg } from '@fullcalendar/core';
+import type {
+  EventClickArg,
+  EventContentArg,
+  EventHoveringArg,
+  DatesSetArg,
+  MoreLinkArg,
+} from '@fullcalendar/core';
 import type { DateClickArg } from '@fullcalendar/interaction';
-import { getEvents, reverseGeocode } from '../services/api';
+import { MAX_AVAILABILITY_IDS, getEvents, getTournamentAvailability, reverseGeocode } from '../services/api';
 import type { Event } from '../types/event';
+import { dateMarkerToLocalDate, localDateKey } from '../lib/calendarDates';
+import { eventColor } from '../lib/eventColors';
 import EventFilters, { type EventFilters as Filters } from '../components/EventFilters';
 import EventTooltip from '../components/EventTooltip';
 import DayEventsModal from '../components/DayEventsModal';
+import EventTrophyLink from '../components/EventTrophyLink';
 
 // Miles to km conversion
 const MILES_TO_KM = 1.60934;
@@ -23,16 +32,13 @@ const DEFAULT_LOCATION = {
 
 const DEFAULT_DISTANCE_MILES = 25;
 
+// Filter out full events if the setting is off.
+const isEventFull = (event: Event): boolean =>
+  event.capacity != null && event.capacity > 0 &&
+  event.playerCount != null && event.playerCount >= event.capacity;
+
 // Event categories inferred from event names (Summoner Skirmish first)
 const AVAILABLE_FORMATS = ['Summoner Skirmish', 'Nexus Night', 'Pre-Rift', 'Other'];
-
-// Colors per event type (Dracula palette)
-const EVENT_COLORS: Record<string, string> = {
-  'Nexus Night': '#bd93f9',      // Purple
-  'Summoner Skirmish': '#ff79c6', // Pink
-  'Pre-Rift': '#73d393',          // Soft pastel green
-  'Other': '#6272a4',             // Muted blue-grey
-};
 
 interface CalendarEvent {
   id: string;
@@ -313,6 +319,10 @@ function CalendarPage({ active = true }: CalendarPageProps) {
   const [tooltipEvent, setTooltipEvent] = useState<Event | null>(null);
   const [tooltipPosition, setTooltipPosition] = useState({ x: 0, y: 0 });
   const [dayEventsModal, setDayEventsModal] = useState<{ date: Date; events: Event[] } | null>(null);
+  // Events known to have standings or a roster, so a trophy on their chip
+  // leads somewhere. Swept over the whole visible range - see loadAvailability.
+  const [tournamentIds, setTournamentIds] = useState<ReadonlySet<string>>(() => new Set<string>());
+  const askedForAvailabilityRef = useRef<Set<string>>(new Set());
   // Track when tooltip just closed to prevent touch event from also closing the modal
   // Use ref so we can check it at click time, not render time
   const modalDisabledUntilRef = useRef(0);
@@ -604,14 +614,13 @@ function CalendarPage({ active = true }: CalendarPageProps) {
     setSearchTrigger(t => t + 1);
   }, [stagedFilters]);
 
-  // Filter out full events if setting is off
-  const isEventFull = (event: Event): boolean =>
-    event.capacity != null && event.capacity > 0 &&
-    event.playerCount != null && event.playerCount >= event.capacity;
-
   // Upstream sometimes has duplicate events (same store+name+time, different IDs).
   // Collapse them, keeping the most recently created.
-  const dedupedEvents = (() => {
+  //
+  // Memoised, not recomputed per render: the availability sweep below keys off
+  // this list's identity, and a fresh array every render would re-enter it on
+  // every keystroke in the filters.
+  const dedupedEvents = useMemo(() => {
     const groups = new Map<string, Event>();
     for (const e of events) {
       const shop = e.location || e.organizer || '';
@@ -622,15 +631,16 @@ function CalendarPage({ active = true }: CalendarPageProps) {
       }
     }
     return Array.from(groups.values());
-  })();
+  }, [events]);
 
-  const displayEvents = settings.showFullEvents
-    ? dedupedEvents
-    : dedupedEvents.filter(event => !isEventFull(event));
+  const displayEvents = useMemo(
+    () => (settings.showFullEvents ? dedupedEvents : dedupedEvents.filter(event => !isEventFull(event))),
+    [dedupedEvents, settings.showFullEvents]
+  );
 
   // Convert events to FullCalendar format
   const calendarEvents: CalendarEvent[] = displayEvents.map((event) => {
-    const color = EVENT_COLORS[event.eventType || 'Other'] || EVENT_COLORS['Other'];
+    const color = eventColor(event.eventType);
     return {
       id: event.id,
       title: formatEventTitle(event, isMobile),
@@ -664,9 +674,9 @@ function CalendarPage({ active = true }: CalendarPageProps) {
   // Get events for a specific date, sorted by start time then ID.
   // Compare on local date components — FullCalendar buckets events by local
   // day, so a UTC-date filter would mix in events from the wrong local day.
+  // `localDateKey` lives in lib/calendarDates.ts beside the marker conversion
+  // the "+N more" path needs, because they are the same bug twice.
   const getEventsForDate = useCallback((date: Date): Event[] => {
-    const localDateKey = (d: Date) =>
-      `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
     const dateStr = localDateKey(date);
     return displayEvents
       .filter((event) => localDateKey(new Date(event.startDate)) === dateStr)
@@ -678,14 +688,74 @@ function CalendarPage({ active = true }: CalendarPageProps) {
       });
   }, [displayEvents]);
 
+  /**
+   * Ask which events have standings or a roster.
+   *
+   * Swept over the **whole visible range** rather than one day list at a time.
+   * The old per-list fetch was why the trophy had to be hidden in the grid: a
+   * trophy that lights only on days whose list someone had already opened is
+   * an affordance arriving after the fact. But `CalendarPage` already loads
+   * every event for the range in one `calendarMode` request, so there is
+   * nothing to be gained by asking late - and most days never produce a
+   * "+N more" link at all (six or fewer events need no popover), so the
+   * affordance was effectively unreachable on desktop.
+   *
+   * Still batched at the endpoint's documented 50 ids a call, so a 25-mile
+   * month (~50 events) is one request and a 200km one (~200) is four, once per
+   * range change. Never one request per event. Ids already asked about are not
+   * asked again - the answer is a fact about a past event, so it does not go
+   * stale within a session, and `CalendarPage` stays mounted across a section
+   * switch - and a failure quietly leaves its ids askable again, because
+   * nothing else on the calendar depends on the answer.
+   */
+  const loadAvailability = useCallback((events: Event[]) => {
+    const wanted = Array.from(
+      new Set(events.map((event) => event.externalId).filter(Boolean))
+    ).filter((id) => !askedForAvailabilityRef.current.has(id));
+    if (wanted.length === 0) return;
+
+    for (let offset = 0; offset < wanted.length; offset += MAX_AVAILABILITY_IDS) {
+      const batch = wanted.slice(offset, offset + MAX_AVAILABILITY_IDS);
+      batch.forEach((id) => askedForAvailabilityRef.current.add(id));
+
+      getTournamentAvailability(batch)
+        .then((response) => {
+          // hasTournament, never hasResults: a results capture can exist with
+          // status 'none' - a finished event whose organiser never ran pairings
+          // through Riot's software - and that page has nothing on it.
+          const found = Object.entries(response.data)
+            .filter(([, availability]) => availability.hasTournament)
+            .map(([externalId]) => externalId);
+          if (found.length === 0) return;
+          setTournamentIds((previous) => {
+            const next = new Set(previous);
+            found.forEach((id) => next.add(id));
+            return next;
+          });
+        })
+        .catch(() => {
+          batch.forEach((id) => askedForAvailabilityRef.current.delete(id));
+        });
+    }
+  }, []);
+
+  // One sweep per set of loaded events, so the trophies are already in place
+  // when the grid is drawn. `displayEvents` is memoised, and loadAvailability
+  // drops ids it has already asked about, so a re-render costs nothing.
+  useEffect(() => {
+    if (displayEvents.length === 0) return;
+    loadAvailability(displayEvents);
+  }, [displayEvents, loadAvailability]);
+
   // Handle date click (on mobile, show day events modal)
   const handleDateClick = useCallback((info: DateClickArg) => {
     if (!isMobile) return;
     const dayEvents = getEventsForDate(info.date);
     if (dayEvents.length > 0) {
       setDayEventsModal({ date: info.date, events: dayEvents });
+      loadAvailability(dayEvents);
     }
-  }, [isMobile, getEventsForDate]);
+  }, [isMobile, getEventsForDate, loadAvailability]);
 
   // Handle nav link day click (clicking the date number)
   const handleNavLinkDayClick = useCallback((date: Date) => {
@@ -693,20 +763,66 @@ function CalendarPage({ active = true }: CalendarPageProps) {
     const dayEvents = getEventsForDate(date);
     if (dayEvents.length > 0) {
       setDayEventsModal({ date, events: dayEvents });
+      loadAvailability(dayEvents);
     }
-  }, [isMobile, getEventsForDate]);
+  }, [isMobile, getEventsForDate, loadAvailability]);
 
   // Handle "+more" link click - use our custom modal instead of FullCalendar's popover
   const handleMoreLinkClick = useCallback((info: MoreLinkArg): string => {
-    if (!isMobile) return 'popover'; // On desktop, use FullCalendar's default popover
     // Extract our Event objects from FullCalendar's event segments
     const dayEvents = info.allSegs.map(seg => seg.event.extendedProps.event as Event);
+    // The range sweep has normally answered for these already; this is the
+    // retry path for a batch whose request failed.
+    if (dayEvents.length > 0) loadAvailability(dayEvents);
+
+    if (!isMobile) return 'popover'; // On desktop, use FullCalendar's default popover
     if (dayEvents.length > 0) {
-      setDayEventsModal({ date: info.date, events: dayEvents });
+      // `info.date` is a FullCalendar *date marker* - a Date whose UTC fields
+      // carry the cell's wall-clock values - and this is the one callback that
+      // hands one over unconverted. Rendered with local getters, a Nov 7 cell
+      // headed its list "Fri, Nov 6" everywhere west of UTC. `dateClick` and
+      // `navLinkDayClick` come from the interaction plugin already converted,
+      // so they must be left exactly as they are. See lib/calendarDates.ts.
+      setDayEventsModal({ date: dateMarkerToLocalDate(info.date), events: dayEvents });
     }
     // Return 'none' to prevent FullCalendar's default popover on mobile
     return 'none';
-  }, [isMobile]);
+  }, [isMobile, loadAvailability]);
+
+  /**
+   * An event chip's contents, in the grid cell and in the desktop "+N more"
+   * popover alike - FullCalendar draws that popover itself, and `eventContent`
+   * is the only way into it, so one renderer covers both.
+   *
+   * The trophy now rides the grid chip as well. It used to be confined by CSS
+   * to `.fc-popover`, which made it unreachable: a day needs seven events
+   * before FullCalendar draws a "+N more" link at all, and almost no day has
+   * that many. The reason for the confinement - availability being fetched one
+   * day list at a time - has been removed rather than worked around; the sweep
+   * now covers the whole visible range up front.
+   *
+   * Not on phones, though. There the grid chip carries the time alone in a
+   * ~50px cell and the whole cell already opens the day list on a tap, where
+   * the trophy is a real 44px target.
+   */
+  const renderEventContent = useCallback((arg: EventContentArg) => {
+    const eventData = arg.event.extendedProps.event as Event | undefined;
+    const hasTournament =
+      !isMobile && eventData ? tournamentIds.has(eventData.externalId) : false;
+    return (
+      // `has-trophy` lets the title shrink and ellipsise rather than shoving
+      // the trophy out past the chip's clip - see index.css.
+      <div className={`fc-event-row${hasTournament ? ' has-trophy' : ''}`}>
+        <div className="fc-event-title fc-sticky">{arg.event.title}</div>
+        {hasTournament && eventData && (
+          <EventTrophyLink
+            externalId={eventData.externalId}
+            label={eventData.name || eventData.organizer || 'this event'}
+          />
+        )}
+      </div>
+    );
+  }, [tournamentIds, isMobile]);
 
   const handleDayEventsClose = useCallback(() => {
     setDayEventsModal(null);
@@ -856,6 +972,7 @@ function CalendarPage({ active = true }: CalendarPageProps) {
           plugins={[dayGridPlugin, interactionPlugin]}
           initialView="dayGridMonth"
           events={calendarEvents}
+          eventContent={renderEventContent}
           eventClick={handleEventClick}
           eventMouseEnter={handleEventMouseEnter}
           eventMouseLeave={handleEventMouseLeave}
@@ -907,6 +1024,7 @@ function CalendarPage({ active = true }: CalendarPageProps) {
           onEventClick={handleDayEventClick}
           isCloseDisabled={isModalCloseDisabled}
           backdropDisabled={!!tooltipEvent}
+          tournamentIds={tournamentIds}
         />
       )}
 

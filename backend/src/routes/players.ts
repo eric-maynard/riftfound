@@ -50,12 +50,13 @@ router.get('/:playerId', async (req: Request, res: Response, next: NextFunction)
       return;
     }
 
+    // Never 404s for a well-formed id. The engine has no profile for most of a
+    // tournament field, and those players exist - they are on a roster. That
+    // state is `known: false` with a `no-rating` verdict and null numbers, the
+    // same answer `/matches` and `/ratings` already give for the same id (see
+    // `unknownProfile` in services/rankingService.ts). A malformed id is still
+    // a 400 above.
     const player = await rankingService.getPlayer(req.params.playerId);
-    if (!player) {
-      res.status(404).json({ error: 'Player not found' });
-      return;
-    }
-
     res.json({ data: player });
   } catch (error) {
     next(error);

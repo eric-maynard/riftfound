@@ -53,6 +53,8 @@ export const EntityPrefix = {
   ZIPCODE: 'ZIPCODE#',
   PLAYER: 'PLAYER#',
   RANKING: 'RANKING#',
+  EVENT_RESULTS: 'RESULTS#',
+  EVENT_ROSTER: 'ROSTER#',
 } as const;
 
 // Helper to create event keys
@@ -144,6 +146,29 @@ export function playerRatingSKPrefix(scope: string) {
 // Partition key for one leaderboard scope
 export function rankingPK(scope: string) {
   return `${EntityPrefix.RANKING}${scope}`;
+}
+
+// --- Tournament facts (written by the scraper's playriftboundResults pass) ---
+// RESULTS#<externalId> / RESULTS#<externalId>  - standings, pairings, per-game
+// ROSTER#<externalId>  / ROSTER#<externalId>   - dated registrations
+//
+// One item per event per fact, so "the results for this event" is a single
+// GetItem and "do these 50 events have anything" is a single BatchGet. Both
+// keys repeat the prefix in the sort key: that is the scraper's shape, not a
+// typo.
+
+export function eventResultsKeys(externalId: string) {
+  return {
+    PK: `${EntityPrefix.EVENT_RESULTS}${externalId}`,
+    SK: `${EntityPrefix.EVENT_RESULTS}${externalId}`,
+  };
+}
+
+export function eventRosterKeys(externalId: string) {
+  return {
+    PK: `${EntityPrefix.EVENT_ROSTER}${externalId}`,
+    SK: `${EntityPrefix.EVENT_ROSTER}${externalId}`,
+  };
 }
 
 // Helper to create zipcode keys

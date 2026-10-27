@@ -26,6 +26,8 @@ export interface SetRating {
   matchesPlayed: number | null;
   provisional: boolean;
   provisionalReason: ProvisionalReason | null;
+  /** This set's own figure - not the all-time one, which can differ. */
+  gamesUntilRated: number;
 }
 
 export interface PlayerProfile {
@@ -143,6 +145,13 @@ export interface RatingSeriesResponse {
     points: RatingPoint[];
     provisional: boolean;
     provisionalReason: ProvisionalReason | null;
+    gamesUntilRated: number;
+    /**
+     * True when points were withheld because the rating is not published -
+     * distinct from a player who simply has no history, which is identical on
+     * the wire and wants different copy.
+     */
+    pointsWithheld: boolean;
     minGamesForRating: number;
     maxUncertaintyForRating: number;
   };

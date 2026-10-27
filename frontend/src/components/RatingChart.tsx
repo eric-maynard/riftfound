@@ -12,8 +12,9 @@ import {
 /**
  * Rating over time for one player, as inline SVG.
  *
- * One series, so there is no legend box - the heading names what is plotted and
- * the caption explains the band. The hard case this is built for is a sparse
+ * One series, so there is no legend box, and no caption either - the heading
+ * names what is plotted and what the band means lives in the hover hints and in
+ * "How rankings work". The hard case this is built for is a sparse
  * series: at launch most players have one to three games, and the chart has to
  * make that look like what it is rather than like a dramatic trend. Three
  * things do that work:
@@ -84,6 +85,27 @@ function RatingChart({ points, scopeLabel, provisional = false }: RatingChartPro
     [geometry]
   );
 
+  // Order matters: this must come BEFORE the empty-series check. The API now
+  // withholds the points themselves for a provisional player (serving them
+  // would reconstruct the withheld number exactly), so an unranked player
+  // arrives here with points.length === 0 and would otherwise be told "no
+  // rating history yet" - which reads as "we have no data" to someone who has
+  // played, when we have it and are deliberately not publishing it.
+  //
+  // The chart would publish that number four ways over anyway: the y-axis
+  // ticks, the endpoint label, the tooltip's accessible name and the "Show
+  // values" table.
+  if (provisional) {
+    return (
+      <div className="rating-chart rating-chart-empty">
+        <p className="muted">
+          Unranked &mdash; no rating is published yet, so there is no history to chart. It appears
+          here once enough games are recorded.
+        </p>
+      </div>
+    );
+  }
+
   if (points.length === 0) {
     return (
       <div className="rating-chart rating-chart-empty">
@@ -95,24 +117,18 @@ function RatingChart({ points, scopeLabel, provisional = false }: RatingChartPro
     );
   }
 
+
   const active = geometry && activeIndex !== null ? geometry.points[activeIndex] : null;
   const last = points[points.length - 1];
-  const spanDays = Math.max(
-    0,
-    Math.round((parseChartDate(last.date) - parseChartDate(points[0].date)) / 86_400_000)
-  );
 
   return (
     <div className="rating-chart">
       <div className="rating-chart-head">
         <div>
+          {/* The title carries the scope and nothing else. What the band means
+              belongs in "How rankings work" and in the hover hints, not as
+              prose under every chart. */}
           <h3 className="rating-chart-title">Rating over time &mdash; {scopeLabel}</h3>
-          <p className="rating-chart-sub">
-            {points.length === 1
-              ? 'One data point. Not enough to show a trend.'
-              : `${points.length} points over ${spanDays === 0 ? 'a single day' : `${spanDays} days`}.`}{' '}
-            The shaded band is the margin of uncertainty around each rating.
-          </p>
         </div>
         <button
           type="button"
@@ -268,12 +284,6 @@ function RatingChart({ points, scopeLabel, provisional = false }: RatingChartPro
           </div>
         )}
       </div>
-
-      {provisional && (
-        <p className="rating-chart-note">
-          Unranked &mdash; this rating is not published yet.
-        </p>
-      )}
 
       {showTable && (
         <div className="table-scroll">

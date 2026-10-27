@@ -8,6 +8,7 @@ import {
   LAUNCH_FIXTURE_DATA,
 } from '../adapters/rankingFixtureAdapter.js';
 import { CONFIDENCE } from '../models/ranking.js';
+import type { PlayerRecord } from '../adapters/rankingStore.js';
 import { startServer, getJson, type TestServer } from './helpers/server.js';
 
 let server: TestServer;
@@ -199,9 +200,59 @@ describe('GET /api/players/:playerId', () => {
     expect(body.data.setRatings).toEqual([]);
   });
 
-  it('404s an unknown player and 400s an unusable id', async () => {
-    expect((await get('/api/players/p-nobody')).status).toBe(404);
+  it('serves a no-rating profile for a player the engine has never seen, and 400s an unusable id', async () => {
+    // Not a 404. The engine has no item for this id, but a player with no
+    // recorded game still exists - that is most of a tournament field (every
+    // one of 5 on one live upcoming event). The same id already answers 200 on
+    // /matches and /ratings, so the profile answering 404 made the API
+    // contradict itself.
+    const { status, body } = await get('/api/players/p-nobody');
+    expect(status).toBe(200);
+    expect(body.data).toMatchObject({
+      playerId: 'p-nobody',
+      known: false,
+      rating: null,
+      uncertainty: null,
+      gamesPlayed: null,
+      matchesPlayed: null,
+      componentId: null,
+      provisional: true,
+      provisionalReason: 'no-rating',
+      gamesUntilRated: CONFIDENCE.minGames,
+    });
+    expect(body.data.setRatings).toEqual([]);
+
+    // A malformed id is still refused: never seen is not the same as unusable.
     expect((await get('/api/players/PLAYER%23x')).status).toBe(400);
+  });
+
+  it('separates "never seen" from "seen but unrated" by `known`, not by a status code', async () => {
+    // Both read `no-rating` with a null rating, and only `known` tells them
+    // apart: p-quill has a profile the engine wrote, p-nobody has none.
+    const seen = await get('/api/players/p-quill');
+    const never = await get('/api/players/p-nobody');
+
+    expect([seen.status, never.status]).toEqual([200, 200]);
+    expect(seen.body.data).toMatchObject({ known: true, provisionalReason: 'no-rating', rating: null });
+    expect(never.body.data).toMatchObject({ known: false, provisionalReason: 'no-rating', rating: null });
+    // The one that was seen still carries what the engine knows about them.
+    expect(seen.body.data.displayName).toBeTruthy();
+    expect(never.body.data.displayName).toBeNull();
+  });
+
+  it('answers all three player sub-resources consistently for an unseen id', async () => {
+    // This is the incoherence the 404 created, pinned: a resource whose two
+    // sub-resources exist cannot be absent.
+    const profile = await get('/api/players/p-nobody');
+    const matches = await get('/api/players/p-nobody/matches');
+    const ratings = await get('/api/players/p-nobody/ratings');
+
+    expect([profile.status, matches.status, ratings.status]).toEqual([200, 200, 200]);
+    expect(matches.body.data).toEqual([]);
+    expect(ratings.body.data.points).toEqual([]);
+    // One verdict across all three.
+    expect(ratings.body.data.provisionalReason).toBe('no-rating');
+    expect(profile.body.data.provisionalReason).toBe('no-rating');
   });
 
   it('marks player responses noindex', async () => {
@@ -290,12 +341,17 @@ describe('GET /api/players/:playerId/ratings', () => {
     expect(body.data.points.length).toBeGreaterThan(0);
   });
 
-  it('serves a one- or two-point series for a nearly unrated player, flagged provisional', async () => {
+  it('serves no points for a nearly unrated player, with the verdict that says why', async () => {
+    // The engine writes a history point per day of play whatever the verdict,
+    // so a provisional player's series *is* the withheld rating. It is not
+    // served at all; the verdict is, so the chart can explain itself.
     const { status, body } = await get('/api/players/p-cyn/ratings');
     expect(status).toBe(200);
-    expect(body.data.points.length).toBeLessThanOrEqual(2);
+    expect(body.data.points).toEqual([]);
     expect(body.data.provisional).toBe(true);
     expect(body.data.provisionalReason).toBe('too-few-games');
+    expect(body.data.pointsWithheld).toBe(true);
+    expect(body.data.gamesUntilRated).toBeGreaterThan(0);
   });
 
   it('returns no points rather than an error for an unrated player', async () => {
@@ -303,6 +359,9 @@ describe('GET /api/players/:playerId/ratings', () => {
     expect(status).toBe(200);
     expect(body.data.points).toEqual([]);
     expect(body.data.provisional).toBe(true);
+    // Nothing was withheld here - there is genuinely no history. The two
+    // states look alike on the wire otherwise and want different copy.
+    expect(body.data.pointsWithheld).toBe(false);
   });
 
   it('rejects a malformed scope', async () => {
@@ -361,6 +420,301 @@ describe('GET /api/sets', () => {
       expect(body.data).toEqual([]);
     } finally {
       setRankingStore(fixtureRankingStore);
+    }
+  });
+});
+
+/**
+ * The confidence gate, enforced on the way out.
+ *
+ * The product rule is that a rating below the bar is not *published*, so a
+ * number in the JSON is published whatever a renderer then does with it. These
+ * tests assert the absence of the number on every endpoint that could carry
+ * one, and that nothing which explains the state - the margin, the game counts,
+ * the games still needed - went with it.
+ */
+describe('the confidence gate is enforced server-side', () => {
+  const SCOPES = ['all', 'set:radiance', 'set:ogn', 'component:c-bay', 'component:c-sea'];
+
+  it('never puts a provisional rating on a leaderboard row, in any scope', async () => {
+    for (const scope of SCOPES) {
+      const { body } = await get(`/api/rankings?scope=${encodeURIComponent(scope)}&limit=100`);
+      const entries = body.data.entries as Array<{
+        playerId: string;
+        rating: number | null;
+        provisional: boolean;
+        provisionalReason: string | null;
+        rank: number | null;
+      }>;
+      expect(entries.length).toBeGreaterThan(0);
+
+      for (const entry of entries) {
+        // The one invariant: withheld and null are the same thing.
+        expect(entry.rating === null).toBe(entry.provisional);
+        if (entry.provisional) {
+          expect(entry.provisionalReason).not.toBeNull();
+          expect(entry.rank).toBeNull();
+        }
+      }
+    }
+  });
+
+  it('keeps the margin and the counts on a withheld row - a width is not a position', async () => {
+    const { body } = await get('/api/rankings?limit=100');
+    const juno = (body.data.entries as Array<Record<string, unknown>>).find(
+      (entry) => entry.playerId === 'p-juno'
+    );
+
+    expect(juno).toMatchObject({ rating: null, provisional: true, provisionalReason: 'too-few-games' });
+    expect(juno!.uncertainty).toBeGreaterThan(0);
+    expect(juno!.gamesPlayed).toBeGreaterThan(0);
+    expect(juno!.matchesPlayed).toBeGreaterThan(0);
+    expect(juno!.gamesUntilRated).toBeGreaterThan(0);
+  });
+
+  it('withholds the number on the profile too, and reads the same as the tournament endpoint', async () => {
+    const { body } = await get('/api/players/p-juno');
+    expect(body.data).toMatchObject({
+      rating: null,
+      provisional: true,
+      provisionalReason: 'too-few-games',
+    });
+    expect(body.data.uncertainty).toBeGreaterThan(0);
+    expect(body.data.gamesPlayed).toBeGreaterThan(0);
+    expect(body.data.gamesUntilRated).toBeGreaterThan(0);
+
+    // The two endpoints must not contradict each other about one player: this
+    // is the inconsistency the gate was unified to remove.
+    const tournament = await get('/api/events/48812/tournament');
+    const fromEvent = (tournament.body.data.players as Array<{ playerId: string; rating: number | null; provisional: boolean }>)
+      .find((player) => player.playerId === 'p-juno');
+    expect(fromEvent).toMatchObject({ rating: null, provisional: true });
+  });
+
+  it('gates every per-set entry on its own evidence, independently of the all-time one', async () => {
+    const { body } = await get('/api/players/p-kira');
+    const sets = body.data.setRatings as Array<{
+      setId: string;
+      rating: number | null;
+      uncertainty: number | null;
+      gamesPlayed: number | null;
+      provisional: boolean;
+      provisionalReason: string | null;
+      gamesUntilRated: number;
+    }>;
+
+    for (const set of sets) {
+      expect(set.rating === null).toBe(set.provisional);
+      if (set.provisional) expect(set.provisionalReason).not.toBeNull();
+    }
+
+    // The case that makes per-set gating necessary rather than cosmetic: this
+    // player is rated all-time and provisional inside a set, because a set
+    // slice holds fewer games and so carries a wider sigma.
+    expect(body.data.provisional).toBe(false);
+    const withheld = sets.find((set) => set.provisional);
+    expect(withheld).toBeTruthy();
+    expect(withheld!.rating).toBeNull();
+    // Still explainable: the slice's own margin and counts survive.
+    expect(withheld!.uncertainty).toBeGreaterThan(0);
+    expect(withheld!.gamesPlayed).toBeGreaterThan(0);
+  });
+
+  it('withholds the series for a scope the player is provisional in', async () => {
+    const profile = await get('/api/players/p-kira');
+    const withheldSet = (profile.body.data.setRatings as Array<{ setId: string; provisional: boolean }>)
+      .find((set) => set.provisional)!;
+
+    const series = await get(`/api/players/p-kira/ratings?scope=set:${withheldSet.setId}`);
+    expect(series.body.data.points).toEqual([]);
+    expect(series.body.data.provisional).toBe(true);
+    expect(series.body.data.pointsWithheld).toBe(true);
+
+    // ...while the scope they *are* rated in still charts.
+    const allTime = await get('/api/players/p-kira/ratings');
+    expect(allTime.body.data.points.length).toBeGreaterThan(1);
+    expect(allTime.body.data.provisional).toBe(false);
+    expect(allTime.body.data.pointsWithheld).toBe(false);
+  });
+
+  it('withholds the number in player search too', async () => {
+    const provisional = await get('/api/players/search?q=juno');
+    expect(provisional.body.data[0]).toMatchObject({ playerId: 'p-juno', provisional: true, rating: null });
+
+    const rated = await get('/api/players/search?q=kira');
+    expect(rated.body.data[0].provisional).toBe(false);
+    expect(typeof rated.body.data[0].rating).toBe('number');
+  });
+
+  it('ranks and counts over the ratings, then withholds - never the other way round', async () => {
+    const { body } = await get('/api/rankings?limit=100');
+    const entries = body.data.entries as Array<{
+      playerId: string;
+      rank: number | null;
+      rating: number | null;
+      provisional: boolean;
+    }>;
+
+    const rated = entries.filter((entry) => !entry.provisional);
+    // Dense 1..n in descending rating order: the order was computed before any
+    // number was removed, so removing them cannot have reshuffled it.
+    expect(rated.map((entry) => entry.rank)).toEqual(rated.map((_, index) => index + 1));
+    expect(rated.map((entry) => entry.rating)).toEqual(
+      [...rated.map((entry) => entry.rating as number)].sort((a, b) => b - a)
+    );
+
+    // p-sable has the highest raw rating in the fixture (1604) and is withheld
+    // for a sigma of 168. Rank 1 is the best *rated* player, not the best
+    // number, and p-sable occupies no position at all.
+    const sable = entries.find((entry) => entry.playerId === 'p-sable')!;
+    expect(sable).toMatchObject({ provisional: true, rating: null, rank: null });
+    expect(entries.find((entry) => entry.rank === 1)!.playerId).toBe('p-kira');
+
+    // Coverage counts the same population the ranks came from.
+    expect(body.data.coverage.ratedPlayers).toBe(rated.length);
+    expect(body.data.coverage.provisionalPlayers).toBe(entries.length - rated.length);
+    expect(body.data.coverage.totalPlayers).toBe(entries.length);
+    // Games are counted over everyone, rated or not - a game count is evidence,
+    // not a position, so withholding must not change it.
+    expect(body.data.coverage.totalGames).toBeGreaterThan(0);
+  });
+});
+
+/**
+ * The engine writes its own verdict onto the profile, and it is the authority:
+ * its thresholds are measured from the posterior SD distribution it fitted, so
+ * re-deriving one here from the numbers can only agree by coincidence.
+ */
+describe('the engine\'s verdict decides, not the API\'s own arithmetic', () => {
+  const profile = (over: Partial<PlayerRecord>): PlayerRecord => ({
+    playerId: 'p-x',
+    displayName: 'X',
+    tagLine: 'NA1',
+    rating: null,
+    uncertainty: null,
+    gamesPlayed: null,
+    matchesPlayed: null,
+    firstSeen: '2026-10-01',
+    lastSeen: '2026-10-20',
+    componentId: 'c-bay',
+    componentSize: 23,
+    regionLabel: 'San Francisco Bay Area',
+    setRatings: [],
+    updatedAt: '2026-10-25T06:00:00.000Z',
+    ...over,
+  });
+
+  // One player the API's own gate would publish and the engine withholds, and
+  // one the API's gate would withhold and the engine publishes.
+  const WITHHELD = profile({
+    playerId: 'p-engine-withheld',
+    displayName: 'Withheld',
+    rating: 1777,
+    uncertainty: 40,
+    gamesPlayed: 40,
+    matchesPlayed: 20,
+    provisional: true,
+    provisionalReason: 'too-uncertain',
+    gamesUntilRated: null,
+    setRatings: [
+      {
+        setId: 'radiance',
+        rating: 1766,
+        uncertainty: 44,
+        gamesPlayed: 30,
+        matchesPlayed: 15,
+        provisional: true,
+        provisionalReason: 'too-uncertain',
+        gamesUntilRated: null,
+      },
+    ],
+  });
+
+  const PUBLISHED = profile({
+    playerId: 'p-engine-rated',
+    displayName: 'Published',
+    rating: 1301,
+    uncertainty: 200,
+    gamesPlayed: 2,
+    matchesPlayed: 1,
+    provisional: false,
+    provisionalReason: null,
+    gamesUntilRated: null,
+  });
+
+  const DATA = {
+    players: [WITHHELD, PUBLISHED],
+    matches: {},
+    ratings: {
+      'p-engine-withheld': {
+        all: [{ date: '2026-10-20', rating: 1777, uncertainty: 40, gamesPlayed: 40 }],
+        'set:radiance': [{ date: '2026-10-20', rating: 1766, uncertainty: 44, gamesPlayed: 30 }],
+      },
+      'p-engine-rated': { all: [{ date: '2026-10-20', rating: 1301, uncertainty: 200, gamesPlayed: 2 }] },
+    },
+    boards: { all: ['p-engine-withheld', 'p-engine-rated'], 'set:radiance': ['p-engine-withheld'] },
+  };
+
+  beforeAll(() => setRankingStore(createFixtureRankingStore(DATA)));
+  afterAll(() => setRankingStore(fixtureRankingStore));
+
+  it('withholds a number its own arithmetic would have published', async () => {
+    const { body } = await get('/api/rankings?limit=100');
+    const entry = (body.data.entries as Array<Record<string, unknown>>).find(
+      (row) => row.playerId === 'p-engine-withheld'
+    )!;
+
+    expect(entry).toMatchObject({ rating: null, provisional: true, rank: null });
+    // The engine's vocabulary (`too-uncertain`) translated into this API's.
+    expect(entry.provisionalReason).toBe('uncertainty-too-wide');
+    expect(entry.uncertainty).toBe(40);
+    expect(JSON.stringify(body)).not.toContain('1777');
+  });
+
+  it('publishes a number its own arithmetic would have withheld', async () => {
+    const { body } = await get('/api/rankings?limit=100');
+    const entry = (body.data.entries as Array<Record<string, unknown>>).find(
+      (row) => row.playerId === 'p-engine-rated'
+    )!;
+    expect(entry).toMatchObject({ rating: 1301, provisional: false, provisionalReason: null, rank: 1 });
+  });
+
+  it('withholds it on the profile, in the per-set map and in the history', async () => {
+    const profileResponse = await get('/api/players/p-engine-withheld');
+    expect(profileResponse.body.data.rating).toBeNull();
+    expect(profileResponse.body.data.setRatings[0]).toMatchObject({ setId: 'radiance', rating: null, provisional: true });
+    expect(JSON.stringify(profileResponse.body)).not.toContain('1777');
+    expect(JSON.stringify(profileResponse.body)).not.toContain('1766');
+
+    const all = await get('/api/players/p-engine-withheld/ratings');
+    expect(all.body.data.points).toEqual([]);
+    expect(all.body.data.pointsWithheld).toBe(true);
+    expect(JSON.stringify(all.body)).not.toContain('1777');
+
+    const perSet = await get('/api/players/p-engine-withheld/ratings?scope=set:radiance');
+    expect(perSet.body.data.points).toEqual([]);
+    expect(JSON.stringify(perSet.body)).not.toContain('1766');
+
+    const search = await get('/api/players/search?q=Withheld');
+    expect(search.body.data[0]).toMatchObject({ playerId: 'p-engine-withheld', rating: null, provisional: true });
+  });
+
+  it('never publishes a rating that does not exist, whatever the item claims', async () => {
+    // `provisional: false` on a profile with no rating is a contradiction in
+    // the data; "rated" is the one answer that cannot be right.
+    setRankingStore(
+      createFixtureRankingStore({
+        players: [profile({ playerId: 'p-engine-empty', displayName: 'Empty', provisional: false, provisionalReason: null })],
+        matches: {},
+        ratings: {},
+        boards: { all: ['p-engine-empty'] },
+      })
+    );
+    try {
+      const { body } = await get('/api/players/p-engine-empty');
+      expect(body.data).toMatchObject({ rating: null, provisional: true, provisionalReason: 'no-rating' });
+    } finally {
+      setRankingStore(createFixtureRankingStore(DATA));
     }
   });
 });

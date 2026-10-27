@@ -15,13 +15,23 @@ import {
   formatRating,
   formatRecord,
   formatUncertainty,
+  formatWinRate,
   gameScore,
+  gateProgress,
+  hasNoRecord,
+  marginBar,
+  marginScale,
+  outcomeLetter,
+  outcomeWord,
+  recentForm,
   matchRecord,
   nearestPointIndex,
   niceTicks,
   parseChartDate,
   parseScope,
   pickDefaultComponent,
+  shouldUseSetPills,
+  SET_PILL_LIMIT,
   sceneOptions,
   selectableSets,
   provisionalExplanation,
@@ -29,6 +39,7 @@ import {
   setBoundaryNote,
   setLabel,
   splitByConfidence,
+  winRate,
 } from '../ranking';
 
 const NOW = Date.parse('2026-10-25T12:00:00Z');
@@ -104,6 +115,20 @@ describe('set labels with unknown boundaries', () => {
     endDate: null,
     hasRatingData: true,
     ...overrides,
+  });
+
+  it('keeps the set scope as pills while the list is short', () => {
+    // Today: Radiance+ plus Radiance plus Vendetta.
+    expect(shouldUseSetPills(0)).toBe(true);
+    expect(shouldUseSetPills(2)).toBe(true);
+    expect(shouldUseSetPills(SET_PILL_LIMIT - 1)).toBe(true);
+  });
+
+  it('switches to a dropdown once the sets outgrow one line', () => {
+    // Sets are append-only at roughly four a year, so this is reached, not
+    // hypothetical - and a segmented row that overflows hides a scope.
+    expect(shouldUseSetPills(SET_PILL_LIMIT)).toBe(false);
+    expect(shouldUseSetPills(12)).toBe(false);
   });
 
   it('offers only released sets the engine has data for, newest first', () => {
@@ -323,6 +348,143 @@ describe('match helpers', () => {
   });
 });
 
+describe('the record bar', () => {
+  it('rates only decided matches, and counts draws as decided', () => {
+    expect(winRate({ wins: 3, losses: 1, draws: 0 })).toBe(75);
+    expect(winRate({ wins: 1, losses: 1, draws: 2 })).toBe(25);
+  });
+
+  it('refuses a percentage when nothing is decided', () => {
+    // A player whose only match is unrecorded has not won 0% - there is
+    // simply no evidence, and the bar has to say so rather than print a
+    // confident zero.
+    expect(winRate({ wins: 0, losses: 0, draws: 0 })).toBeNull();
+    expect(formatWinRate(null)).toBe('--');
+    expect(formatWinRate(66.6)).toBe('67%');
+  });
+});
+
+describe('results carry a letter as well as a colour', () => {
+  it('letters every outcome, including the unrecorded one', () => {
+    expect(outcomeLetter('win')).toBe('W');
+    expect(outcomeLetter('loss')).toBe('L');
+    expect(outcomeLetter('draw')).toBe('D');
+    expect(outcomeLetter('unknown')).toBe('?');
+  });
+
+  it('words the same outcomes for the row label and screen readers', () => {
+    expect(outcomeWord('win')).toBe('Win');
+    expect(outcomeWord('unknown')).toBe('Unrecorded');
+  });
+});
+
+describe('the form strip', () => {
+  const stub = (id: string): PlayerMatch => ({
+    matchId: id,
+    playedAt: `2026-10-${id}T19:00:00.000Z`,
+    opponentId: 'o',
+    opponentDisplayName: 'Opponent',
+    outcome: 'win',
+    games: [],
+    eventExternalId: 'e',
+    eventName: 'Event',
+    shopId: '1',
+    latitude: null,
+    longitude: null,
+    eventDate: `2026-10-${id}`,
+    tournamentType: 'Nexus Night',
+    setId: 'radiance',
+  });
+
+  it('takes the newest matches in the order the API returns them', () => {
+    const matches = ['24', '23', '22', '21'].map(stub);
+    expect(recentForm(matches, 2).map((match) => match.matchId)).toEqual(['24', '23']);
+  });
+
+  it('shows what there is when there is less than a full strip', () => {
+    // Three matches is the normal case at launch. Three pips, not ten with
+    // seven empty sockets - an empty socket implies something is missing.
+    expect(recentForm([stub('24'), stub('23'), stub('22')], 10)).toHaveLength(3);
+    expect(recentForm([], 10)).toEqual([]);
+  });
+});
+
+describe('the games gate', () => {
+  it('counts evidence against the published threshold', () => {
+    expect(gateProgress(3, 8)).toEqual({ filled: 3, total: 8 });
+    expect(gateProgress(null, 8)).toEqual({ filled: 0, total: 8 });
+  });
+
+  it('never overfills, and gives up on an implausible threshold', () => {
+    expect(gateProgress(40, 8)).toEqual({ filled: 8, total: 8 });
+    expect(gateProgress(1, 0)).toBeNull();
+    expect(gateProgress(1, 500)).toBeNull();
+  });
+
+  it('stays away when the games are not what is missing', () => {
+    // A player with twelve games held back by a wide margin has cleared this
+    // bar already; a full meter beside "Unranked" reads as a contradiction.
+    expect(gateProgress(12, 8, 'uncertainty-too-wide')).toBeNull();
+    expect(gateProgress(0, 8, 'no-rating')).toEqual({ filled: 0, total: 8 });
+    expect(gateProgress(3, 8, 'too-few-games')).toEqual({ filled: 3, total: 8 });
+  });
+});
+
+describe('margin bars', () => {
+  const entry = (rating: number | null, uncertainty: number | null, provisional = false) => ({
+    rank: null,
+    playerId: `p${rating}`,
+    displayName: 'P',
+    tagLine: null,
+    rating,
+    uncertainty,
+    gamesPlayed: 10,
+    matchesPlayed: 4,
+    componentId: 'c',
+    componentSize: 12,
+    regionLabel: 'Scene',
+    provisional,
+    provisionalReason: null,
+    gamesUntilRated: 0,
+  });
+
+  it('spans every rated rating plus and minus its margin', () => {
+    const scale = marginScale([entry(1200, 100), entry(1300, 50), entry(1250, 20)]);
+    expect(scale).toEqual({ min: 1100, max: 1350 });
+  });
+
+  it('draws no bars at all when there is nothing to compare', () => {
+    // Sparse is the normal case: a bar with nothing beside it is decoration,
+    // so one or two rated players get the number and no axis.
+    expect(marginScale([entry(1200, 100)])).toBeNull();
+    expect(marginScale([entry(1200, 100), entry(1300, 50)])).toBeNull();
+    expect(marginScale([entry(1200, 0), entry(1200, 0), entry(1200, 0)])).toBeNull();
+    expect(marginScale([entry(1200, 100, true), entry(1300, 50, true), entry(1250, 20, true)])).toBeNull();
+  });
+
+  it('places a span and its marker on the shared axis', () => {
+    const scale = { min: 1100, max: 1300 };
+    expect(marginBar({ rating: 1200, uncertainty: 50 }, scale)).toEqual({
+      leftPercent: 25,
+      widthPercent: 50,
+      markerPercent: 50,
+    });
+  });
+
+  it('still shows a mark for a rating with no recorded margin', () => {
+    const bar = marginBar({ rating: 1200, uncertainty: null }, { min: 1100, max: 1300 });
+    expect(bar?.widthPercent).toBeGreaterThan(0);
+    expect(bar?.markerPercent).toBe(50);
+  });
+
+  it('clamps a span that runs past the axis, and skips an unrated row', () => {
+    const bar = marginBar({ rating: 1150, uncertainty: 400 }, { min: 1100, max: 1300 });
+    expect(bar).toEqual({ leftPercent: 0, widthPercent: 100, markerPercent: 25 });
+    expect(marginBar({ rating: null, uncertainty: 40 }, { min: 1100, max: 1300 })).toBeNull();
+    expect(marginBar({ rating: 1200, uncertainty: 40 }, null)).toBeNull();
+  });
+});
+
 describe('niceTicks', () => {
   it('rounds to readable steps', () => {
     expect(niceTicks(1100, 1300)).toEqual([1100, 1150, 1200, 1250, 1300]);
@@ -435,5 +597,27 @@ describe('buildRatingChartGeometry', () => {
     expect(geometry.plot.width).toBeGreaterThan(0);
     expect(geometry.plot.height).toBeGreaterThan(0);
     expect(geometry.yTicks.length).toBeGreaterThan(1);
+  });
+});
+
+describe('hasNoRecord', () => {
+  // `/api/players/:id` 404s today for a player the engine has never seen, and
+  // the event page renders those names as plain text for that reason. The
+  // endpoint may start answering with an all-null profile instead, so the
+  // player page must be able to tell "never seen" from "not yet rated"
+  // without waiting for a flag to be added to the wire.
+  it('reads a profile the engine has never seen', () => {
+    expect(hasNoRecord({ rating: null, gamesPlayed: 0, matchesPlayed: 0 })).toBe(true);
+    expect(hasNoRecord({ rating: null, gamesPlayed: null, matchesPlayed: null })).toBe(true);
+    expect(hasNoRecord({})).toBe(true);
+    expect(hasNoRecord(null)).toBe(true);
+    expect(hasNoRecord(undefined)).toBe(true);
+  });
+
+  it('does not mistake an unranked player for an unseen one', () => {
+    // Below the gate, so the rating is nulled out on the wire - but the games
+    // are there, and "No record yet" would be a lie.
+    expect(hasNoRecord({ rating: null, gamesPlayed: 3, matchesPlayed: 2 })).toBe(false);
+    expect(hasNoRecord({ rating: 1219, gamesPlayed: 12, matchesPlayed: 6 })).toBe(false);
   });
 });

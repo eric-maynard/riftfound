@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { getRankings, getSets, searchPlayers } from '../services/api';
-import HowRankingWorks from '../components/HowRankingWorks';
 import SceneSelect from '../components/SceneSelect';
+import SetScope from '../components/SetScope';
 import type {
   ComponentSummary,
   LeaderboardEntry,
@@ -17,17 +17,18 @@ import {
   formatDate,
   formatRating,
   formatUncertainty,
+  gateProgress,
+  marginBar,
+  marginScale,
   pickDefaultComponent,
   provisionalExplanation,
-  setBoundaryNote,
-  selectableSets,
   setLabel,
   splitByConfidence,
   UNRANKED_LABEL,
 } from '../lib/ranking';
 
 /**
- * The ranking section.
+ * The Rankings section.
  *
  * At launch this page's normal state is nearly empty: Radiance shipped
  * 2026-10-23, the backfill reaches about three weeks, and most players have
@@ -43,16 +44,25 @@ import {
  *    small to order anyone.
  *  - A rating that has not cleared the confidence gate is not printed at all;
  *    the player simply reads "Unranked". The reason is a tooltip, and the
- *    general explanation lives in "How ranking works" at the foot of the page -
+ *    general explanation lives in "How rankings work" at the foot of the page -
  *    not in prose beside every row.
+ *
+ * The density is borrowed from op.gg and lolchess: one summary block instead of
+ * a row of equal-weight tiles, a filled meter instead of a bare count, and a
+ * ladder whose position, player, number and volume all sit on one line. What is
+ * *not* borrowed is their tier furniture. They have Iron through Challenger; we
+ * have a rating with a real margin, and the margin is drawn rather than hidden
+ * behind a badge.
  */
 
-/** Hover/focus copy for the two concepts the page cannot avoid naming. */
+/** Hover/focus copy for the concepts the page cannot avoid naming. */
 const HINTS = {
   scene:
     'A scene is a group of players who have played each other. Ratings only compare inside one, so a ranking is always scoped to a scene.',
   rating:
     'Worked out from games recorded at events. The ± is the margin of uncertainty around the number.',
+  margin:
+    'Each bar is one rating plus and minus its margin, drawn on one scale. Where two bars overlap, the order between those two players is not settled yet.',
 } as const;
 
 const PAGE_SIZE = 25;
@@ -176,31 +186,29 @@ function RankingPage() {
   // Positions only mean something inside one big-enough scene.
   const laddered = Boolean(selectedComponent?.comparable);
   const activeSet = sets.find((set) => set.setId === setId) ?? null;
+  const scopeLabel = activeSet ? setLabel(activeSet) : ALL_SETS_LABEL;
+  // One shared axis for the margin bars, or none at all when there is too
+  // little to compare. Three rows is the floor: two bars are a comparison, one
+  // is a decoration.
+  const scale = useMemo(() => marginScale(rated), [rated]);
 
   return (
     <div className="ranking-page">
       <div className="ranking-head">
-        <h1>Ranking</h1>
+        <h1>Rankings</h1>
+        <p className="ranking-head-sub">
+          {selectedComponent?.regionLabel ?? 'All scenes'} &middot; {scopeLabel}
+        </p>
       </div>
 
       {/* One filter row, above everything it scopes. */}
       <div className="ranking-filters">
-        <div className="filter-group">
-          <label className="filter-label" htmlFor="ranking-set">Set</label>
-          <select
-            id="ranking-set"
-            value={setId}
-            onChange={(event) => updateParam(URL_PARAMS.SET, event.target.value === ALL_SETS ? null : event.target.value)}
-          >
-            <option value={ALL_SETS}>{ALL_SETS_LABEL}</option>
-            {selectableSets(sets).map((set) => (
-              <option key={set.setId} value={set.setId}>
-                {setLabel(set)}
-              </option>
-            ))}
-          </select>
-          {activeSet?.releaseDate && <span className="filter-note">{setBoundaryNote(activeSet)}</span>}
-        </div>
+        <SetScope
+          sets={sets}
+          value={setId}
+          name="ranking-set"
+          onChange={(next) => updateParam(URL_PARAMS.SET, next === ALL_SETS ? null : next)}
+        />
 
         <SceneSelect
           components={state.components}
@@ -218,10 +226,10 @@ function RankingPage() {
         <p className="muted">Loading rankings...</p>
       ) : (
         <div className={loading ? 'is-refreshing' : undefined}>
-          <CoveragePanel
+          <SceneSummary
             coverage={coverage}
             component={selectedComponent}
-            scopeLabel={activeSet ? setLabel(activeSet) : ALL_SETS_LABEL}
+            scopeLabel={scopeLabel}
           />
 
           {!laddered && (rated.length > 0 || provisional.length > 0) && (
@@ -236,9 +244,12 @@ function RankingPage() {
             <NobodyRatedYet hasPlayers={provisional.length > 0} />
           ) : (
             <section className="ranking-section">
-              <h2>{laddered ? 'Ranked' : 'Rated players'}</h2>
-              <div className="table-scroll">
-                <table className="data-table ranking-table">
+              <div className="section-head">
+                <h2>{laddered ? 'Ranked' : 'Rated players'}</h2>
+                <span className="section-count">{rated.length}</span>
+              </div>
+              <div className="panel table-scroll">
+                <table className="data-table ladder-table">
                   <thead>
                     <tr>
                       {laddered && <th scope="col" className="numeric">#</th>}
@@ -246,25 +257,58 @@ function RankingPage() {
                       <th scope="col" className="numeric">
                         <abbr className="col-hint" title={HINTS.rating}>Rating</abbr>
                       </th>
+                      {scale && (
+                        <th scope="col" className="margin-col">
+                          <abbr className="col-hint" title={HINTS.margin}>Margin</abbr>
+                        </th>
+                      )}
                       <th scope="col" className="numeric">Games</th>
+                      <th scope="col" className="numeric">Matches</th>
                       {!laddered && <th scope="col">Scene</th>}
                     </tr>
                   </thead>
                   <tbody>
-                    {rated.map((entry) => (
-                      <tr key={entry.playerId}>
-                        {laddered && <td className="numeric rank-cell">{entry.rank ?? '--'}</td>}
-                        <td>
-                          <PlayerLink entry={entry} />
-                        </td>
-                        <td className="numeric">
-                          <span className="rating-value">{formatRating(entry.rating)}</span>
-                          <span className="rating-margin">{formatUncertainty(entry.uncertainty)}</span>
-                        </td>
-                        <td className="numeric">{entry.gamesPlayed ?? '--'}</td>
-                        {!laddered && <td className="muted">{entry.regionLabel ?? '--'}</td>}
-                      </tr>
-                    ))}
+                    {rated.map((entry) => {
+                      const bar = marginBar(entry, scale);
+                      return (
+                        <tr key={entry.playerId}>
+                          {laddered && (
+                            <td className="numeric rank-cell">
+                              <span className={`rank-badge${(entry.rank ?? 99) <= 3 ? ' is-top' : ''}`}>
+                                {entry.rank ?? '--'}
+                              </span>
+                            </td>
+                          )}
+                          <td>
+                            <PlayerLink entry={entry} />
+                          </td>
+                          <td className="numeric">
+                            <span className="rating-value">{formatRating(entry.rating)}</span>
+                            <span className="rating-margin">{formatUncertainty(entry.uncertainty)}</span>
+                          </td>
+                          {scale && (
+                            <td className="margin-col">
+                              {bar && (
+                                <span
+                                  className="margin-track"
+                                  role="img"
+                                  aria-label={`Rating ${formatRating(entry.rating)} ${formatUncertainty(entry.uncertainty) || 'with no recorded margin'}`}
+                                >
+                                  <span
+                                    className="margin-span"
+                                    style={{ left: `${bar.leftPercent}%`, width: `${bar.widthPercent}%` }}
+                                  />
+                                  <span className="margin-mark" style={{ left: `${bar.markerPercent}%` }} />
+                                </span>
+                              )}
+                            </td>
+                          )}
+                          <td className="numeric">{entry.gamesPlayed ?? '--'}</td>
+                          <td className="numeric">{entry.matchesPlayed ?? '--'}</td>
+                          {!laddered && <td className="muted">{entry.regionLabel ?? '--'}</td>}
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
@@ -273,25 +317,46 @@ function RankingPage() {
 
           {provisional.length > 0 && (
             <section className="ranking-section">
-              <h2>Unranked</h2>
-              <ul className="provisional-list">
-                {provisional.map((entry) => (
-                  <li key={entry.playerId}>
-                    <PlayerLink entry={entry} />
-                    {/* The word, and nothing else. The reason is the tooltip;
-                        the general rule is in "How ranking works" below. */}
-                    <span
-                      className="unranked"
-                      title={provisionalExplanation(
-                        entry.provisionalReason,
-                        entry.gamesUntilRated,
-                        coverage?.minGamesForRating ?? 8
+              <div className="section-head">
+                <h2>Unranked</h2>
+                <span className="section-count">{provisional.length}</span>
+              </div>
+              <ul className="panel provisional-list">
+                {provisional.map((entry) => {
+                  const gate = gateProgress(entry.gamesPlayed, coverage?.minGamesForRating ?? 8, entry.provisionalReason);
+                  const why = provisionalExplanation(
+                    entry.provisionalReason,
+                    entry.gamesUntilRated,
+                    coverage?.minGamesForRating ?? 8
+                  );
+                  return (
+                    <li key={entry.playerId}>
+                      <PlayerLink entry={entry} />
+                      {/* The word, and nothing else. The reason is the tooltip;
+                          the general rule is in "How rankings work" below. */}
+                      <span className="unranked" title={why}>
+                        {UNRANKED_LABEL}
+                      </span>
+                      {/* Games against the published threshold - a count of
+                          evidence, never the withheld rating. */}
+                      {gate && (
+                        <span className="gate" title={why}>
+                          <span className="gate-pips" aria-hidden="true">
+                            {Array.from({ length: gate.total }, (_, index) => (
+                              <span
+                                key={index}
+                                className={`gate-pip${index < gate.filled ? ' is-filled' : ''}`}
+                              />
+                            ))}
+                          </span>
+                          <span className="gate-count">
+                            {gate.filled}/{gate.total} games
+                          </span>
+                        </span>
                       )}
-                    >
-                      {UNRANKED_LABEL}
-                    </span>
-                  </li>
-                ))}
+                    </li>
+                  );
+                })}
               </ul>
             </section>
           )}
@@ -305,25 +370,30 @@ function RankingPage() {
       )}
 
       {/* The exposition, at the foot: after the numbers, not before them. */}
-      <HowRankingWorks
-        minGamesForRating={coverage?.minGamesForRating}
-        maxUncertaintyForRating={coverage?.maxUncertaintyForRating}
-        minComponentSize={coverage?.minComponentSize}
-      />
     </div>
   );
 }
 
 function PlayerLink({ entry }: { entry: LeaderboardEntry | PlayerSearchHit }) {
   return (
-    <Link to={`/ranking/players/${encodeURIComponent(entry.playerId)}`} className="player-link">
+    <Link to={`/rankings/players/${encodeURIComponent(entry.playerId)}`} className="player-link">
       {entry.displayName ?? 'Unknown player'}
       {entry.tagLine && <span className="player-tag">#{entry.tagLine}</span>}
     </Link>
   );
 }
 
-function CoveragePanel({
+/**
+ * The scene, as one block: who it is, how much of it is rated, and how much
+ * play that rests on.
+ *
+ * This replaces a row of four equal-weight tiles. The references both do the
+ * same thing - op.gg's "Ranked Solo/Duo" card, lolchess's "Ranked Game" panel -
+ * and the reason is that four tiles claim four headlines. There is only one
+ * headline here, and it is coverage: how many of the players we have seen have
+ * played enough for a number. The rest is supporting detail at label size.
+ */
+function SceneSummary({
   coverage,
   component,
   scopeLabel,
@@ -334,38 +404,59 @@ function CoveragePanel({
 }) {
   if (!coverage) return null;
 
-  const where = component?.regionLabel ?? 'all scenes';
+  const where = component?.regionLabel ?? 'Everywhere';
+  const seen = coverage.totalPlayers;
+  const ratedPercent = seen > 0 ? (coverage.ratedPlayers / seen) * 100 : 0;
 
   return (
-    <section className="coverage-panel" aria-label="Rating coverage">
-      <p className="coverage-headline">
-        <strong>{coverage.ratedPlayers}</strong> of <strong>{coverage.totalPlayers}</strong> players seen
-        in {where} ({scopeLabel}) have enough recorded games to be rated.
-      </p>
-      <dl className="stat-row">
-        <div className="stat-tile">
-          <dt>Rated</dt>
-          <dd>{coverage.ratedPlayers}</dd>
+    <section className="panel scene-summary" aria-label="Rating coverage">
+      <div className="scene-identity">
+        <h2 className="scene-name">{where}</h2>
+        <p className="scene-meta">
+          <span className="scope-chip">{scopeLabel}</span>
+          {component?.componentSize !== null && component?.componentSize !== undefined && (
+            <span>{component.componentSize} players in the co-play graph</span>
+          )}
+          {component && !component.comparable && <span>too small for places</span>}
+        </p>
+      </div>
+
+      <div className="scene-coverage">
+        <span className="stat-label">Rated</span>
+        <p className="coverage-headline">
+          <strong>{coverage.ratedPlayers}</strong>
+          <span className="coverage-of"> of {seen} players seen</span>
+        </p>
+        <div
+          className="coverage-track"
+          role="img"
+          aria-label={`${coverage.ratedPlayers} of ${seen} players seen here have enough recorded games to be rated`}
+        >
+          <span className="coverage-fill" style={{ width: `${ratedPercent}%` }} />
         </div>
-        <div className="stat-tile">
-          <dt>Players seen</dt>
-          <dd>{coverage.totalPlayers}</dd>
-        </div>
-        <div className="stat-tile">
+      </div>
+
+      <dl className="scene-figures">
+        <div>
           <dt>Games recorded</dt>
           <dd>{coverage.totalGames ?? '--'}</dd>
         </div>
-        <div className="stat-tile">
-          <dt>Scene size</dt>
-          <dd>{component?.componentSize ?? '--'}</dd>
+        <div>
+          <dt>Unranked</dt>
+          <dd>{coverage.provisionalPlayers}</dd>
+        </div>
+        <div>
+          <dt>Updated</dt>
+          <dd className="scene-figure-text">
+            {coverage.lastUpdated ? formatDate(coverage.lastUpdated) : '--'}
+          </dd>
         </div>
       </dl>
-      {/* Provenance only. The gate thresholds moved to "How ranking works". */}
+
+      {/* Provenance only. The gate thresholds moved to "How rankings work". */}
       <p className="coverage-note">
-        {coverage.lastUpdated && `Last updated ${formatDate(coverage.lastUpdated)}.`}
-        {!coverage.coverageComplete && ' Counts are a floor: this scope has more players than one page of coverage.'}
-        {' '}
-        <a href="#how-ranking-works">How ranking works</a>
+        {!coverage.coverageComplete &&
+          'Counts are a floor: this scope has more players than one page of coverage. '}
       </p>
     </section>
   );
@@ -373,23 +464,25 @@ function CoveragePanel({
 
 function NobodyRatedYet({ hasPlayers }: { hasPlayers: boolean }) {
   return (
-    <section className="ranking-section empty-state">
-      <h2>No ratings yet</h2>
-      {hasPlayers ? (
-        <p>
-          Players have been recorded here, but none has enough games for a rating yet. They are
-          listed below as <strong>Unranked</strong>.
+    <section className="ranking-section">
+      <div className="panel empty-state">
+        <h2>No ratings yet</h2>
+        {hasPlayers ? (
+          <p>
+            Players have been recorded here, but none has enough games for a rating yet. They are
+            listed below as <strong>Unranked</strong>.
+          </p>
+        ) : (
+          <p>No games have been recorded for this slice yet - there is simply nothing to rank.</p>
+        )}
+        <p className="muted">
+          Competitive Riftbound is days old, so a near-empty ranking is the honest picture for now.
+          It fills in as events are played.
         </p>
-      ) : (
-        <p>No games have been recorded for this slice yet - there is simply nothing to rank.</p>
-      )}
-      <p className="muted">
-        Competitive Riftbound is days old, so a near-empty ranking is the honest picture for now. It
-        fills in as events are played.
-      </p>
-      <p>
-        <Link to="/">Find an event to play in &rarr;</Link>
-      </p>
+        <p>
+          <Link to="/">Find an event to play in &rarr;</Link>
+        </p>
+      </div>
     </section>
   );
 }
@@ -446,7 +539,7 @@ function PlayerSearch() {
           {hits.map((hit) => (
             <Link
               key={hit.playerId}
-              to={`/ranking/players/${encodeURIComponent(hit.playerId)}`}
+              to={`/rankings/players/${encodeURIComponent(hit.playerId)}`}
               className="search-result"
               role="option"
               aria-selected={false}

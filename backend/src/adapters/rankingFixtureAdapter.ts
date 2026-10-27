@@ -1,4 +1,4 @@
-import { assessConfidence } from '../models/ranking.js';
+import { resolveVerdict } from '../models/ranking.js';
 import type { PlayerMatch, RatingPoint, Scope } from '../models/ranking.js';
 import type {
   LeaderboardPage,
@@ -377,12 +377,17 @@ export function createFixtureRankingStore(data: FixtureData = LAUNCH_FIXTURE_DAT
 
       const items: LeaderboardRecord[] = slice.map((playerId) => {
         const player = byId.get(playerId);
-        // In a set scope the engine's board carries that set's own numbers.
+        // In a set scope the engine's board carries that set's own numbers -
+        // and, where the fixture states one, that scope's own verdict.
         const setRating = scope.setId
           ? player?.setRatings.find((entry) => entry.setId === scope.setId)
           : undefined;
+        const source = scope.setId ? setRating : player;
         return {
           playerId,
+          provisional: source?.provisional ?? undefined,
+          provisionalReason: source?.provisionalReason ?? undefined,
+          gamesUntilRated: source?.gamesUntilRated ?? undefined,
           rating: scope.setId ? setRating?.rating ?? null : player?.rating ?? null,
           uncertainty: scope.setId ? setRating?.uncertainty ?? null : player?.uncertainty ?? null,
           gamesPlayed: scope.setId ? setRating?.gamesPlayed ?? null : player?.gamesPlayed ?? null,
@@ -460,7 +465,7 @@ export function createFixtureRankingStore(data: FixtureData = LAUNCH_FIXTURE_DAT
           totalPlayers: 0,
         };
         existing.totalPlayers += 1;
-        if (!assessConfidence(player).provisional) existing.ratedPlayers += 1;
+        if (!resolveVerdict(player).provisional) existing.ratedPlayers += 1;
         out.set(player.componentId, existing);
       }
       return out;

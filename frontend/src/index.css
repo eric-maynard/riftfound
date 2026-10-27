@@ -247,7 +247,7 @@ a:hover {
   transition: transform 180ms ease;
 }
 
-.mode-switch[data-active='ranking']::before {
+.mode-switch[data-active='rankings']::before {
   transform: translateX(46px);
 }
 
@@ -858,6 +858,105 @@ select:disabled {
   transition: all 0.15s;
 }
 
+/* ---------------------------------------------------------------
+   The trophy on an event chip
+   ---------------------------------------------------------------
+   It rides the chip itself - in the grid cell, in the desktop "+N more"
+   popover, and in DayEventsModal on phones. FullCalendar draws that popover
+   itself and `eventContent` is the only way inside it, so one renderer covers
+   the grid and the popover; the modal renders the same component as a sibling
+   of the event button.
+
+   It used to be confined here to `.fc-popover`, which meant almost nobody
+   could reach it: with dayMaxEventRows 3 a day needs four events before there
+   is a "+N more" link at all, and most days have one or two. The reason for
+   the confinement - availability being fetched one day list at a time, so a
+   grid trophy would have lit up only after the fact - has been removed in
+   CalendarPage instead: the sweep now covers the whole visible range up front,
+   batched 50 ids a call.
+
+   The ink is #21222c, the app's own darkest surface, read here as dark grey
+   ink. Measured against each chip colour it actually sits on - not against the
+   page, where it would be invisible at 1.40:1:
+     #bd93f9 Nexus Night        6.55:1
+     #ff79c6 Summoner Skirmish  6.62:1
+     #73d393 Pre-Rift           8.62:1
+     #9ea8c7 Other              6.68:1
+   Non-text graphics need 3:1. The slate "Other" chip used to be #6272a4 and
+   set the floor at 3.36:1 - the binding case, with nothing lighter clearing it
+   and even pure black reaching only 4.46:1 - which is why that chip itself was
+   lightened; see lib/eventColors.ts. Hover and focus keep the same ink and add
+   a ring in it: lifting the glyph to white would drop it to 2.26:1 on the
+   lavender chip, and the site's cyan focus ring reaches only 1.63:1 there. */
+.fc .fc-event-row {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  min-width: 0;
+}
+
+.event-trophy {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  color: var(--color-bg-tertiary);
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.event-trophy svg {
+  display: block;
+  width: 13px;
+  height: 13px;
+}
+
+.event-trophy:hover,
+.event-trophy:focus-visible {
+  /* Same ink: on these chips a lighter glyph measures worse, not better. */
+  color: var(--color-bg-tertiary);
+  outline: 2px solid currentColor;
+  outline-offset: 1px;
+  text-decoration: none;
+}
+
+/* In the grid cell the chip is 0.7rem on one clipped line, so the trophy takes
+   the glyph's own 13px and no more; the cell is ~160px wide at desktop widths
+   and the title already ellipsises, so it loses 16px of label rather than
+   wrapping. In the popover the chips are a list with room to spare, so the
+   target grows to 24px. */
+.fc .event-trophy {
+  min-width: 15px;
+  min-height: 15px;
+}
+
+.fc .fc-popover .event-trophy {
+  min-width: 24px;
+  min-height: 24px;
+}
+
+.fc .fc-popover .fc-event {
+  padding: 2px 3px;
+}
+
+/* In the popover the chips are a list, so the title takes the room it has and
+   ellipsises; in the grid a chip with no trophy keeps the hard clip it has
+   always had.
+
+   A chip that *does* carry a trophy has to yield, though. The grid title is
+   `white-space: nowrap` with `min-width: auto`, so as a flex item its
+   min-content is the whole string: left alone it refuses to shrink and pushes
+   the trophy past the chip's `overflow: hidden`, where it is invisible. So the
+   trophy's own chips - and only those - get the shrink-and-ellipsise
+   treatment. */
+.fc .fc-popover .fc-event-row .fc-event-title,
+.fc .fc-event-row.has-trophy .fc-event-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .fc .fc-more-link,
 .fc .fc-daygrid-more-link {
   color: var(--color-cyan);
@@ -1032,25 +1131,62 @@ select:disabled {
   gap: 2px;
 }
 
+/* One coloured band per event, holding two separate targets side by side: the
+   event, and - when it has standings - the trophy. A link nested inside a
+   button is invalid markup and announces as one confused control, so the band
+   carries the colour and the two sit as siblings.
+
+   This list is only ever rendered on touch devices, so the band is 44px tall:
+   the row used to be about 20px, which was never a real target. */
+.day-event-row {
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+  min-height: 44px;
+  border-radius: 3px;
+  overflow: hidden;
+  transition: opacity 0.15s ease;
+}
+
+.day-event-row:hover {
+  opacity: 0.85;
+}
+
 .day-event-item {
-  display: block;
-  padding: 2px 4px;
+  display: flex;
+  align-items: center;
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 2px 6px;
   border: none;
+  background: none;
   border-radius: 3px;
   cursor: pointer;
   text-align: left;
-  width: 100%;
   font-size: 0.75rem;
   font-weight: 400;
   color: var(--color-bg);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  transition: opacity 0.15s ease;
 }
 
-.day-event-item:hover {
-  opacity: 0.85;
+.day-event-row .event-trophy {
+  min-width: 44px;
+  align-self: stretch;
+  border-radius: 0 3px 3px 0;
+}
+
+.day-event-row .event-trophy svg {
+  width: 17px;
+  height: 17px;
+}
+
+/* The band clips, so the ring goes inside rather than being cut off. */
+.day-event-row .event-trophy:hover,
+.day-event-row .event-trophy:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 2px currentColor;
 }
 
 /* Mobile responsive styles */
@@ -1154,6 +1290,14 @@ select:disabled {
     font-size: 0.6rem;
     padding: 1px 2px;
   }
+
+  /* No trophy on the grid chip at this width: the cell is ~50px wide and the
+     chip is 0.6rem, so the glyph would crowd the time out and would not be a
+     real target anyway. Tapping the cell opens the day list, which carries it
+     at 44px. The popover's copy stays. */
+  .fc .fc-daygrid-day-events .event-trophy {
+    display: none;
+  }
 }
 
 /* Toast notification */
@@ -1247,16 +1391,88 @@ select:disabled {
 }
 
 /* Ranking + player pages share the calendar's mode-switch gutter */
+/* ===================================================================
+   Ranking section
+
+   The density is lifted from op.gg and lolchess: one summary block rather
+   than a row of equal-weight tiles, filled meters rather than bare
+   percentages, lettered result pips, and rows read left to right off a
+   colour stripe on the leading edge. What is deliberately *not* lifted is
+   their tier furniture - there is no Iron-to-Challenger here, only a rating
+   with a real margin, so the margin is drawn instead of a badge.
+
+   Every surface below is a solid hex, not an rgba() tint. A tint's real
+   colour depends on what it sits on, so the same chip measured over the page
+   ground and over a panel gives two different ratios - and measuring ink
+   against the un-composited tint gives a meaningless one. These are the
+   composites, taken once, against the surface they actually sit on.
+   =================================================================== */
+
 .ranking-page,
-.player-page {
+.player-page,
+.event-page {
+  /* Surfaces. Each is a composite over --color-bg-tertiary (#21222c), which
+     is the one surface every dense block in this section sits on. */
+  --panel: var(--color-bg-tertiary);
+  --panel-head: #1b1c25;          /* header band, one step darker than panel */
+  --panel-sep: #2d2f3b;           /* row hairline - a rule, not text */
+  --rank-accent: #9085e9;         /* the rating violet; 5.05:1 on the panel */
+
+  --row-win: #253533;             /* green  9% over panel */
+  --row-loss: #352730;            /* red    9% over panel */
+  --row-hover: #2a2d3d;           /* border 14% over panel */
+  --row-win-hover: #2e3e43;
+  --row-loss-hover: #3b3240;
+
+  --pip-win: #2e5e42;             /* green 28% over panel */
+  --pip-loss: #5f3037;            /* red   28% over panel */
+  --pip-draw: #363c52;            /* border 32% over panel */
+
+  --chip-win: #29493a;            /* green 18% over panel */
+  --chip-loss: #492b33;           /* red   18% over panel */
+  --chip-draw: #2f3446;           /* border 22% over panel */
+
+  --meter-track: #373841;         /* white 10% over panel */
+
+  /* Type roles. No new typeface: the site is set in the system stack and a
+     webfont here would load on the calendar too. The hierarchy is carried by
+     scale, weight, tracking and tabular figures. */
+  --t-label: 0.68rem;             /* uppercase eyebrow */
+  --t-meta: 0.75rem;              /* third line of a row */
+  --t-body: 0.875rem;             /* row ink */
+  --t-figure: 1rem;               /* a number inside a row */
+  --t-display: 1.9rem;            /* the one headline number on a page */
+
   padding-top: 0.25rem;
   padding-left: 104px;
 }
 
+/* One object for every dense block: the data surface, hairlined. */
+.panel {
+  background-color: var(--panel);
+  border: 1px solid var(--color-border);
+  border-radius: 0.5rem;
+  overflow: hidden;
+}
+
+.ranking-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.25rem 0.7rem;
+  margin-bottom: 0.75rem;
+}
+
 .ranking-head h1,
-.player-head h1 {
+.player-identity h1 {
   font-size: 1.5rem;
-  margin-bottom: 0.25rem;
+  line-height: 1.2;
+  margin: 0;
+}
+
+.ranking-head-sub {
+  font-size: var(--t-meta);
+  color: var(--color-text-muted);
 }
 
 .muted {
@@ -1269,15 +1485,67 @@ select:disabled {
   font-size: 0.875rem;
 }
 
-/* One filter row above everything it scopes */
-.ranking-filters {
+.stat-label {
+  display: block;
+  font-size: var(--t-label);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--color-text-muted);
+}
+
+.scope-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.1rem 0.5rem;
+  border-radius: 0.75rem;
+  background-color: #33324a;              /* accent 16% over panel */
+  color: var(--color-text-muted-lifted);  /* 7.12:1 */
+  font-size: var(--t-meta);
+  font-weight: 600;
+}
+
+.section-head {
   display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+
+.section-head h2 {
+  font-size: 1.05rem;
+}
+
+.section-count {
+  font-size: var(--t-meta);
+  font-weight: 600;
+  color: var(--color-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.section-note {
+  margin-top: 0.5rem;
+  font-size: var(--t-meta);
+  color: var(--color-text-muted);
+  max-width: 74ch;
+}
+
+/* ---------------------------------------------------------------
+   Filters
+   --------------------------------------------------------------- */
+
+.ranking-filters {
+  /* Hugs its controls rather than striping the page: the player page's bar
+     holds one segmented control and a full-width band around it reads as a
+     missing filter rather than a deliberate one. */
+  display: inline-flex;
   flex-wrap: wrap;
   align-items: flex-end;
   gap: 1rem;
   padding: 0.75rem 1rem;
   margin-bottom: 1rem;
-  background-color: var(--color-bg-tertiary);
+  background-color: var(--panel);
   border: 1px solid var(--color-border);
   border-radius: 0.5rem;
 }
@@ -1290,15 +1558,60 @@ select:disabled {
 }
 
 .filter-label {
-  font-size: 0.75rem;
+  font-size: var(--t-label);
+  font-weight: 600;
   text-transform: uppercase;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.08em;
   color: var(--color-text-muted);
 }
 
 .filter-note {
-  font-size: 0.75rem;
+  font-size: var(--t-meta);
   color: var(--color-text-muted);
+}
+
+/* The set scope is a segmented control, not a dropdown: at launch there is
+   one released set with data, so the whole choice fits on one line. The
+   scene picker stays a combobox for the opposite reason - ~194 of them. */
+.pill-group {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  padding: 2px;
+  background-color: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: 0.45rem;
+}
+
+.pill {
+  padding: 0.3rem 0.7rem;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 0.35rem;
+  color: var(--color-text-muted);   /* 5.15:1 on --color-bg */
+  font: inherit;
+  font-size: 0.8rem;
+  font-weight: 500;
+  line-height: 1.4;
+  cursor: pointer;
+}
+
+.pill:hover:not(.is-active) {
+  color: var(--color-text);
+}
+
+/* Active is signalled four ways - fill, border, ink and weight - so it does
+   not rest on a 1.7:1 difference between two dark surfaces. */
+.pill.is-active {
+  background-color: var(--color-bg-secondary);
+  border-color: var(--color-primary);
+  color: var(--color-text);
+  font-weight: 600;
+}
+
+.pill:focus-visible {
+  outline: 2px solid var(--color-cyan);
+  outline-offset: 1px;
 }
 
 .player-search input {
@@ -1319,7 +1632,7 @@ select:disabled {
   right: 0;
   min-width: 220px;
   z-index: 60;
-  background-color: var(--color-bg-tertiary);
+  background-color: var(--panel);
   border: 1px solid var(--color-border);
   border-radius: 0.375rem;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
@@ -1389,7 +1702,7 @@ select:disabled {
   max-height: 280px;
   overflow-y: auto;
   z-index: 60;
-  background-color: var(--color-bg-tertiary);
+  background-color: var(--panel);
   border: 1px solid var(--color-border);
   border-radius: 0.375rem;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
@@ -1412,7 +1725,7 @@ select:disabled {
 }
 
 .scene-option-meta {
-  font-size: 0.75rem;
+  font-size: var(--t-meta);
   color: var(--color-text-muted);
 }
 
@@ -1447,7 +1760,7 @@ select:disabled {
   cursor: help;
 }
 
-/* "Unranked": the word, and the reason only on hover/focus. */
+/* "Unranked": the word, and the reason only on hover/focus. Never a number. */
 .unranked {
   color: var(--color-text-muted);
   font-size: 0.8rem;
@@ -1456,105 +1769,168 @@ select:disabled {
   text-underline-offset: 2px;
 }
 
-.stat-tile .unranked {
-  font-size: 1rem;
-  font-weight: 500;
+/* ---------------------------------------------------------------
+   Scene summary - the ranking page's one summary block
+   --------------------------------------------------------------- */
+
+.scene-summary {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(190px, 0.9fr) auto;
+  grid-template-areas:
+    'identity coverage figures'
+    'note     note     note';
+  gap: 1rem 1.75rem;
+  align-items: start;
+  padding: 1rem 1.25rem;
+  margin-bottom: 1rem;
 }
 
-/* Coverage: what the data actually supports */
-.coverage-panel {
-  padding: 1rem;
-  margin-bottom: 1rem;
-  background-color: var(--color-bg-tertiary);
-  border: 1px solid var(--color-border);
-  border-radius: 0.5rem;
+.scene-identity {
+  grid-area: identity;
+}
+
+.scene-name {
+  font-size: 1.15rem;
+  line-height: 1.3;
+  margin-bottom: 0.3rem;
+}
+
+.scene-meta,
+.player-meta,
+.event-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.3rem 0.5rem;
+  font-size: var(--t-meta);
+  color: var(--color-text-muted);
+}
+
+.scene-meta > span + span::before,
+.player-meta > span + span::before,
+.event-meta > span + span::before {
+  content: '\00b7';
+  margin-right: 0.5rem;
+  color: var(--color-text-muted);
+}
+
+.scene-coverage {
+  grid-area: coverage;
 }
 
 .coverage-headline {
-  margin-bottom: 0.75rem;
-  max-width: 70ch;
+  margin: 0.1rem 0 0.4rem;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.1;
+}
+
+.coverage-headline strong {
+  font-size: var(--t-display);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+.coverage-of {
+  margin-left: 0.35rem;
+  font-size: var(--t-body);
+  color: var(--color-text-muted);
+}
+
+.coverage-track {
+  height: 8px;
+  border-radius: 4px;
+  background-color: var(--meter-track);
+  overflow: hidden;
+}
+
+.coverage-fill {
+  display: block;
+  height: 100%;
+  border-radius: 4px;
+  background-color: var(--rank-accent);   /* 3.72:1 on the track */
+}
+
+.scene-figures,
+.player-figures,
+.event-figures {
+  grid-area: figures;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem 1.5rem;
+}
+
+.scene-figures dt,
+.player-figures dt,
+.event-figures dt {
+  font-size: var(--t-label);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--color-text-muted);
+}
+
+.scene-figures dd,
+.player-figures dd,
+.event-figures dd {
+  font-size: 1.1rem;
+  font-weight: 600;
+  line-height: 1.3;
+  font-variant-numeric: tabular-nums;
+}
+
+.scene-figure-text,
+.event-figure-text {
+  font-size: 0.85rem !important;
+  font-weight: 500 !important;
 }
 
 .coverage-note {
-  margin-top: 0.75rem;
-  font-size: 0.8rem;
+  grid-area: note;
+  padding-top: 0.6rem;
+  border-top: 1px solid var(--panel-sep);
+  font-size: var(--t-meta);
   color: var(--color-text-muted);
-  max-width: 78ch;
-}
-
-.stat-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.75rem;
-  margin: 0 0 0.5rem;
-}
-
-.stat-tile {
-  flex: 1 1 120px;
-  min-width: 110px;
-  padding: 0.6rem 0.75rem;
-  background-color: var(--color-bg);
-  border: 1px solid var(--color-border);
-  border-radius: 0.375rem;
-}
-
-.stat-tile dt {
-  font-size: 0.72rem;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: var(--color-text-muted);
-  margin-bottom: 0.15rem;
-}
-
-.stat-tile dd {
-  font-size: 1.4rem;
-  font-weight: 600;
-  line-height: 1.2;
-  /* Proportional figures: tabular-nums reads loose at display sizes. */
-}
-
-/* Kept as a hook for "a stat tile whose value is withheld"; the colour and the
-   help cursor come from .unranked, which it is always paired with. */
-.stat-withheld {
-  font-size: 1rem;
-  font-weight: 500;
 }
 
 .notice-banner {
   padding: 0.75rem 1rem;
   margin-bottom: 1rem;
-  background-color: rgba(255, 184, 108, 0.1);
+  background-color: #3a3630;              /* orange 10% over the page ground */
   border: 1px solid var(--color-orange);
   border-radius: 0.5rem;
-  color: var(--color-orange);
+  color: var(--color-orange);             /* 7.75:1 on that composite */
   font-size: 0.875rem;
   max-width: 80ch;
 }
 
 .ranking-section,
-.player-section {
+.player-section,
+.event-section {
   margin-bottom: 1.5rem;
-}
-
-.ranking-section h2,
-.player-section h2 {
-  font-size: 1.05rem;
-  margin-bottom: 0.5rem;
 }
 
 .empty-state {
   padding: 1.25rem;
-  background-color: var(--color-bg-tertiary);
-  border: 1px solid var(--color-border);
-  border-radius: 0.5rem;
   max-width: 70ch;
+}
+
+.empty-state h2 {
+  font-size: 1.05rem;
+  margin-bottom: 0.5rem;
 }
 
 .empty-state p {
   margin-bottom: 0.6rem;
 }
 
-/* Tables */
+.empty-state p:last-child {
+  margin-bottom: 0;
+}
+
+/* ---------------------------------------------------------------
+   Tables
+   --------------------------------------------------------------- */
+
 .table-scroll {
   overflow-x: auto;
 }
@@ -1562,55 +1938,62 @@ select:disabled {
 .data-table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 0.875rem;
+  font-size: var(--t-body);
 }
 
 .data-table th,
 .data-table td {
-  padding: 0.5rem 0.75rem;
+  padding: 0.55rem 0.9rem;
   text-align: left;
-  border-bottom: 1px solid var(--color-bg-secondary);
-  vertical-align: top;
+  border-bottom: 1px solid var(--panel-sep);
+  vertical-align: middle;
+}
+
+.data-table tbody tr:last-child th,
+.data-table tbody tr:last-child td {
+  border-bottom: none;
 }
 
 .data-table thead th {
-  font-size: 0.72rem;
+  padding-top: 0.45rem;
+  padding-bottom: 0.45rem;
+  background-color: var(--panel-head);
+  font-size: var(--t-label);
+  font-weight: 600;
   text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: var(--color-text-muted);
+  letter-spacing: 0.08em;
+  color: var(--color-text-muted);         /* 8.17:1 on --panel-head */
   border-bottom: 1px solid var(--color-border);
   white-space: nowrap;
 }
 
 .data-table .numeric {
   text-align: right;
-  font-variant-numeric: tabular-nums; /* columns of numbers align */
+  font-variant-numeric: tabular-nums;     /* columns of numbers align */
   white-space: nowrap;
 }
 
 .data-table tbody tr:hover {
-  background-color: rgba(98, 114, 164, 0.12);
+  background-color: var(--row-hover);
 }
 
 .data-table .row-emphasis th,
 .data-table .row-emphasis td {
-  background-color: rgba(144, 133, 233, 0.08);
-}
-
-.rank-cell {
-  color: var(--color-text-muted);
-  font-weight: 600;
+  background-color: #2b2a3b;              /* accent 8% over panel */
 }
 
 .rating-value {
-  font-weight: 600;
+  font-size: var(--t-figure);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
 }
 
 .rating-margin {
-  margin-left: 0.4rem;
-  font-size: 0.8em;
+  margin-left: 0.35rem;
+  font-size: 0.8rem;
   font-weight: 400;
   color: var(--color-text-muted);
+  font-variant-numeric: tabular-nums;
 }
 
 .player-link {
@@ -1624,29 +2007,141 @@ select:disabled {
   color: var(--color-text-muted);
 }
 
+/* ---------------------------------------------------------------
+   The ladder
+   --------------------------------------------------------------- */
+
+.rank-cell {
+  width: 3.5rem;
+}
+
+/* Ordinal emphasis, not a tier. The top three are heavier and brighter
+   because being first in a scene is a fact; there is no medal, no colour
+   ramp and no badge, because a tier system would be an invention. */
+.rank-badge {
+  display: inline-block;
+  min-width: 1.5rem;
+  font-size: var(--t-figure);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-muted);
+}
+
+.rank-badge.is-top {
+  font-size: 1.15rem;
+  font-weight: 700;
+  color: var(--color-text);
+}
+
+/* The margin bar: one rating ± its uncertainty, on a scale shared by every
+   row on the page, so overlapping bars read as "not separated yet". */
+.margin-col {
+  width: 30%;
+  min-width: 130px;
+}
+
+.margin-track {
+  position: relative;
+  display: block;
+  height: 14px;
+}
+
+.margin-track::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 6px;
+  height: 2px;
+  border-radius: 1px;
+  background-color: var(--panel-sep);
+}
+
+.margin-span {
+  position: absolute;
+  top: 5px;
+  height: 4px;
+  border-radius: 2px;
+  background-color: var(--rank-accent);   /* 5.05:1 on the panel */
+}
+
+/* Taller than the bar on purpose: most of the tick is read against the
+   panel (14.81:1), not against the violet it crosses. */
+.margin-mark {
+  position: absolute;
+  top: 0;
+  width: 2px;
+  height: 14px;
+  margin-left: -1px;
+  border-radius: 1px;
+  background-color: var(--color-text);
+}
+
+/* ---------------------------------------------------------------
+   Unranked list, and the games gate
+   --------------------------------------------------------------- */
+
 .provisional-list {
   list-style: none;
-  display: flex;
-  flex-direction: column;
-  gap: 0.35rem;
-  margin-top: 0.5rem;
 }
 
 .provisional-list li {
   display: flex;
   flex-wrap: wrap;
-  align-items: baseline;
+  align-items: center;
+  gap: 0.4rem 0.9rem;
+  padding: 0.5rem 0.9rem;
+  border-bottom: 1px solid var(--panel-sep);
+  font-size: var(--t-body);
+}
+
+.provisional-list li:last-child {
+  border-bottom: none;
+}
+
+.provisional-list li:hover {
+  background-color: var(--row-hover);
+}
+
+.provisional-list .player-link {
+  flex: 1 1 9rem;
+}
+
+/* Progress through the published games threshold. A count of evidence, never
+   the withheld rating. */
+.gate {
+  display: inline-flex;
+  align-items: center;
   gap: 0.5rem;
-  padding: 0.4rem 0.75rem;
-  background-color: var(--color-bg-tertiary);
-  border: 1px solid var(--color-bg-secondary);
-  border-radius: 0.375rem;
-  font-size: 0.875rem;
+  margin-left: auto;
+  cursor: help;
+}
+
+.gate-pips {
+  display: inline-flex;
+  gap: 2px;
+}
+
+.gate-pip {
+  width: 6px;
+  height: 12px;
+  border-radius: 2px;
+  background-color: var(--meter-track);
+}
+
+.gate-pip.is-filled {
+  background-color: var(--rank-accent);
+}
+
+.gate-count {
+  font-size: var(--t-meta);
+  color: var(--color-text-muted);
+  font-variant-numeric: tabular-nums;
 }
 
 .load-more {
   padding: 0.5rem 1rem;
-  background-color: var(--color-bg-tertiary);
+  background-color: var(--panel);
   border: 1px solid var(--color-border);
   border-radius: 0.375rem;
   color: var(--color-text);
@@ -1667,29 +2162,384 @@ select:disabled {
   opacity: 0.6; /* hold the frame on refetch - no skeleton flash */
 }
 
-/* Match log */
-.outcome {
-  text-transform: capitalize;
+/* ---------------------------------------------------------------
+   Player summary block
+   --------------------------------------------------------------- */
+
+.player-summary {
+  display: grid;
+  grid-template-columns: minmax(0, 1.3fr) auto minmax(180px, 0.9fr) auto;
+  grid-template-areas:
+    'identity headline record figures'
+    'form     form     form   form';
+  gap: 1rem 1.75rem;
+  align-items: start;
+  padding: 1.1rem 1.25rem;
+  margin-bottom: 1rem;
+}
+
+.player-identity {
+  grid-area: identity;
+}
+
+.player-identity h1 {
+  margin-bottom: 0.3rem;
+}
+
+.player-dates {
+  margin-top: 0.2rem;
+  font-size: var(--t-meta);
+  color: var(--color-text-muted);
+}
+
+.player-headline {
+  grid-area: headline;
+}
+
+.headline-value {
+  margin-top: 0.1rem;
+  font-size: var(--t-display);
+  font-weight: 700;
+  line-height: 1.1;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.headline-margin {
+  margin-left: 0.4rem;
+  font-size: 0.95rem;
+  font-weight: 500;
+  letter-spacing: 0;
+  color: var(--color-text-muted);
+}
+
+/* "Unranked" is a word, so it is set as one - not at display size pretending
+   to be a figure, and never with a number beside it. */
+.headline-value.is-withheld {
+  font-size: 1.3rem;
   font-weight: 600;
+  letter-spacing: 0;
 }
 
-.outcome-win {
-  color: var(--color-green);
+.headline-value.is-withheld .unranked {
+  font-size: inherit;
 }
 
-.outcome-loss {
-  /* 3.59:1 in Dracula red; this step is 6.30:1 on the page ground. */
+.player-headline .gate {
+  margin-left: 0;
+  margin-top: 0.4rem;
+}
+
+.player-record {
+  grid-area: record;
+}
+
+/* ---------------------------------------------------------------
+   Record bar
+   --------------------------------------------------------------- */
+
+.record-headline {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.2rem 0.6rem;
+  margin: 0.1rem 0 0.35rem;
+}
+
+/* The record is the headline and the rate is the gloss, not the other way
+   round: at this sample size a bold "100%" usually means one win. */
+.record-counts {
+  display: inline-flex;
+  gap: 0.6rem;
+  font-size: 1.35rem;
+  font-weight: 700;
+  line-height: 1.1;
+  letter-spacing: -0.01em;
+  font-variant-numeric: tabular-nums;
+}
+
+.record-rate {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--color-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Each count carries its own letter, so the pair is legible without colour. */
+.record-count-win {
+  color: var(--color-green-text);
+}
+
+.record-count-loss {
   color: var(--color-red-text);
 }
 
-.outcome-draw,
-.outcome-unknown {
+.record-count-draw {
   color: var(--color-text-muted);
 }
 
-.match-score {
-  margin-left: 0.4rem;
+/* The 2px gaps expose the track between segments: win green and loss red are
+   only 2.29:1 against one another and must never meet edge to edge. */
+.record-track {
+  display: flex;
+  gap: 2px;
+  height: 8px;
+  border-radius: 4px;
+  background-color: var(--meter-track);
+  overflow: hidden;
+}
+
+.record-seg {
+  display: block;
+  height: 100%;
+}
+
+.record-seg-win {
+  background-color: var(--color-green);   /* 8.46:1 on the track */
+}
+
+.record-seg-loss {
+  background-color: var(--color-red);     /* 3.70:1 on the track */
+}
+
+.record-seg-draw {
+  background-color: var(--color-border);
+}
+
+.record-caption {
+  display: block;
+  margin-top: 0.3rem;
+  font-size: var(--t-meta);
   color: var(--color-text-muted);
+}
+
+.record-bar-empty {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  padding-top: 0.3rem;
+  font-size: var(--t-body);
+}
+
+/* ---------------------------------------------------------------
+   Form strip
+   --------------------------------------------------------------- */
+
+.form-strip {
+  grid-area: form;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 1rem;
+  padding-top: 0.85rem;
+  border-top: 1px solid var(--panel-sep);
+}
+
+.form-label {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  font-size: var(--t-label);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--color-text-muted);
+}
+
+.form-sub {
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: 400;
+  font-size: var(--t-meta);
+}
+
+.form-pips {
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+/* The letter inside is the second channel: the strip reads in greyscale. */
+.form-pip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 5px;
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+
+.form-pip-win {
+  background-color: var(--pip-win);
+  color: var(--color-green-text);         /* 6.17:1 */
+}
+
+.form-pip-loss {
+  background-color: var(--pip-loss);
+  color: var(--color-red-text);           /* 5.96:1 */
+}
+
+.form-pip-draw,
+.form-pip-unknown {
+  background-color: var(--pip-draw);
+  color: var(--color-text-muted-lifted);  /* 6.29:1 */
+}
+
+.form-pip-link {
+  display: block;
+  border-radius: 5px;
+}
+
+.form-pip-link:hover {
+  text-decoration: none;
+}
+
+.form-pip-link:hover .form-pip {
+  outline: 1px solid var(--color-primary);
+}
+
+.form-pip-link:focus-visible {
+  outline: 2px solid var(--color-cyan);
+  outline-offset: 2px;
+}
+
+/* ---------------------------------------------------------------
+   Match history
+   --------------------------------------------------------------- */
+
+.match-list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+/* One row, read left to right off the stripe: verdict, what was played,
+   against whom, where, when. The shop id stays on the element - a map of the
+   390 known venues is the next thing this section wants. */
+.match-row {
+  position: relative;
+  display: grid;
+  grid-template-columns: 6.5rem 7.5rem minmax(0, 0.9fr) minmax(0, 1.5fr) auto;
+  grid-template-areas: 'verdict games opponent event when';
+  align-items: center;
+  gap: 0.4rem 1rem;
+  padding: 0.55rem 0.9rem 0.55rem 1.1rem;
+  background-color: var(--panel);
+  border: 1px solid var(--color-border);
+  border-radius: 0.4rem;
+  font-size: var(--t-body);
+  overflow: hidden;
+}
+
+.match-stripe {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 4px;
+  background-color: var(--color-border);
+}
+
+.match-win {
+  background-color: var(--row-win);
+}
+
+.match-win .match-stripe {
+  background-color: var(--color-green);   /* 11.51:1 on the panel */
+}
+
+.match-win:hover {
+  background-color: var(--row-win-hover);
+}
+
+.match-loss {
+  background-color: var(--row-loss);
+}
+
+.match-loss .match-stripe {
+  background-color: var(--color-red);     /* 5.03:1 on the panel */
+}
+
+.match-loss:hover {
+  background-color: var(--row-loss-hover);
+}
+
+.match-draw:hover,
+.match-unknown:hover {
+  background-color: var(--row-hover);
+}
+
+.match-row:hover {
+  border-color: var(--color-primary);
+}
+
+.match-verdict {
+  grid-area: verdict;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+/* The letter badge is the colour-independent signal; the word repeats it. */
+.result-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 22px;
+  height: 22px;
+  border-radius: 5px;
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+
+.result-win {
+  background-color: var(--pip-win);
+  color: var(--color-green-text);
+}
+
+.result-loss {
+  background-color: var(--pip-loss);
+  color: var(--color-red-text);
+}
+
+.result-draw,
+.result-unknown {
+  background-color: var(--pip-draw);
+  color: var(--color-text-muted-lifted);
+}
+
+.result-word {
+  font-weight: 600;
+}
+
+.match-win .result-word {
+  color: var(--color-green-text);         /* 10.55:1 on the win row */
+}
+
+.match-loss .result-word {
+  color: var(--color-red-text);           /* 7.95:1 on the loss row */
+}
+
+.match-draw .result-word,
+.match-unknown .result-word {
+  color: var(--color-text-muted);
+}
+
+.match-games {
+  grid-area: games;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.match-score {
+  font-weight: 600;
   font-variant-numeric: tabular-nums;
 }
 
@@ -1698,53 +2548,107 @@ select:disabled {
   gap: 2px; /* surface gap, not a border, separates the chips */
 }
 
+/* A chip's ink has to contrast with the chip's *own* fill. These fills are
+   the composites over the panel, taken as solid hex so they do not shift
+   when the chip moves to a tinted row. */
 .game-chip {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 20px;
-  height: 20px;
+  width: 18px;
+  height: 18px;
   border-radius: 4px;
-  font-size: 0.7rem;
+  font-size: 0.68rem;
   font-weight: 700;
 }
 
-/* The chip ink has to contrast with the chip's *own* tint, not with the page.
-   The tint is the hue at 18% over --color-bg, so the saturated hue is nearly
-   the same colour as its background: #ff5555 on the loss tint was 2.96:1 and
-   the muted token on the draw tint 2.01:1. Each ink is now a light step of its
-   own hue, measured against the composited tint. */
 .game-win {
-  background-color: rgba(80, 250, 123, 0.18); /* composites to #3b5d4d */
-  color: var(--color-green-text); /* 6.07:1 */
+  background-color: var(--chip-win);
+  color: var(--color-green-text);         /* 8.23:1 */
 }
 
 .game-loss {
-  background-color: rgba(255, 85, 85, 0.18); /* composites to #5a4046 */
-  color: var(--color-red-text); /* 5.21:1 */
+  background-color: var(--chip-loss);
+  color: var(--color-red-text);           /* 6.99:1 */
 }
 
 .game-draw,
 .game-unknown {
-  background-color: rgba(98, 114, 164, 0.2); /* composites to #3f4656 */
-  color: var(--color-text-muted-lifted); /* 5.43:1 */
+  background-color: var(--chip-draw);
+  color: var(--color-text-muted-lifted);  /* 7.11:1 */
+}
+
+/* The one place a name may break mid-word: the match row has no column to
+   scroll into, so a very long handle wraps rather than widening the row. */
+.match-opponent .player-link {
+  overflow-wrap: anywhere;
+}
+
+.match-opponent {
+  grid-area: opponent;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.4rem;
+  min-width: 0;
+}
+
+.versus {
+  flex: none;
+  font-size: var(--t-meta);
+  color: var(--color-text-muted);
+}
+
+.match-event {
+  grid-area: event;
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  min-width: 0;
 }
 
 .event-name {
   display: block;
+  font-weight: 500;
+  overflow-wrap: anywhere;
 }
 
 .event-meta {
-  display: block;
-  font-size: 0.75rem;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.3rem 0.4rem;
+  font-size: var(--t-meta);
   color: var(--color-text-muted);
 }
 
-/* How ranking works: the exposition, below the numbers it explains */
+.meta-chip {
+  padding: 0 0.4rem;
+  border: 1px solid var(--color-border);
+  border-radius: 0.75rem;
+  white-space: nowrap;
+}
+
+.meta-venue {
+  overflow-wrap: anywhere;
+}
+
+.match-when {
+  grid-area: when;
+  font-size: var(--t-meta);
+  color: var(--color-text-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  text-align: right;
+}
+
+/* ---------------------------------------------------------------
+   How ranking works: the exposition, below the numbers it explains
+   --------------------------------------------------------------- */
+
 .how-it-works {
   margin-top: 2rem;
   padding: 1.25rem;
-  background-color: var(--color-bg-tertiary);
+  background-color: var(--panel);
   border: 1px solid var(--color-border);
   border-radius: 0.5rem;
   max-width: 76ch;
@@ -1779,6 +2683,84 @@ select:disabled {
 .how-it-works-link {
   margin-top: 1.5rem;
   font-size: 0.875rem;
+}
+
+/* ---------------------------------------------------------------
+   Narrowing down. The summary blocks fold column by column rather than
+   collapsing in one step, so the dense reading survives as long as the
+   width allows.
+   --------------------------------------------------------------- */
+
+@media (max-width: 1100px) {
+  .player-summary {
+    grid-template-columns: minmax(0, 1fr) minmax(180px, 0.9fr) auto;
+    grid-template-areas:
+      'identity identity identity'
+      'headline record   figures'
+      'form     form     form';
+  }
+}
+
+@media (max-width: 900px) {
+  .scene-summary {
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas:
+      'identity identity'
+      'coverage figures'
+      'note     note';
+  }
+
+  .match-row {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    grid-template-areas:
+      'verdict  games    when'
+      'opponent opponent opponent'
+      'event    event    event';
+    gap: 0.35rem 0.75rem;
+  }
+
+  .match-when {
+    justify-self: end;
+  }
+}
+
+@media (max-width: 620px) {
+  /* Stacked, because a wrapped inline list starts its new line with the
+     separator that belonged to the end of the last one. */
+  .scene-meta,
+  .player-meta,
+  .event-meta {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.15rem;
+  }
+
+  .scene-meta > span + span::before,
+  .player-meta > span + span::before,
+  .event-meta > span + span::before {
+    content: none;
+  }
+
+  .player-summary {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas:
+      'identity'
+      'headline'
+      'record'
+      'figures'
+      'form';
+    gap: 0.9rem;
+  }
+
+  .scene-summary {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas:
+      'identity'
+      'coverage'
+      'figures'
+      'note';
+    gap: 0.9rem;
+  }
 }
 
 /* ===================================================================
@@ -1976,13 +2958,22 @@ select:disabled {
 }
 
 @media (max-width: 600px) {
-  .section-tabs-bar,
-  .ranking-page,
-  .player-page {
+  .section-tabs-bar {
     padding-left: 0;
   }
 
+  /* The shared .container runs a 4px side padding so the calendar grid can
+     use the full width. These pages are panels, not a grid, and want a real
+     gutter - 16px all in. */
+  .ranking-page,
+  .player-page,
+  .event-page {
+    padding-left: 0.75rem;
+    padding-right: 0.75rem;
+  }
+
   .ranking-filters {
+    display: flex;
     gap: 0.75rem;
     padding: 0.75rem;
   }
@@ -2004,8 +2995,19 @@ select:disabled {
     width: 100%;
   }
 
-  .stat-tile {
-    flex-basis: calc(50% - 0.375rem);
+  .pill-group {
+    width: 100%;
+  }
+
+  .pill {
+    flex: 1 1 auto;
+    text-align: center;
+  }
+
+  .scene-figures,
+  .player-figures,
+  .event-figures {
+    gap: 0.75rem 1.25rem;
   }
 
   .data-table th,
@@ -2013,10 +3015,419 @@ select:disabled {
     padding: 0.45rem 0.5rem;
   }
 
-  /* Let dates and labels keep one line and the container scroll, rather than
+  /* Let the row labels keep one line and the container scroll, rather than
      cramming three-line cells into a narrow column. */
-  .match-table td:first-child,
   .data-table th[scope="row"] {
     white-space: nowrap;
+  }
+
+  /* The margin bar is the first thing to go: it compares rows, and at this
+     width only one row is in the eye at a time. */
+  .margin-col {
+    display: none;
+  }
+
+  /* Without a floor the ladder squeezes its columns until names break
+     mid-word ("Voltom / ancer"). Give it one and let .table-scroll scroll. */
+  .ladder-table {
+    min-width: 26rem;
+  }
+
+  .standings-table {
+    min-width: 34rem;
+  }
+
+  .roster-table {
+    min-width: 28rem;
+  }
+
+  .ladder-table .player-link {
+    white-space: nowrap;
+  }
+
+  .match-row {
+    padding-left: 0.95rem;
+  }
+
+  .headline-value {
+    white-space: normal;
+  }
+}
+
+/* ===================================================================
+   Event page - standings, pairings and who is in the field
+   ===================================================================
+   The same objects as the Rankings section: one summary block instead of a
+   row of tiles, panels for every dense block, rows read off a stripe, and
+   tabular figures. Every surface token comes from the shared declaration at
+   the top of the Rankings block, so a chip measured there keeps its ratio
+   here.
+
+   No new colour is introduced. The field meter is the ranking page's own
+   coverage meter, measuring the same quantity - how much of what we can see
+   is actually rated - rather than a three-part chart whose segments could not
+   be told apart at 3:1 in a dark theme.
+   =================================================================== */
+
+.event-summary {
+  display: grid;
+  grid-template-columns: minmax(0, 1.25fr) minmax(210px, 0.95fr) auto;
+  grid-template-areas:
+    'identity strength figures'
+    'links    links    links';
+  gap: 1rem 1.75rem;
+  align-items: start;
+  padding: 1.1rem 1.25rem;
+  margin-bottom: 1rem;
+}
+
+.event-identity {
+  grid-area: identity;
+}
+
+.event-identity h1 {
+  font-size: 1.5rem;
+  line-height: 1.2;
+  margin-bottom: 0.35rem;
+}
+
+.event-where {
+  display: flex;
+  flex-direction: column;
+  margin-top: 0.3rem;
+  font-size: var(--t-meta);
+  line-height: 1.45;
+}
+
+.event-address {
+  color: var(--color-text-muted);
+}
+
+.event-strength {
+  grid-area: strength;
+}
+
+/* The field's headline when there is no number: a sentence at sentence size.
+   A withheld figure must not be set in the display face pretending to be one. */
+.field-unmeasured {
+  margin-top: 0.1rem;
+  font-size: 1.05rem;
+  font-weight: 600;
+  line-height: 1.25;
+  color: var(--color-text-muted);
+}
+
+.event-strength-basis {
+  margin: 0.15rem 0 0.5rem;
+  font-size: var(--t-meta);
+  color: var(--color-text-muted);
+  max-width: 44ch;
+}
+
+.event-strength-extra {
+  margin-top: 0.35rem;
+  font-size: var(--t-meta);
+  color: var(--color-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* The three groups as counts, in words. The meter above shows one of them in
+   proportion; these are the fact, which is why none of them depends on being
+   able to tell two shades apart. */
+.field-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.15rem 1rem;
+  margin-top: 0.45rem;
+  list-style: none;
+  font-size: var(--t-meta);
+}
+
+.field-legend li {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.3rem;
+}
+
+.field-legend-count {
+  font-size: var(--t-body);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.field-legend-label {
+  color: var(--color-text-muted);
+}
+
+.event-links {
+  grid-area: links;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.3rem 1.25rem;
+  padding-top: 0.6rem;
+  border-top: 1px solid var(--panel-sep);
+  font-size: var(--t-meta);
+}
+
+/* A capture's shape, said once: "not final", "in progress". Orange on its own
+   10% wash, the same pairing the notice banner is measured at (7.75:1). */
+.status-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.05rem 0.45rem;
+  border-radius: 0.75rem;
+  background-color: #3a3630;
+  color: var(--color-orange);
+  font-size: var(--t-label);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+/* ---------------------------------------------------------------
+   Standings and roster tables
+   --------------------------------------------------------------- */
+
+/* These two tables scroll inside their panel rather than restructuring, so
+   every cell keeps its natural width: let one column wrap and the squeezed
+   column drags the whole row three lines tall on a phone. */
+.standings-table th,
+.standings-table td,
+.roster-table th,
+.roster-table td {
+  white-space: nowrap;
+}
+
+/* The scene under the name, the way the match row carries its venue. */
+.player-scene {
+  display: block;
+  font-size: var(--t-meta);
+  color: var(--color-text-muted);
+}
+
+/* A name with no profile behind it is still a name, not a link. */
+.player-name-plain {
+  font-weight: 500;
+}
+
+/* "No record yet" - the engine has never seen this player. Deliberately not
+   "Unranked": that word means a player who has a record and has not cleared
+   the gate, and telling someone at their first event they are unranked claims
+   they failed a bar they never stood at. */
+.no-record {
+  color: var(--color-text-muted);
+  font-size: 0.8rem;
+  cursor: help;
+  text-decoration: underline dotted;
+  text-underline-offset: 2px;
+}
+
+.roster-table .gate {
+  margin-left: 0.4rem;
+}
+
+/* ---------------------------------------------------------------
+   Pairings
+   --------------------------------------------------------------- */
+
+.round-block {
+  margin-bottom: 0.9rem;
+}
+
+.round-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.5rem;
+  margin-bottom: 0.4rem;
+}
+
+.round-head h3 {
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+
+.round-stage {
+  margin-right: 0.4rem;
+  color: var(--color-text-muted);
+  font-weight: 500;
+}
+
+.pairing-list {
+  list-style: none;
+  padding: 0;
+}
+
+/* One pairing, read off a neutral stripe: table, side, score, side. The
+   stripe is neutral because a pairing has no "my" result - the verdict is
+   carried by each side's letter badge, which is also what makes the row
+   survive greyscale. */
+.pairing-row {
+  position: relative;
+  display: grid;
+  grid-template-columns: 5rem minmax(0, 1fr) 5.5rem minmax(0, 1fr);
+  grid-template-areas: 'table home score away';
+  align-items: center;
+  gap: 0.4rem 0.9rem;
+  padding: 0.5rem 0.9rem 0.5rem 1.1rem;
+  border-bottom: 1px solid var(--panel-sep);
+  font-size: var(--t-body);
+}
+
+.pairing-list .pairing-row:last-child {
+  border-bottom: none;
+}
+
+.pairing-row:hover {
+  background-color: var(--row-hover);
+}
+
+.pairing-stripe {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 4px;
+  /* The match row's own default, and the only step here that clears 3:1 on
+     the panel (3.36:1). --pip-draw, the obvious neutral, measures 1.45:1 -
+     a stripe nobody can see is not a quieter stripe, it is no stripe. */
+  background-color: var(--color-border);
+}
+
+/* A match with no recorded result, and a bye, recede - and both say so in
+   words as well, which is what carries the distinction. */
+.pairing-row.is-open .pairing-stripe,
+.pairing-row.is-bye .pairing-stripe {
+  background-color: var(--meter-track);
+}
+
+.pairing-table {
+  grid-area: table;
+  font-size: var(--t-meta);
+  color: var(--color-text-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.pairing-side {
+  grid-area: home;
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  min-width: 0;
+}
+
+.pairing-side-away {
+  grid-area: away;
+}
+
+.pairing-player {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0 0.4rem;
+  min-width: 0;
+}
+
+.pairing-rating {
+  font-size: var(--t-meta);
+  color: var(--color-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.pairing-rating-withheld {
+  font-size: 0.75rem;
+}
+
+.pairing-score {
+  grid-area: score;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+}
+
+.pairing-score-value {
+  font-size: var(--t-figure);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.pairing-open-note {
+  font-size: var(--t-label);
+  color: var(--color-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.pairing-row .game-chips {
+  flex: none;
+}
+
+/* ---------------------------------------------------------------
+   Narrow screens
+   ---------------------------------------------------------------
+   The summary block collapses to one column and the pairing restacks, so the
+   page body never scrolls sideways. The two tables keep their columns and
+   scroll inside their own panel (.table-scroll), which is the site's rule for
+   data too wide to restructure. */
+
+@media (max-width: 1000px) {
+  .event-summary {
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas:
+      'identity identity'
+      'strength figures'
+      'links    links';
+  }
+}
+
+@media (max-width: 820px) {
+  .pairing-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas:
+      'table score'
+      'home  home'
+      'away  away';
+    gap: 0.3rem 0.75rem;
+  }
+
+  .pairing-score {
+    flex-direction: row;
+    align-items: baseline;
+    gap: 0.4rem;
+    justify-self: end;
+  }
+}
+
+@media (max-width: 620px) {
+  .event-summary {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas:
+      'identity'
+      'strength'
+      'figures'
+      'links';
+    gap: 0.9rem;
+    padding: 0.9rem 1rem;
+  }
+
+  .event-identity h1 {
+    font-size: 1.25rem;
+  }
+
+  /* Eight columns of standings will not fit a phone; they scroll inside the
+     panel rather than dragging the page with them. */
+  .standings-table th,
+  .standings-table td,
+  .roster-table th,
+  .roster-table td {
+    padding: 0.5rem 0.6rem;
+  }
+
+  .pairing-row {
+    padding: 0.55rem 0.75rem 0.55rem 0.95rem;
   }
 }

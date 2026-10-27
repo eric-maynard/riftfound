@@ -47,6 +47,20 @@ Fully serverless architecture:
 - Database: DynamoDB
 - Geocoding: Google Maps API
 
+### CloudFront routing
+
+One distribution (`E2TPPYH1N9YLG5`) fronts three things, by cache behavior:
+`/api/*` -> API Gateway, `/iykyk*` -> the separate iykyk EC2 app, everything
+else -> the S3 frontend.
+
+SPA deep links are served by `aws_cloudfront_function.spa_router`
+(`terraform/spa_router.js`) on viewer-request of the **default behavior only**.
+**Never add a `custom_error_response` 404/403 -> `/index.html` rule** — it is
+distribution-wide, so it turns every legitimate API 404 into a 200 serving HTML.
+Full rationale and the rollback are in
+[terraform/README.md](terraform/README.md#spa-routing-and-why-there-is-no-blanket-404---200);
+`node terraform/spa_router.test.js` checks the routing table.
+
 ## Database Schema
 
 See `init.sql`:

@@ -3,18 +3,18 @@ import { NavLink } from 'react-router-dom';
 /**
  * The site mark, doubling as the switch between the two sections.
  *
- * Two marks share one track - the looking glass for Events, the trophy for
- * Ranking - with a thumb sliding under whichever is active and the other
+ * Two marks share one track - the looking glass for Event View, the trophy
+ * for Rankings - with a thumb sliding under whichever is active and the other
  * desaturated. They are real links, not ARIA tabs, because each is a route
  * someone can bookmark and share; `aria-current` carries the selected state.
  *
  * Each side remembers the query string its section was last on, so switching
  * away and back does not throw away a shared calendar filter URL or the set and
- * scene a reader picked on the ranking page.
+ * scene a reader picked in Rankings.
  */
 
 /**
- * Which trophy treatment the ranking mark uses. `compact` keeps the swirl's
+ * Which trophy treatment the Rankings mark uses. `compact` keeps the swirl's
  * open centre - the most recognisable part of the rift motif - which `classic`
  * crosses with the trophy's left handle. Swapping variants is this line.
  */
@@ -23,8 +23,8 @@ const RANKING_MARK = '/logo-ranking-compact.png';
 interface ModeSwitchProps {
   eventsSearch: string;
   rankingSearch: string;
-  /** 'events' | 'ranking' - drives the thumb position and which mark is lit. */
-  active: 'events' | 'ranking';
+  /** 'events' | 'rankings' - drives the thumb position and which mark is lit. */
+  active: 'events' | 'rankings';
 }
 
 function ModeSwitch({ eventsSearch, rankingSearch, active }: ModeSwitchProps) {
@@ -34,18 +34,18 @@ function ModeSwitch({ eventsSearch, rankingSearch, active }: ModeSwitchProps) {
         to={{ pathname: '/', search: eventsSearch }}
         end
         className="mode-switch-option"
-        title="Events"
+        title="Event View"
       >
         <img src="/logo.png" alt="" aria-hidden="true" />
-        <span className="sr-only">Events</span>
+        <span className="sr-only">Event View</span>
       </NavLink>
       <NavLink
-        to={{ pathname: '/ranking', search: rankingSearch }}
+        to={{ pathname: '/rankings', search: rankingSearch }}
         className="mode-switch-option"
-        title="Ranking"
+        title="Rankings"
       >
         <img src={RANKING_MARK} alt="" aria-hidden="true" />
-        <span className="sr-only">Ranking</span>
+        <span className="sr-only">Rankings</span>
       </NavLink>
     </nav>
   );

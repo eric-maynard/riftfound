@@ -3,21 +3,27 @@ import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { getPlayer, getPlayerMatches, getPlayerRatings, getSets } from '../services/api';
 import type { PlayerMatch, PlayerProfile, RatingPoint, SetInfo } from '../types/ranking';
 import RatingChart from '../components/RatingChart';
+import RecordBar from '../components/RecordBar';
+import FormStrip from '../components/FormStrip';
+import SetScope from '../components/SetScope';
 import {
   ALL_SETS,
   ALL_SETS_LABEL,
   buildScope,
   formatDate,
   formatRating,
-  formatRecord,
   formatUncertainty,
   gameScore,
+  gateProgress,
+  hasNoRecord,
   matchRecord,
+  outcomeLetter,
+  outcomeWord,
   provisionalExplanation,
   provisionalShortReason,
-  setBoundaryNote,
-  selectableSets,
   setLabel,
+  NO_RECORD_EXPLANATION,
+  NO_RECORD_LABEL,
   UNRANKED_LABEL,
 } from '../lib/ranking';
 
@@ -30,11 +36,23 @@ import {
  *
  * A rating below the confidence gate is never printed. The page says
  * "Unranked" - one word, with the reason as its tooltip - instead of the banner
- * of prose it used to carry; the general rule lives in "How ranking works" on
- * the ranking page.
+ * of prose it used to carry; the general rule lives in "How rankings work" at
+ * the foot of the Rankings page.
+ *
+ * The shape is op.gg's: one summary block carrying identity, the headline
+ * number, the record and recent form together, then a match list whose rows are
+ * read left to right off a result stripe. Two deliberate departures:
+ *
+ *  - the headline number is a rating with a margin, not a tier, and when it has
+ *    not been earned the block says "Unranked" rather than showing a
+ *    provisional figure;
+ *  - every result is carried by a letter as well as a colour, because this page
+ *    has to survive being read in greyscale.
  */
 
 const MATCH_PAGE_SIZE = 25;
+/** How many results the form strip shows. Fewer when fewer have been played. */
+const FORM_LENGTH = 10;
 
 function PlayerPage() {
   const { playerId } = useParams<{ playerId: string }>();
@@ -117,7 +135,7 @@ function PlayerPage() {
   if (notFound) {
     return (
       <div className="player-page">
-        <Link to="/ranking" className="back-link">&larr; Back to ranking</Link>
+        <Link to="/rankings" className="back-link">&larr; Back to rankings</Link>
         <p>No player with that id. They may not have appeared at a recorded event yet.</p>
       </div>
     );
@@ -126,7 +144,7 @@ function PlayerPage() {
   if (loading && !profile) {
     return (
       <div className="player-page">
-        <Link to="/ranking" className="back-link">&larr; Back to ranking</Link>
+        <Link to="/rankings" className="back-link">&larr; Back to rankings</Link>
         <p className="muted">Loading player...</p>
       </div>
     );
@@ -135,7 +153,7 @@ function PlayerPage() {
   if (!profile) {
     return (
       <div className="player-page">
-        <Link to="/ranking" className="back-link">&larr; Back to ranking</Link>
+        <Link to="/rankings" className="back-link">&larr; Back to rankings</Link>
         {error && <div className="error-banner">{error}</div>}
       </div>
     );
@@ -145,7 +163,7 @@ function PlayerPage() {
   const scopeLabel = activeSet ? setLabel(activeSet) : ALL_SETS_LABEL;
   // The scoped numbers: the per-set entry when a set is selected, else all-time.
   const scoped = setFilter
-    ? profile.setRatings.find((entry) => entry.setId === setFilter) ?? null
+    ? (profile.setRatings ?? []).find((entry) => entry.setId === setFilter) ?? null
     : {
         rating: profile.rating,
         uncertainty: profile.uncertainty,
@@ -156,93 +174,134 @@ function PlayerPage() {
       };
   const record = matchRecord(matches);
 
+  // Three rating states here as on the event page, not two. `/api/players/:id`
+  // currently 404s for a player the engine has never seen, so this branch is
+  // unreachable today - but it must not be a dead end if the endpoint starts
+  // answering with a profile whose numbers are all null. "Unranked" would tell
+  // a first-time player they failed a bar they never stood at, and a 0/8 games
+  // meter is not evidence of anything.
+  // Read off the whole profile, not the scoped slice: a known player who did
+  // not play a particular set is still "Unranked" in that set, not unseen.
+  const noRecord = hasNoRecord(profile) && matches.length === 0;
+
   const minGames = seriesProvisional?.minGames ?? 8;
-  // The reason, for the tooltip on the word "Unranked" - never as inline prose.
-  const unrankedWhy = scoped
-    ? provisionalExplanation(scoped.provisionalReason, profile.gamesUntilRated, minGames)
-    : '';
+  // The reason, for the tooltip on the withheld word - never as inline prose.
+  const unrankedWhy = noRecord
+    ? NO_RECORD_EXPLANATION
+    : scoped
+      ? provisionalExplanation(scoped.provisionalReason, profile.gamesUntilRated, minGames)
+      : '';
+  const gate = scoped?.provisional && !noRecord
+    ? gateProgress(scoped.gamesPlayed, minGames, scoped.provisionalReason)
+    : null;
+  // The record only covers matches we have actually loaded, so say which.
+  const recordCaption = hasMore
+    ? `First ${matches.length} of ${scoped?.matchesPlayed ?? matches.length} matches`
+    : `All ${matches.length} loaded ${matches.length === 1 ? 'match' : 'matches'}`;
 
   return (
     <div className="player-page">
-      <Link to="/ranking" className="back-link">&larr; Back to ranking</Link>
-
-      <header className="player-head">
-        <h1>
-          {profile.displayName ?? 'Unknown player'}
-          {profile.tagLine && <span className="player-tag">#{profile.tagLine}</span>}
-        </h1>
-        <p className="muted">
-          {profile.regionLabel ?? 'Scene unknown'}
-          {profile.componentSize !== null && ` · ${profile.componentSize} players in this scene`}
-          {!profile.comparable && ' · too small to compare against others'}
-          {profile.firstSeen && ` · first seen ${formatDate(profile.firstSeen)}`}
-        </p>
-      </header>
+      <Link to="/rankings" className="back-link">&larr; Back to rankings</Link>
 
       {error && <div className="error-banner">{error}</div>}
 
-      {/* One filter row, scoping everything below it. */}
-      <div className="ranking-filters">
-        <div className="filter-group">
-          <label className="filter-label" htmlFor="player-set">Set</label>
-          <select
-            id="player-set"
-            value={setId}
-            onChange={(event) => {
-              const next = new URLSearchParams(searchParams);
-              if (event.target.value === ALL_SETS) next.delete('set');
-              else next.set('set', event.target.value);
-              setSearchParams(next);
-            }}
-          >
-            <option value={ALL_SETS}>{ALL_SETS_LABEL}</option>
-            {selectableSets(sets).map((set) => (
-              <option key={set.setId} value={set.setId}>
-                {setLabel(set)}
-              </option>
-            ))}
-          </select>
-          {activeSet?.releaseDate && <span className="filter-note">{setBoundaryNote(activeSet)}</span>}
+      {/* The summary block: identity, the headline number, the record and the
+          recent form in one object, rather than a header plus a row of tiles. */}
+      <header className="panel player-summary">
+        <div className="player-identity">
+          <h1>
+            {profile.displayName ?? 'Unknown player'}
+            {profile.tagLine && <span className="player-tag">#{profile.tagLine}</span>}
+          </h1>
+          <p className="player-meta">
+            <span className="scope-chip">{profile.regionLabel ?? 'Scene unknown'}</span>
+            {profile.componentSize !== null && <span>{profile.componentSize} players</span>}
+            {!profile.comparable && <span>too small to compare</span>}
+          </p>
+          {/* The active range gets its own line rather than a fourth item in
+              the list above. A wrapped inline list begins its second line with
+              the separator that belonged to the end of the first. */}
+          {profile.firstSeen && (
+            <p className="player-dates">
+              Seen {formatDate(profile.firstSeen)}
+              {profile.lastSeen && profile.lastSeen !== profile.firstSeen
+                ? ` - ${formatDate(profile.lastSeen)}`
+                : ''}
+            </p>
+          )}
         </div>
-      </div>
 
-      <dl className="stat-row">
-        <div className="stat-tile">
-          <dt>
+        <div className="player-headline">
+          <span className="stat-label">
             <abbr
               className="col-hint"
               title="Worked out from games recorded at events. The ± is the margin of uncertainty around the number."
             >
               Rating
             </abbr>{' '}
-            ({scopeLabel})
-          </dt>
-          <dd>
-            {scoped && !scoped.provisional ? (
-              <>
-                {formatRating(scoped.rating)}
-                <span className="rating-margin">{formatUncertainty(scoped.uncertainty)}</span>
-              </>
-            ) : (
-              <span className="unranked stat-withheld" title={unrankedWhy || undefined}>
-                {UNRANKED_LABEL}
+            &middot; {scopeLabel}
+          </span>
+          {scoped && !scoped.provisional ? (
+            <p className="headline-value">
+              {formatRating(scoped.rating)}
+              <span className="headline-margin">{formatUncertainty(scoped.uncertainty)}</span>
+            </p>
+          ) : (
+            <p className="headline-value is-withheld">
+              <span className="unranked" title={unrankedWhy || undefined}>
+                {noRecord ? NO_RECORD_LABEL : UNRANKED_LABEL}
               </span>
-            )}
-          </dd>
+            </p>
+          )}
+          {/* Evidence so far against the published threshold. A count of
+              games, never the withheld number. */}
+          {gate && (
+            <span className="gate" title={unrankedWhy || undefined}>
+              <span className="gate-pips" aria-hidden="true">
+                {Array.from({ length: gate.total }, (_, index) => (
+                  <span key={index} className={`gate-pip${index < gate.filled ? ' is-filled' : ''}`} />
+                ))}
+              </span>
+              <span className="gate-count">
+                {gate.filled}/{gate.total} games
+              </span>
+            </span>
+          )}
         </div>
-        <div className="stat-tile">
-          <dt>Games</dt>
-          <dd>{scoped?.gamesPlayed ?? 0}</dd>
+
+        <div className="player-record">
+          <span className="stat-label">Record</span>
+          <RecordBar record={record} caption={recordCaption} />
         </div>
-        <div className="stat-tile">
-          <dt>Matches</dt>
-          <dd>{scoped?.matchesPlayed ?? 0}</dd>
-        </div>
-        <div className="stat-tile">
-          <dt>Record (loaded)</dt>
-          <dd>{formatRecord(record)}</dd>
-        </div>
-      </dl>
+
+        <dl className="player-figures">
+          <div>
+            <dt>Games</dt>
+            <dd>{scoped?.gamesPlayed ?? 0}</dd>
+          </div>
+          <div>
+            <dt>Matches</dt>
+            <dd>{scoped?.matchesPlayed ?? 0}</dd>
+          </div>
+        </dl>
+
+        <FormStrip matches={matches} count={FORM_LENGTH} totalMatches={scoped?.matchesPlayed ?? null} />
+      </header>
+
+      {/* One filter row, scoping everything below it. */}
+      <div className="ranking-filters">
+        <SetScope
+          sets={sets}
+          value={setId}
+          name="player-set"
+          onChange={(next) => {
+            const params = new URLSearchParams(searchParams);
+            if (next === ALL_SETS) params.delete('set');
+            else params.set('set', next);
+            setSearchParams(params);
+          }}
+        />
+      </div>
 
       <section className="player-section">
         <RatingChart
@@ -253,11 +312,13 @@ function PlayerPage() {
       </section>
 
       <section className="player-section">
-        <h2>By set</h2>
+        <div className="section-head">
+          <h2>By set</h2>
+        </div>
         {profile.setRatings.length === 0 ? (
           <p className="muted">No per-set numbers yet - no games have been attributed to a set.</p>
         ) : (
-          <div className="table-scroll">
+          <div className="panel table-scroll">
             <table className="data-table">
               <thead>
                 <tr>
@@ -276,7 +337,7 @@ function PlayerPage() {
                     {profile.provisional ? (
                       <span className="unranked" title={unrankedWhy || undefined}>{UNRANKED_LABEL}</span>
                     ) : (
-                      formatRating(profile.rating)
+                      <span className="rating-value">{formatRating(profile.rating)}</span>
                     )}
                     {!profile.provisional && <span className="rating-margin">{formatUncertainty(profile.uncertainty)}</span>}
                   </td>
@@ -299,13 +360,13 @@ function PlayerPage() {
                       {setRating.provisional ? (
                         <span
                           className="unranked"
-                          title={provisionalExplanation(setRating.provisionalReason, profile.gamesUntilRated, minGames) || undefined}
+                          title={provisionalExplanation(setRating.provisionalReason, setRating.gamesUntilRated, minGames) || undefined}
                         >
                           {UNRANKED_LABEL}
                         </span>
                       ) : (
                         <>
-                          {formatRating(setRating.rating)}
+                          <span className="rating-value">{formatRating(setRating.rating)}</span>
                           <span className="rating-margin">{formatUncertainty(setRating.uncertainty)}</span>
                         </>
                       )}
@@ -323,70 +384,24 @@ function PlayerPage() {
       </section>
 
       <section className="player-section">
-        <h2>Games played</h2>
+        <div className="section-head">
+          <h2>Match history</h2>
+          {matches.length > 0 && <span className="section-count">{matches.length}</span>}
+        </div>
         {matches.length === 0 ? (
-          <p className="muted">
-            No recorded games{setFilter ? ' in this set' : ''} yet. Results only appear once an event's
-            pairings have been published.
-          </p>
+          <div className="panel empty-state">
+            <p className="muted">
+              No recorded games{setFilter ? ' in this set' : ''} yet. Results only appear once an
+              event&apos;s pairings have been published.
+            </p>
+          </div>
         ) : (
           <>
-            <div className="table-scroll">
-              <table className="data-table match-table">
-                <thead>
-                  <tr>
-                    <th scope="col">Date</th>
-                    <th scope="col">Result</th>
-                    <th scope="col">Games</th>
-                    <th scope="col">Opponent</th>
-                    <th scope="col">Event</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {matches.map((match) => (
-                    <tr key={match.matchId}>
-                      <td>{formatDate(match.eventDate ?? match.playedAt)}</td>
-                      <td>
-                        <span className={`outcome outcome-${match.outcome}`}>
-                          {match.outcome === 'unknown' ? 'Unrecorded' : match.outcome}
-                        </span>
-                        <span className="match-score">{gameScore(match)}</span>
-                      </td>
-                      <td>
-                        <span className="game-chips">
-                          {match.games.map((game) => (
-                            <span
-                              key={game.gameNumber}
-                              className={`game-chip game-${game.outcome}`}
-                              title={`Game ${game.gameNumber}: ${game.outcome}`}
-                            >
-                              {game.outcome === 'win' ? 'W' : game.outcome === 'loss' ? 'L' : '-'}
-                            </span>
-                          ))}
-                        </span>
-                      </td>
-                      <td>
-                        {match.opponentId ? (
-                          <Link to={`/ranking/players/${encodeURIComponent(match.opponentId)}`} className="player-link">
-                            {match.opponentDisplayName ?? 'Unknown player'}
-                          </Link>
-                        ) : (
-                          <span className="muted">{match.opponentDisplayName ?? 'Unknown'}</span>
-                        )}
-                      </td>
-                      <td>
-                        <span className="event-name">{match.eventName ?? 'Unnamed event'}</span>
-                        <span className="event-meta">
-                          {[match.tournamentType, match.shopId ? `venue ${match.shopId}` : null]
-                            .filter(Boolean)
-                            .join(' · ')}
-                        </span>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+            <ol className="match-list">
+              {matches.map((match) => (
+                <MatchRow key={match.matchId} match={match} />
+              ))}
+            </ol>
             {hasMore && (
               <button type="button" className="load-more" onClick={loadMoreMatches} disabled={loadingMore}>
                 {loadingMore ? 'Loading...' : 'Show more games'}
@@ -396,11 +411,71 @@ function PlayerPage() {
         )}
       </section>
 
-      {/* One line, not a lecture: the explanation lives on the ranking page. */}
-      <p className="how-it-works-link">
-        <Link to="/ranking#how-ranking-works">How ranking works &rarr;</Link>
-      </p>
+      {/* One line, not a lecture: the explanation lives on the Rankings page. */}
     </div>
+  );
+}
+
+/**
+ * One match, read left to right off a result stripe on the leading edge.
+ *
+ * The order is op.gg's - verdict, then what was played, then against whom,
+ * then where and when - because that is the order the question is usually
+ * asked in. The Bo3 game chips sit next to the match score rather than in
+ * their own column: "2-1" and "W L W" are the same fact at two resolutions,
+ * and splitting them made the eye travel twice.
+ *
+ * The venue keeps its shop id on the element. A map of the 390 known venues is
+ * the next thing this section wants, and it will want to address these rows.
+ */
+function MatchRow({ match }: { match: PlayerMatch }) {
+  return (
+    <li className={`match-row match-${match.outcome}`} data-shop-id={match.shopId ?? undefined}>
+      <span className="match-stripe" aria-hidden="true" />
+
+      <span className="match-verdict">
+        <span className={`result-badge result-${match.outcome}`} aria-hidden="true">
+          {outcomeLetter(match.outcome)}
+        </span>
+        <span className="result-word">{outcomeWord(match.outcome)}</span>
+      </span>
+
+      <span className="match-games">
+        <span className="match-score">{gameScore(match)}</span>
+        <span className="game-chips">
+          {match.games.map((game) => (
+            <span
+              key={game.gameNumber}
+              className={`game-chip game-${game.outcome}`}
+              title={`Game ${game.gameNumber}: ${game.outcome}`}
+            >
+              {outcomeLetter(game.outcome)}
+            </span>
+          ))}
+        </span>
+      </span>
+
+      <span className="match-opponent">
+        <span className="versus" aria-hidden="true">vs</span>
+        {match.opponentId ? (
+          <Link to={`/rankings/players/${encodeURIComponent(match.opponentId)}`} className="player-link">
+            {match.opponentDisplayName ?? 'Unknown player'}
+          </Link>
+        ) : (
+          <span className="muted">{match.opponentDisplayName ?? 'Unknown'}</span>
+        )}
+      </span>
+
+      <span className="match-event">
+        <span className="event-name">{match.eventName ?? 'Unnamed event'}</span>
+        <span className="event-meta">
+          {match.tournamentType && <span className="meta-chip">{match.tournamentType}</span>}
+          {match.shopId && <span className="meta-venue">Venue {match.shopId}</span>}
+        </span>
+      </span>
+
+      <span className="match-when">{formatDate(match.eventDate ?? match.playedAt)}</span>
+    </li>
   );
 }
 

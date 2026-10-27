@@ -8,6 +8,7 @@ import healthRouter from './routes/health.js';
 import rankingsRouter from './routes/rankings.js';
 import playersRouter from './routes/players.js';
 import setsRouter from './routes/sets.js';
+import tournamentsRouter from './routes/tournaments.js';
 
 const app = express();
 
@@ -30,6 +31,10 @@ if (!isLambda) {
 }
 
 // Routes
+// The tournament routes share the /api/events prefix and are mounted first, so
+// `/tournament-availability` matches as a literal before the events router's
+// `/:id` can take it. Anything they do not match falls through.
+app.use('/api/events', tournamentsRouter);
 app.use('/api/events', eventsRouter);
 app.use('/api/health', healthRouter);
 app.use('/api/rankings', rankingsRouter);

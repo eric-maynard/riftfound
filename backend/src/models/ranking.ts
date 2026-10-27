@@ -73,11 +73,15 @@ export const DEFAULT_SCOPE: Scope = { raw: 'all', setId: null, componentId: null
 // ---------------------------------------------------------------------------
 
 /**
- * These thresholds are ours, not the engine's - the contract carries
- * `gamesPlayed` and `uncertainty` but no "is this rating publishable" flag, so
- * the API derives one and says why. At launch (Radiance shipped 2026-10-23,
- * the backfill reaches ~21 days) almost every player sits below them, and that
- * is the honest answer rather than a defect.
+ * The publishing bar, as numbers this API can quote back to a caller.
+ *
+ * The engine now writes its own verdict onto each item and these match the
+ * thresholds it used (8 / 120 / 8, measured from its posterior SD
+ * distribution - see the scraper's "Publishing honestly"), so they are reported
+ * in `coverage` and used by `assessConfidence` only as the fallback for an item
+ * that carries no verdict. At launch (Radiance shipped 2026-10-23, the backfill
+ * reaches ~21 days) almost every player sits below them, and that is the honest
+ * answer rather than a defect.
  */
 export const CONFIDENCE = {
   /** Fewer games than this and the rating is noise, whatever its sigma. */
@@ -93,6 +97,35 @@ export const CONFIDENCE = {
 
 export type ProvisionalReason = 'too-few-games' | 'uncertainty-too-wide' | 'no-rating';
 
+/**
+ * The verdict the rating engine writes onto its own items
+ * (`scraper/src/ranking/items.ts`).
+ *
+ * It is the authority: the thresholds behind it are measured from the posterior
+ * SD distribution the engine fitted, so re-deriving one here from `gamesPlayed`
+ * and `uncertainty` can only ever agree by coincidence. Every field is optional
+ * because an item written before the engine emitted them carries none of them,
+ * and because the leaderboard rows carry none at all.
+ *
+ * Its reason vocabulary is the engine's, not ours: `too-uncertain` rather than
+ * `uncertainty-too-wide`, plus `component-too-small`, which the engine reports
+ * alongside a *published* rating (the internal order is real; only the position
+ * is suppressed, which this API expresses as `comparable: false`).
+ */
+export interface EngineVerdict {
+  provisional?: boolean | null;
+  provisionalReason?: string | null;
+  gamesUntilRated?: number | null;
+}
+
+/** The engine's reason names, mapped onto the ones this API publishes. */
+const ENGINE_REASONS: Record<string, ProvisionalReason> = {
+  'too-few-games': 'too-few-games',
+  'too-uncertain': 'uncertainty-too-wide',
+  'uncertainty-too-wide': 'uncertainty-too-wide',
+  'no-rating': 'no-rating',
+};
+
 export interface ConfidenceVerdict {
   provisional: boolean;
   /** Why the rating is withheld; null when it is fit to show. */
@@ -101,6 +134,10 @@ export interface ConfidenceVerdict {
   gamesUntilRated: number;
 }
 
+/**
+ * The fallback verdict, derived from the numbers alone. Prefer
+ * `resolveVerdict`, which uses the engine's own verdict when the item has one.
+ */
 export function assessConfidence(input: {
   rating: number | null;
   uncertainty: number | null;
@@ -119,6 +156,51 @@ export function assessConfidence(input: {
     return { provisional: true, provisionalReason: 'uncertainty-too-wide', gamesUntilRated };
   }
   return { provisional: false, provisionalReason: null, gamesUntilRated: 0 };
+}
+
+/**
+ * The verdict to publish for one rating: the engine's own when the item carries
+ * it, `assessConfidence` only as a fallback.
+ *
+ * Two invariants hold whichever source wins, because both are about what may
+ * leave this process rather than about statistics:
+ *
+ *  - a rating that does not exist is never publishable, however the item is
+ *    flagged - that is `no-rating`, not "rated";
+ *  - a provisional verdict always carries a reason, so a caller never has to
+ *    render "withheld, no idea why". An unmapped engine reason (today only
+ *    `component-too-small`, which the engine never pairs with
+ *    `provisional: true`) falls back to the derived reason and then to
+ *    `uncertainty-too-wide`: a comparison problem, which is what it is, rather
+ *    than `too-few-games`, which would put a full progress meter beside the
+ *    word "Unranked".
+ */
+export function resolveVerdict(input: {
+  rating: number | null;
+  uncertainty: number | null;
+  gamesPlayed: number | null;
+} & EngineVerdict): ConfidenceVerdict {
+  const derived = assessConfidence(input);
+  if (typeof input.provisional !== 'boolean') return derived;
+
+  if (input.rating === null || input.rating === undefined) {
+    return { provisional: true, provisionalReason: 'no-rating', gamesUntilRated: derived.gamesUntilRated };
+  }
+  if (!input.provisional) {
+    return { provisional: false, provisionalReason: null, gamesUntilRated: 0 };
+  }
+
+  const mapped = input.provisionalReason ? ENGINE_REASONS[input.provisionalReason] ?? null : null;
+  const gamesUntilRated =
+    typeof input.gamesUntilRated === 'number' && Number.isFinite(input.gamesUntilRated)
+      ? Math.max(0, Math.round(input.gamesUntilRated))
+      : derived.gamesUntilRated;
+
+  return {
+    provisional: true,
+    provisionalReason: mapped ?? derived.provisionalReason ?? 'uncertainty-too-wide',
+    gamesUntilRated,
+  };
 }
 
 /**
@@ -148,6 +230,14 @@ export interface ComponentInfo {
   comparable: boolean;
 }
 
+/**
+ * One set era's rating for a player, with its **own** verdict: a player can be
+ * rated all-time and provisional within a set, or the reverse (a set slice has
+ * fewer games and so a wider sigma), so each entry is gated independently.
+ *
+ * `rating` is null whenever `provisional` is true - the number is withheld, not
+ * shipped with a flag beside it.
+ */
 export interface SetRating {
   setId: string;
   setName: string | null;
@@ -159,9 +249,31 @@ export interface SetRating {
   matchesPlayed: number | null;
   provisional: boolean;
   provisionalReason: ProvisionalReason | null;
+  /** Games still needed in this set's slice; 0 when it is not games that block it. */
+  gamesUntilRated: number;
 }
 
+/**
+ * A player's profile. `rating` is the **publishable** rating: null whenever
+ * `provisional` is true, exactly as `TournamentPlayer.rating` is. `uncertainty`,
+ * `gamesPlayed`, `matchesPlayed` and `gamesUntilRated` are always carried - a
+ * margin and a game count are not a position, and they are what lets a page
+ * explain the state instead of just asserting it.
+ */
 export interface PlayerProfile extends PlayerIdentity, ComponentInfo {
+  /**
+   * The rating engine has an item for this player.
+   *
+   * False means "we have never recorded a game for this id", which is **not**
+   * the same as "no such player": most of a tournament field is in that state
+   * (every one of 5 on one live upcoming event, 15 of 22 on another), and those
+   * are real registrants on a real roster. Everything else on the profile is
+   * null and the verdict is `no-rating`, so a page says "No record yet" rather
+   * than "No player with that id".
+   *
+   * Same field, same meaning, as `TournamentPlayer.known`.
+   */
+  known: boolean;
   rating: number | null;
   uncertainty: number | null;
   gamesPlayed: number | null;
@@ -177,6 +289,7 @@ export interface PlayerProfile extends PlayerIdentity, ComponentInfo {
 export interface LeaderboardEntry extends PlayerIdentity {
   /** Dense rank among rated players only; null for a provisional player. */
   rank: number | null;
+  /** Publishable rating: null whenever `provisional`, never a withheld number. */
   rating: number | null;
   uncertainty: number | null;
   gamesPlayed: number | null;
@@ -210,8 +323,56 @@ export interface ComponentSummary {
   comparable: boolean;
 }
 
+/**
+ * The one outcome vocabulary this API publishes, for a game or for a match.
+ *
+ * Lower case and English, deliberately not Riot's enum: upstream words are a
+ * moving target and every endpoint that carries an outcome has to agree on one
+ * of them. `/api/players/:id/matches` has always published these; since
+ * `TournamentMatchSide.outcome` was normalised too (see
+ * `models/tournament.ts`), there is exactly one spelling of a draw in this API.
+ *
+ * `unknown` means a word arrived that this list does not cover - never that
+ * nothing arrived. An absent outcome is `null` at the field that carries it.
+ */
 export type GameOutcome = 'win' | 'loss' | 'draw' | 'unknown';
 export type MatchOutcome = GameOutcome;
+
+/**
+ * Every upstream word measured or plausibly emitted, mapped onto the vocabulary
+ * above. One table, consulted by both the ranking adapter and the tournament
+ * service, so the two can never spell a draw differently.
+ *
+ * **Riot emits `TIE`, not `DRAW`.** Measured over 30 live captures
+ * (722 matches / 1,444 sides): `WIN` 686, `LOSS` 686, `TIE` 72, `DRAW` **zero**.
+ * Both are mapped, because the vocabulary that produced `TIE` can produce
+ * `DRAW` next deploy and a renderer must not have to care.
+ *
+ * What is deliberately *not* here: `FORFEIT`, `DISQUALIFIED`, `NO_SHOW` and
+ * friends. A forfeit is administratively a loss, but recording it as one would
+ * be this API inventing a result it was not given - the same class of mistake
+ * as mapping only `DRAW` was. Anything unlisted becomes `unknown` and travels
+ * beside the verbatim upstream word, so it reads as "not recorded here" and is
+ * diagnosable rather than silently wrong.
+ */
+const OUTCOME_WORDS: Record<string, GameOutcome> = {
+  w: 'win', win: 'win', wins: 'win', won: 'win', victory: 'win', '1': 'win',
+  l: 'loss', loss: 'loss', losses: 'loss', lose: 'loss', lost: 'loss', defeat: 'loss', '0': 'loss',
+  d: 'draw', draw: 'draw', drawn: 'draw', tie: 'draw', tied: 'draw', ties: 'draw',
+};
+
+/**
+ * One upstream outcome word (or flag, or 1/0) as this API's vocabulary.
+ * Anything unrecognised is `unknown` - never guessed at, never dropped.
+ */
+export function normaliseOutcome(value: unknown): GameOutcome {
+  if (typeof value === 'string') return OUTCOME_WORDS[value.trim().toLowerCase()] ?? 'unknown';
+  if (typeof value === 'boolean') return value ? 'win' : 'loss';
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return OUTCOME_WORDS[String(value)] ?? 'unknown';
+  }
+  return 'unknown';
+}
 
 export interface MatchGame {
   gameNumber: number;

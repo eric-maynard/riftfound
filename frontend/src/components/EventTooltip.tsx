@@ -1,4 +1,5 @@
 import type { Event } from '../types/event';
+import { eventColor } from '../lib/eventColors';
 
 interface EventTooltipProps {
   event: Event;
@@ -101,11 +102,10 @@ function EventTooltip({ event, position, isMobile, onClose }: EventTooltipProps)
 
         <div style={{ display: 'flex', gap: '0.75rem', marginTop: '0.25rem' }}>
           {event.eventType && (
-            <span className="format-tag" style={{
-              backgroundColor: event.eventType === 'Summoner Skirmish' ? '#ff79c6' :
-                              event.eventType === 'Nexus Night' ? '#bd93f9' :
-                              event.eventType === 'Pre-Rift' ? '#73d393' : '#6272a4'
-            }}>{event.eventType}</span>
+            <span
+              className="format-tag"
+              style={{ backgroundColor: eventColor(event.eventType) }}
+            >{event.eventType}</span>
           )}
 
           {(event.playerCount !== null || event.capacity !== null) && (() => {

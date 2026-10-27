@@ -1,10 +1,14 @@
-import type { PlayerMatch, RatingPoint, Scope } from '../models/ranking.js';
+import type { EngineVerdict, PlayerMatch, RatingPoint, Scope } from '../models/ranking.js';
 
 /**
  * The storage-facing shape of a player profile: exactly the fields the data
  * contract promises on `PLAYER#<uuid>` / `SK: PROFILE`, with nothing derived.
- * Confidence, ranks and comparability are computed in the service layer so
- * both the DynamoDB adapter and the fixture adapter stay dumb.
+ * Ranks and comparability are computed in the service layer so both the
+ * DynamoDB adapter and the fixture adapter stay dumb.
+ *
+ * The confidence *verdict* is not derived here either - it is read off the item
+ * when the engine wrote one (`EngineVerdict`) and only fabricated in the
+ * service layer, from the numbers, when it did not.
  */
 /** One set era as the rating engine recorded it. */
 export interface SetCatalogueEntry {
@@ -16,7 +20,7 @@ export interface SetCatalogueEntry {
   hasRatingData: boolean;
 }
 
-export interface PlayerRecord {
+export interface PlayerRecord extends EngineVerdict {
   playerId: string;
   displayName: string | null;
   tagLine: string | null;
@@ -34,7 +38,8 @@ export interface PlayerRecord {
   updatedAt: string | null;
 }
 
-export interface SetRatingRecord {
+/** One set era's numbers, with that era's own verdict when the item carries it. */
+export interface SetRatingRecord extends EngineVerdict {
   setId: string;
   rating: number | null;
   uncertainty: number | null;
@@ -47,7 +52,7 @@ export interface SetRatingRecord {
  * but not its fields, so an entry may carry only a player id; the service
  * hydrates anything missing from the player's PROFILE.
  */
-export interface LeaderboardRecord {
+export interface LeaderboardRecord extends EngineVerdict {
   playerId: string;
   rank?: number | null;
   rating?: number | null;

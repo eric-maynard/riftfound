@@ -12,7 +12,7 @@ import {
   BatchGetCommand,
   ScanCommand,
 } from '../config/dynamodb.js';
-import { assessConfidence } from '../models/ranking.js';
+import { normaliseOutcome, resolveVerdict } from '../models/ranking.js';
 import type { GameOutcome, MatchGame, MatchOutcome, PlayerMatch, RatingPoint, Scope } from '../models/ranking.js';
 import type {
   LeaderboardPage,
@@ -52,6 +52,34 @@ function readString(item: Item, names: string[]): string | null {
   return null;
 }
 
+function readBoolean(item: Item, names: string[]): boolean | undefined {
+  const value = pick(item, names);
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'string') {
+    if (value === 'true') return true;
+    if (value === 'false') return false;
+  }
+  return undefined;
+}
+
+/**
+ * The engine's confidence verdict as written on an item.
+ *
+ * Absent on items written before the engine emitted it, and absent by design on
+ * leaderboard rows (the engine only writes a row for a rated player), in which
+ * case every field comes back undefined and the service falls back to deriving
+ * one. `provisionalReason` is kept as the engine's own string and translated in
+ * `resolveVerdict`, so a reason this API has never heard of cannot be silently
+ * read as a reason it has.
+ */
+function readVerdict(item: Item): { provisional?: boolean; provisionalReason?: string | null; gamesUntilRated?: number | null } {
+  return {
+    provisional: readBoolean(item, ['provisional']),
+    provisionalReason: readString(item, ['provisionalReason']),
+    gamesUntilRated: readNumber(item, ['gamesUntilRated']),
+  };
+}
+
 function readNumber(item: Item, names: string[]): number | null {
   const value = pick(item, names);
   if (typeof value === 'number' && Number.isFinite(value)) return value;
@@ -62,21 +90,18 @@ function readNumber(item: Item, names: string[]): number | null {
   return null;
 }
 
-const OUTCOMES: Record<string, GameOutcome> = {
-  w: 'win', win: 'win', won: 'win', victory: 'win', '1': 'win',
-  l: 'loss', loss: 'loss', lose: 'loss', lost: 'loss', defeat: 'loss', '0': 'loss',
-  d: 'draw', draw: 'draw', drawn: 'draw', tie: 'draw', tied: 'draw',
-};
-
+/**
+ * The word table lives in `models/ranking.ts` (`normaliseOutcome`) because the
+ * tournament endpoints normalise against it too - one table, so `TIE` cannot
+ * come out as a draw here and as a raw enum there. This wrapper adds only the
+ * shape tolerance this adapter needs: an outcome nested inside an object.
+ */
 function readOutcome(value: unknown): GameOutcome {
-  if (typeof value === 'string') return OUTCOMES[value.trim().toLowerCase()] ?? 'unknown';
-  if (typeof value === 'boolean') return value ? 'win' : 'loss';
-  if (typeof value === 'number') return OUTCOMES[String(value)] ?? 'unknown';
   if (value && typeof value === 'object') {
     const nested = pick(value as Item, ['outcome', 'result', 'won']);
-    if (nested !== undefined) return readOutcome(nested);
+    return nested === undefined ? 'unknown' : readOutcome(nested);
   }
-  return 'unknown';
+  return normaliseOutcome(value);
 }
 
 function readGames(item: Item): MatchGame[] {
@@ -111,6 +136,8 @@ function readSetRatings(item: Item): SetRatingRecord[] {
       uncertainty: readNumber(inner, ['uncertainty', 'sigma', 'rd']),
       gamesPlayed: readNumber(inner, ['gamesPlayed', 'games']),
       matchesPlayed: readNumber(inner, ['matchesPlayed', 'matches']),
+      // Each era is gated on its own evidence, so the verdict is per entry.
+      ...readVerdict(inner),
     });
   }
   return entries;
@@ -125,6 +152,9 @@ function toPlayerRecord(item: Item): PlayerRecord | null {
     playerId,
     displayName: readString(item, ['displayName', 'gameName', 'name']),
     tagLine: readString(item, ['tagLine', 'tag']),
+    // `provisionalRating` is deliberately NOT in this list. The engine writes
+    // the fitted number there and nulls `rating` when it is below the bar;
+    // reading it as a fallback would undo the gate at the first hop.
     rating: readNumber(item, ['rating', 'mu']),
     uncertainty: readNumber(item, ['uncertainty', 'sigma', 'rd']),
     gamesPlayed: readNumber(item, ['gamesPlayed', 'games']),
@@ -136,6 +166,7 @@ function toPlayerRecord(item: Item): PlayerRecord | null {
     regionLabel: readString(item, ['regionLabel', 'region']),
     setRatings: readSetRatings(item),
     updatedAt: readString(item, ['updatedAt', 'ratedAt', 'computedAt']),
+    ...readVerdict(item),
   };
 }
 
@@ -154,6 +185,7 @@ function toLeaderboardRecord(item: Item): LeaderboardRecord | null {
     componentId: readString(item, ['componentId', 'component']),
     componentSize: readNumber(item, ['componentSize']),
     regionLabel: readString(item, ['regionLabel', 'region']),
+    ...readVerdict(item),
   };
 }
 
@@ -414,10 +446,13 @@ export const dynamoRankingStore: RankingStore = {
         totalPlayers: 0,
       };
       existing.totalPlayers += 1;
-      const verdict = assessConfidence({
+      const verdict = resolveVerdict({
         rating: entry.rating ?? profile?.rating ?? null,
         uncertainty: entry.uncertainty ?? profile?.uncertainty ?? null,
         gamesPlayed: entry.gamesPlayed ?? profile?.gamesPlayed ?? null,
+        provisional: entry.provisional ?? profile?.provisional,
+        provisionalReason: entry.provisionalReason ?? profile?.provisionalReason,
+        gamesUntilRated: entry.gamesUntilRated ?? profile?.gamesUntilRated,
       });
       if (!verdict.provisional) existing.ratedPlayers += 1;
       out.set(componentId, existing);

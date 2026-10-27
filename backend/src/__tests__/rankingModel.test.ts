@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   CONFIDENCE,
   assessConfidence,
+  resolveVerdict,
   isComparable,
   parseScope,
   isValidPlayerId,
@@ -69,6 +70,58 @@ describe('assessConfidence', () => {
 
   it('treats a missing uncertainty as not disqualifying', () => {
     expect(assessConfidence({ rating: 1500, uncertainty: null, gamesPlayed: 20 }).provisional).toBe(false);
+  });
+});
+
+describe('resolveVerdict', () => {
+  const rated = { rating: 1500, uncertainty: 80, gamesPlayed: 20 };
+  const thin = { rating: 1500, uncertainty: 240, gamesPlayed: 2 };
+
+  it('falls back to the derived verdict for an item with no verdict on it', () => {
+    expect(resolveVerdict(thin)).toEqual(assessConfidence(thin));
+    expect(resolveVerdict(rated)).toEqual(assessConfidence(rated));
+  });
+
+  it('withholds when the engine says so, even where the numbers look fine', () => {
+    const verdict = resolveVerdict({ ...rated, provisional: true, provisionalReason: 'too-uncertain' });
+    expect(verdict.provisional).toBe(true);
+    // The engine's vocabulary, translated into the one this API publishes.
+    expect(verdict.provisionalReason).toBe('uncertainty-too-wide');
+  });
+
+  it('publishes when the engine says so, even where the numbers look thin', () => {
+    expect(resolveVerdict({ ...thin, provisional: false, provisionalReason: null })).toEqual({
+      provisional: false,
+      provisionalReason: null,
+      gamesUntilRated: 0,
+    });
+  });
+
+  it('takes the engine\'s own games-to-go when it states one', () => {
+    expect(
+      resolveVerdict({ ...thin, provisional: true, provisionalReason: 'too-few-games', gamesUntilRated: 5 })
+        .gamesUntilRated
+    ).toBe(5);
+    // ...and derives one when the engine leaves it null (it only sets it when
+    // games are what is missing).
+    expect(
+      resolveVerdict({ ...thin, provisional: true, provisionalReason: 'too-few-games', gamesUntilRated: null })
+        .gamesUntilRated
+    ).toBe(CONFIDENCE.minGames - 2);
+  });
+
+  it('never calls a rating that does not exist publishable', () => {
+    expect(
+      resolveVerdict({ rating: null, uncertainty: 80, gamesPlayed: 20, provisional: false, provisionalReason: null })
+    ).toMatchObject({ provisional: true, provisionalReason: 'no-rating' });
+  });
+
+  it('always gives a reason for a withheld rating, even for a reason it has never heard of', () => {
+    const verdict = resolveVerdict({ ...rated, provisional: true, provisionalReason: 'component-too-small' });
+    expect(verdict.provisional).toBe(true);
+    // Not `too-few-games`: this player has plenty, and that reason would put a
+    // full progress meter beside the word "Unranked".
+    expect(verdict.provisionalReason).toBe('uncertainty-too-wide');
   });
 });
 

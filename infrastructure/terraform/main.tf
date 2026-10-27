@@ -293,6 +293,28 @@ resource "aws_s3_bucket_policy" "frontend" {
   })
 }
 
+# CloudFront Function — SPA routing
+#
+# Rewrites extensionless, non-API paths to /index.html at viewer-request time
+# so React Router deep links work WITHOUT a distribution-wide
+# `custom_error_response` 404 -> 200 rule. See spa_router.js for the full
+# rationale, and the "SPA routing" section of README.md.
+#
+# Why a CloudFront Function and not Lambda@Edge: this is ~15 lines of string
+# matching with no I/O. A CloudFront Function runs at every edge POP in
+# sub-millisecond time for $0.10 per million invocations; Lambda@Edge runs in a
+# regional cache, adds tens of milliseconds, and costs ~15x more per request
+# plus GB-seconds. Narrowing the cache behaviors alone cannot fix this —
+# `custom_error_response` is a distribution-level setting in the CloudFront API,
+# so there is no way to scope the old rule to the S3 behavior only.
+resource "aws_cloudfront_function" "spa_router" {
+  name    = "riftfound-spa-router-${var.environment}"
+  runtime = "cloudfront-js-2.0"
+  comment = "Rewrite SPA deep links to /index.html; leave /api/*, /iykyk* and real files alone"
+  publish = true
+  code    = file("${path.module}/spa_router.js")
+}
+
 # CloudFront Distribution
 resource "aws_cloudfront_distribution" "main" {
   enabled             = true
@@ -368,6 +390,13 @@ resource "aws_cloudfront_distribution" "main" {
       query_string = false
       cookies { forward = "none" }
     }
+
+    # SPA deep-link rewrite. Deliberately ONLY on the default behavior: the
+    # /api/* and /iykyk* behaviors must never run it.
+    function_association {
+      event_type   = "viewer-request"
+      function_arn = aws_cloudfront_function.spa_router.arn
+    }
   }
 
   ordered_cache_behavior {
@@ -410,17 +439,20 @@ resource "aws_cloudfront_distribution" "main" {
     }
   }
 
-  custom_error_response {
-    error_code         = 403
-    response_code      = 200
-    response_page_path = "/index.html"
-  }
-
-  custom_error_response {
-    error_code         = 404
-    response_code      = 200
-    response_page_path = "/index.html"
-  }
+  # NO custom_error_response here, on purpose.
+  #
+  # There used to be 403 -> /index.html (200) and 404 -> /index.html (200).
+  # `custom_error_response` is distribution-wide, so those rules also rewrote
+  # every legitimate API error: /api/players/does-not-exist answered 200
+  # text/html, so clients got response.ok === true and then failed parsing the
+  # SPA shell as JSON — which is why "not found" surfaced as a generic error
+  # instead of an empty state. They also masked stale deploys, serving the
+  # shell for a missing /assets/*.js.
+  #
+  # aws_cloudfront_function.spa_router now does the deep-link rewrite on the
+  # default behavior only. Everything else returns its real status: /api/* its
+  # JSON 400/404, a missing asset the 403 that S3 returns through OAC.
+  # Do not add a blanket rule back.
 
   restrictions {
     geo_restriction { restriction_type = "none" }

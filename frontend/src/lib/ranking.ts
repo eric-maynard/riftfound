@@ -1,5 +1,6 @@
 import type {
   ComponentSummary,
+  GameOutcome,
   LeaderboardEntry,
   PlayerMatch,
   ProvisionalReason,
@@ -44,6 +45,24 @@ export function selectableSets(sets: SetInfo[], now: Date = new Date()): SetInfo
     if (set.releaseDate && set.releaseDate > today) return false;
     return true;
   });
+}
+
+/**
+ * Total set-scope options (the all-time scope plus each set) that still fit on
+ * one line as segmented pills. Above this the control becomes a dropdown.
+ */
+export const SET_PILL_LIMIT = 5;
+
+/**
+ * Whether the set scope should render as pills rather than a dropdown.
+ *
+ * Sets are an unbounded, append-only list - roughly four a year, and a set
+ * with rating data never loses it - so a control sized for today silently
+ * stops fitting. Crossing this threshold is a one-way door about a year out,
+ * not a flicker.
+ */
+export function shouldUseSetPills(setCount: number): boolean {
+  return setCount + 1 <= SET_PILL_LIMIT;
 }
 
 /** Build the scope string the API expects from the two selectors. */
@@ -191,6 +210,50 @@ export function formatShortDate(epochMs: number): string {
 export const UNRANKED_LABEL = 'Unranked';
 
 /**
+ * The phrase printed where a rating would go for a player the engine has
+ * never seen play.
+ *
+ * Distinct from `Unranked`, which says a player stood at the bar and has not
+ * cleared it yet. Lives here rather than in lib/tournament.ts because the
+ * player page needs it too - see `hasNoRecord` - and tournament.ts re-exports
+ * it for the event page's existing callers.
+ */
+export const NO_RECORD_LABEL = 'No record yet';
+
+/** Why a player with no record has no rating - the tooltip on that phrase. */
+export const NO_RECORD_EXPLANATION =
+  'No record yet - no games by this player have been recorded, so the rating engine has never seen them.';
+
+/**
+ * Whether a profile describes a player with nothing recorded at all.
+ *
+ * `/api/players/:id` currently 404s for these, so the player page never sees
+ * one; the event page renders their names as plain text for exactly that
+ * reason. If the endpoint starts answering - a profile whose numbers are all
+ * null - the page must read `No record yet` rather than `Unranked`, which
+ * would tell a first-time player they failed a bar they never stood at. It is
+ * read off the evidence, not off a flag, so it holds whichever shape arrives:
+ * no games, no matches and no rating is no record.
+ */
+export function hasNoRecord(
+  profile:
+    | {
+        rating?: number | null;
+        gamesPlayed?: number | null;
+        matchesPlayed?: number | null;
+      }
+    | null
+    | undefined
+): boolean {
+  if (!profile) return true;
+  return (
+    (profile.rating ?? null) === null &&
+    !(profile.gamesPlayed ?? 0) &&
+    !(profile.matchesPlayed ?? 0)
+  );
+}
+
+/**
  * Where the rating scale starts. A player with no games sits here, so the
  * number is the one to quote when explaining what a rating means.
  *
@@ -281,6 +344,158 @@ export function formatRecord(record: Record_): string {
   return record.draws > 0
     ? `${record.wins}-${record.losses}-${record.draws}`
     : `${record.wins}-${record.losses}`;
+}
+
+/**
+ * Win rate over the matches we actually have, as a percentage of *decided*
+ * matches. Draws count in the denominator - they are a result - but an
+ * unrecorded match is not evidence either way and is excluded.
+ *
+ * null when nothing is decided, so the bar renders as "no results yet" rather
+ * than as a confident 0%.
+ */
+export function winRate(record: Record_): number | null {
+  const decided = record.wins + record.losses + record.draws;
+  if (decided === 0) return null;
+  return (record.wins / decided) * 100;
+}
+
+export function formatWinRate(value: number | null): string {
+  return value === null ? '--' : `${Math.round(value)}%`;
+}
+
+/**
+ * The letter a result is read by.
+ *
+ * Every place this UI colours a result it also prints this letter: colour is
+ * never the only signal, because red and green are the pair most readers with
+ * a colour vision deficiency cannot separate.
+ */
+export function outcomeLetter(outcome: GameOutcome): string {
+  switch (outcome) {
+    case 'win':
+      return 'W';
+    case 'loss':
+      return 'L';
+    case 'draw':
+      return 'D';
+    default:
+      return '?';
+  }
+}
+
+/** The same result as a word, for the row's own label and for screen readers. */
+export function outcomeWord(outcome: GameOutcome): string {
+  switch (outcome) {
+    case 'win':
+      return 'Win';
+    case 'loss':
+      return 'Loss';
+    case 'draw':
+      return 'Draw';
+    default:
+      return 'Unrecorded';
+  }
+}
+
+/**
+ * The form strip's data: the most recent `count` matches, newest first.
+ *
+ * The match log already arrives newest-first from the API (the DynamoDB query
+ * runs `ScanIndexForward: false` over `MATCH#<iso>` sort keys), so this is a
+ * slice rather than a sort - but it is a named function so the ordering
+ * assumption is stated once and tested once.
+ */
+export function recentForm(matches: PlayerMatch[], count = 10): PlayerMatch[] {
+  return matches.slice(0, Math.max(0, count));
+}
+
+/**
+ * How far an unranked player is through the games gate.
+ *
+ * This is a count of recorded games against a published threshold, not a
+ * rating: showing it never leaks the withheld number, and it answers the only
+ * question "Unranked" leaves open - how much is left.
+ */
+export function gateProgress(
+  gamesPlayed: number | null | undefined,
+  minGames: number,
+  reason: ProvisionalReason | null = 'too-few-games'
+): { filled: number; total: number } | null {
+  // Only when games are what is missing. A player held back by a wide margin
+  // has already cleared this bar, and a full meter beside "Unranked" would
+  // read as a contradiction rather than as progress.
+  if (reason !== 'too-few-games' && reason !== 'no-rating') return null;
+  if (!Number.isFinite(minGames) || minGames <= 0 || minGames > 20) return null;
+  const played = Math.max(0, Math.min(gamesPlayed ?? 0, minGames));
+  return { filled: played, total: minGames };
+}
+
+// ---------------------------------------------------------------------------
+// Margin bars
+// ---------------------------------------------------------------------------
+
+/**
+ * The shared scale behind the ladder's margin bars.
+ *
+ * Each rated row draws its rating ± its uncertainty as a span on one common
+ * axis, so two players whose spans overlap can be seen to be inseparable -
+ * which is the honest reading of two ratings a few points apart with a ±90
+ * margin each. The bar is the uncertainty made visible; it invents no tier and
+ * no precision.
+ *
+ * null - and so no bars at all - when there is nothing to compare: fewer than
+ * `minimumRows` rated players, or a degenerate range. A bar with nothing
+ * beside it is decoration, and sparse is the normal case here.
+ */
+export interface MarginScale {
+  min: number;
+  max: number;
+}
+
+export function marginScale(entries: LeaderboardEntry[], minimumRows = 3): MarginScale | null {
+  const usable = entries.filter(
+    (entry) => !entry.provisional && entry.rating !== null && entry.rating !== undefined
+  );
+  if (usable.length < minimumRows) return null;
+
+  let min = Infinity;
+  let max = -Infinity;
+  for (const entry of usable) {
+    const margin = entry.uncertainty ?? 0;
+    min = Math.min(min, (entry.rating as number) - margin);
+    max = Math.max(max, (entry.rating as number) + margin);
+  }
+  if (!Number.isFinite(min) || !Number.isFinite(max) || !(max > min)) return null;
+  return { min, max };
+}
+
+export interface MarginBar {
+  /** Percentages along the shared axis: the span, and the rating within it. */
+  leftPercent: number;
+  widthPercent: number;
+  markerPercent: number;
+}
+
+export function marginBar(
+  entry: { rating: number | null; uncertainty: number | null },
+  scale: MarginScale | null
+): MarginBar | null {
+  if (!scale || entry.rating === null || entry.rating === undefined) return null;
+  const span = scale.max - scale.min;
+  if (!(span > 0)) return null;
+
+  const clamp = (value: number) => Math.max(0, Math.min(100, value));
+  const margin = entry.uncertainty ?? 0;
+  const left = clamp(((entry.rating - margin - scale.min) / span) * 100);
+  const right = clamp(((entry.rating + margin - scale.min) / span) * 100);
+
+  return {
+    leftPercent: left,
+    // A zero-margin rating still needs to be visible as a mark.
+    widthPercent: Math.max(right - left, 1.5),
+    markerPercent: clamp(((entry.rating - scale.min) / span) * 100),
+  };
 }
 
 /** "2-0", "1-2" etc. from the per-game outcomes of one Bo3. */

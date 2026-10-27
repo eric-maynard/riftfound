@@ -69,3 +69,6 @@ temp/
 
 # Playwright MCP scratch output (page snapshots, console logs, screenshots)
 .playwright-mcp/
+
+# Stray Playwright screenshots taken while testing
+switch-events.png

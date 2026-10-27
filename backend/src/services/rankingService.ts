@@ -2,9 +2,9 @@ import { env } from '../config/env.js';
 import { useDynamoDB } from '../config/database.js';
 import { dynamoRankingStore } from '../adapters/rankingDynamoAdapter.js';
 import { fixtureRankingStore } from '../adapters/rankingFixtureAdapter.js';
-import type { PlayerRecord, RankingStore } from '../adapters/rankingStore.js';
+import type { PlayerRecord, RankingStore, SetRatingRecord } from '../adapters/rankingStore.js';
 import {
-  assessConfidence,
+  resolveVerdict,
   isComparable,
   CONFIDENCE,
   type ComponentSummary,
@@ -12,6 +12,7 @@ import {
   type PlayerMatch,
   type PlayerProfile,
   type RankingCoverage,
+  type ProvisionalReason,
   type RatingPoint,
   type Scope,
   type SetInfo,
@@ -73,6 +74,14 @@ export async function getRankings(scope: Scope, limit: number, cursor?: string):
     .map((entry) => entry.playerId);
   const profiles = needsHydration.length > 0 ? await store.getPlayers(needsHydration) : new Map<string, PlayerRecord>();
 
+  /**
+   * One row with its rating still on it.
+   *
+   * Ordering, ranks and coverage are worked out over these, and the withheld
+   * numbers are stripped afterwards in `publish`. The sequence is the point: a
+   * rank or an average that came out differently because a number was withheld
+   * would be a different answer rather than a safer one.
+   */
   const merge = (entry: (typeof page.items)[number]) => {
     const profile = profiles.get(entry.playerId);
     const setRating = scope.setId
@@ -81,7 +90,22 @@ export async function getRankings(scope: Scope, limit: number, cursor?: string):
     const rating = entry.rating ?? setRating?.rating ?? (scope.setId ? null : profile?.rating ?? null);
     const uncertainty = entry.uncertainty ?? setRating?.uncertainty ?? (scope.setId ? null : profile?.uncertainty ?? null);
     const gamesPlayed = entry.gamesPlayed ?? setRating?.gamesPlayed ?? (scope.setId ? null : profile?.gamesPlayed ?? null);
-    const verdict = assessConfidence({ rating, uncertainty, gamesPlayed });
+    // The engine's own verdict for *this* scope: the row's, else the set entry's
+    // in a set scope, else the profile's. Derived from the numbers only when
+    // none of them carries one.
+    const stated = entry.provisional !== undefined
+      ? entry
+      : scope.setId
+        ? setRating ?? profile
+        : profile;
+    const verdict = resolveVerdict({
+      rating,
+      uncertainty,
+      gamesPlayed,
+      provisional: stated?.provisional,
+      provisionalReason: stated?.provisionalReason,
+      gamesUntilRated: stated?.gamesUntilRated,
+    });
     return {
       playerId: entry.playerId,
       displayName: entry.displayName ?? profile?.displayName ?? null,
@@ -94,7 +118,6 @@ export async function getRankings(scope: Scope, limit: number, cursor?: string):
       componentSize: entry.componentSize ?? profile?.componentSize ?? null,
       regionLabel: entry.regionLabel ?? profile?.regionLabel ?? null,
       ...verdict,
-      rank: null as number | null,
     };
   };
 
@@ -109,10 +132,19 @@ export async function getRankings(scope: Scope, limit: number, cursor?: string):
   const rankByPlayer = new Map<string, number>();
   ranked.forEach((entry, index) => rankByPlayer.set(entry.playerId, index + 1));
 
-  const entries: LeaderboardEntry[] = page.items.map(merge).map((entry) => ({
+  /**
+   * The gate, enforced here rather than left to the UI: a provisional player's
+   * rating number does not leave this process. Everything that explains the
+   * state - the margin, the game counts, how many games are still needed -
+   * stays, because a width and a count are not a position.
+   */
+  const publish = (entry: ReturnType<typeof merge>): LeaderboardEntry => ({
     ...entry,
+    rating: entry.provisional ? null : entry.rating,
     rank: rankByPlayer.get(entry.playerId) ?? null,
-  }));
+  });
+
+  const entries: LeaderboardEntry[] = page.items.map(merge).map(publish);
 
   const ratedPlayers = ranked.length;
   const totalPlayers = sample.totalPlayers ?? sampleEntries.length;
@@ -168,31 +200,94 @@ export async function getRankings(scope: Scope, limit: number, cursor?: string):
 // Players
 // ---------------------------------------------------------------------------
 
-function toSetRating(record: { setId: string; rating: number | null; uncertainty: number | null; gamesPlayed: number | null; matchesPlayed: number | null }): SetRating {
-  const verdict = assessConfidence(record);
+/**
+ * One set era's entry, gated on its **own** evidence.
+ *
+ * A player can be rated all-time and provisional within a set, or the reverse:
+ * a set slice holds fewer games, so its sigma is wider, and the engine writes a
+ * separate verdict for each era. So each entry is assessed independently and
+ * each withholds its own number.
+ */
+function toSetRating(record: SetRatingRecord): SetRating {
+  const verdict = resolveVerdict(record);
   return {
     setId: record.setId,
     setName: setDisplayName(record.setId),
     releaseDate: setReleaseDate(record.setId),
-    rating: record.rating,
+    rating: verdict.provisional ? null : record.rating,
     uncertainty: record.uncertainty,
     gamesPlayed: record.gamesPlayed,
     matchesPlayed: record.matchesPlayed,
     provisional: verdict.provisional,
     provisionalReason: verdict.provisionalReason,
+    gamesUntilRated: verdict.gamesUntilRated,
   };
 }
 
-export async function getPlayer(playerId: string): Promise<PlayerProfile | null> {
-  const record = await getRankingStore().getPlayer(playerId);
-  if (!record) return null;
+/**
+ * The profile for an id the engine has never seen: everything null, the verdict
+ * `no-rating`, `known: false`.
+ *
+ * This is why the endpoint no longer 404s. Three reasons, in order of weight:
+ *
+ * 1. **The API contradicted itself.** For the same player id,
+ *    `/api/players/:id/matches` answers 200 with `data: []` and
+ *    `/api/players/:id/ratings` answers 200 with `points: []`,
+ *    `provisionalReason: 'no-rating'`, `gamesUntilRated: 8` - while
+ *    `/api/players/:id` answered 404. Verified live on three ids off one
+ *    upcoming event's roster. A resource whose two sub-resources exist is not
+ *    absent.
+ * 2. **A bookmarked link should not change meaning.** A player with no games
+ *    today has a profile the moment the engine next sees them. Under the 404
+ *    that URL was dead and then alive; a `no-rating` profile is the same page
+ *    throughout, and it fills in.
+ * 3. **Enumeration.** Anything listing a field (the tournament page's roster,
+ *    15 of 22 unknown on the live event it was built against) can now point at
+ *    every player uniformly instead of branching on whether a link would 404.
+ *
+ * What the 404 carried is not lost, it moved into `known: false` - which is
+ * where the rest of this API already puts that distinction
+ * (`TournamentPlayer.known`). Nothing is asserted that we do not know: the
+ * body says "no rating here for this id", exactly as the sibling endpoints do,
+ * and never that a player exists.
+ */
+function unknownProfile(playerId: string): PlayerProfile {
+  const verdict = resolveVerdict({ rating: null, uncertainty: null, gamesPlayed: null });
+  return {
+    playerId,
+    displayName: null,
+    tagLine: null,
+    known: false,
+    rating: null,
+    uncertainty: null,
+    gamesPlayed: null,
+    matchesPlayed: null,
+    firstSeen: null,
+    lastSeen: null,
+    componentId: null,
+    componentSize: null,
+    regionLabel: null,
+    comparable: isComparable(null),
+    provisional: verdict.provisional,
+    provisionalReason: verdict.provisionalReason,
+    gamesUntilRated: verdict.gamesUntilRated,
+    setRatings: [],
+  };
+}
 
-  const verdict = assessConfidence(record);
+export async function getPlayer(playerId: string): Promise<PlayerProfile> {
+  const record = await getRankingStore().getPlayer(playerId);
+  if (!record) return unknownProfile(playerId);
+
+  const verdict = resolveVerdict(record);
   return {
     playerId: record.playerId,
     displayName: record.displayName,
     tagLine: record.tagLine,
-    rating: record.rating,
+    known: true,
+    // The gate: a withheld rating is withheld, not shipped with a flag beside
+    // it. Same rule, same shape as `/api/events/:id/tournament`.
+    rating: verdict.provisional ? null : record.rating,
     uncertainty: record.uncertainty,
     gamesPlayed: record.gamesPlayed,
     matchesPlayed: record.matchesPlayed,
@@ -223,10 +318,32 @@ export async function getPlayerMatches(
 
 export interface RatingSeries {
   scope: Scope;
+  /**
+   * The series, or **empty** when the player is provisional in this scope.
+   *
+   * The engine writes a history point per day of play whatever the verdict
+   * (`PlayerRatingPoint.rating` is always a number), so serving the history of
+   * a provisional player reconstructs the withheld rating exactly - its last
+   * point *is* the number. Suppressing the headline and shipping the series
+   * would withhold nothing at all.
+   *
+   * Empty rather than points with null ratings: a series of nulls is a chart of
+   * nothing, and it would also strand `date` and `gamesPlayed` rows that invite
+   * the same reading. The verdict travels alongside, so the caller can say why
+   * there is nothing to draw rather than guessing.
+   */
   points: RatingPoint[];
-  /** The latest point's confidence verdict, so the chart can label itself. */
+  /** This scope's confidence verdict, so the chart can label itself. */
   provisional: boolean;
-  provisionalReason: ReturnType<typeof assessConfidence>['provisionalReason'];
+  provisionalReason: ProvisionalReason | null;
+  /** Games still needed to clear the games gate; 0 when that is not what blocks it. */
+  gamesUntilRated: number;
+  /**
+   * True when points exist but are being withheld, as opposed to a player who
+   * simply has no history yet. The two read identically on the wire otherwise,
+   * and they want different copy.
+   */
+  pointsWithheld: boolean;
   minGamesForRating: number;
   maxUncertaintyForRating: number;
 }
@@ -238,19 +355,29 @@ export async function getPlayerRatings(playerId: string, scope: Scope, limit: nu
     store.getPlayer(playerId),
   ]);
 
+  // The verdict is the profile's (the engine's own, for this scope) - not one
+  // re-derived from the last point, which carries no verdict and whose rating
+  // is published whether or not the player cleared the bar. The last point is
+  // only a fallback for a player with history but no profile.
   const last = points[points.length - 1];
   const setRating = scope.setId ? profile?.setRatings.find((entry) => entry.setId === scope.setId) : undefined;
-  const verdict = assessConfidence({
-    rating: last?.rating ?? setRating?.rating ?? profile?.rating ?? null,
-    uncertainty: last?.uncertainty ?? setRating?.uncertainty ?? profile?.uncertainty ?? null,
-    gamesPlayed: last?.gamesPlayed ?? setRating?.gamesPlayed ?? profile?.gamesPlayed ?? null,
+  const stated = scope.setId ? setRating ?? profile : profile;
+  const verdict = resolveVerdict({
+    rating: stated?.rating ?? last?.rating ?? null,
+    uncertainty: stated?.uncertainty ?? last?.uncertainty ?? null,
+    gamesPlayed: stated?.gamesPlayed ?? last?.gamesPlayed ?? null,
+    provisional: stated?.provisional,
+    provisionalReason: stated?.provisionalReason,
+    gamesUntilRated: stated?.gamesUntilRated,
   });
 
   return {
     scope,
-    points,
+    points: verdict.provisional ? [] : points,
     provisional: verdict.provisional,
     provisionalReason: verdict.provisionalReason,
+    gamesUntilRated: verdict.gamesUntilRated,
+    pointsWithheld: verdict.provisional && points.length > 0,
     minGamesForRating: CONFIDENCE.minGames,
     maxUncertaintyForRating: CONFIDENCE.maxUncertainty,
   };
@@ -260,6 +387,7 @@ export interface PlayerSearchHit {
   playerId: string;
   displayName: string | null;
   tagLine: string | null;
+  /** Publishable rating: null whenever `provisional`. */
   rating: number | null;
   gamesPlayed: number | null;
   regionLabel: string | null;
@@ -268,15 +396,18 @@ export interface PlayerSearchHit {
 
 export async function searchPlayers(query: string, limit: number): Promise<PlayerSearchHit[]> {
   const records = await getRankingStore().searchPlayers(query, limit);
-  return records.map((record) => ({
-    playerId: record.playerId,
-    displayName: record.displayName,
-    tagLine: record.tagLine,
-    rating: record.rating,
-    gamesPlayed: record.gamesPlayed,
-    regionLabel: record.regionLabel,
-    provisional: assessConfidence(record).provisional,
-  }));
+  return records.map((record) => {
+    const verdict = resolveVerdict(record);
+    return {
+      playerId: record.playerId,
+      displayName: record.displayName,
+      tagLine: record.tagLine,
+      rating: verdict.provisional ? null : record.rating,
+      gamesPlayed: record.gamesPlayed,
+      regionLabel: record.regionLabel,
+      provisional: verdict.provisional,
+    };
+  });
 }
 
 // ---------------------------------------------------------------------------

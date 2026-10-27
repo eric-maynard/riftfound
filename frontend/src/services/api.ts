@@ -7,8 +7,31 @@ import type {
   RatingSeriesResponse,
   SetsResponse,
 } from '../types/ranking';
+import type {
+  TournamentAvailabilityResponse,
+  TournamentDetailResponse,
+} from '../types/tournament';
 
 const API_BASE = '/api';
+
+/**
+ * A failed request, carrying the status alongside the API's own message.
+ *
+ * The status matters because a 404 is often not an error: most events have no
+ * tournament facts, and the message the API sends for that ("No tournament
+ * facts for this event") is not something a caller should have to pattern
+ * match on. The `message` is unchanged, so callers that already read it still
+ * work.
+ */
+export class ApiError extends Error {
+  status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+  }
+}
 
 async function fetchApi<T>(endpoint: string, options?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE}${endpoint}`, {
@@ -21,7 +44,7 @@ async function fetchApi<T>(endpoint: string, options?: RequestInit): Promise<T> 
 
   if (!response.ok) {
     const error = await response.json().catch(() => ({ error: 'Unknown error' }));
-    throw new Error(error.error || `HTTP ${response.status}`);
+    throw new ApiError(error.error || `HTTP ${response.status}`, response.status);
   }
 
   return response.json();
@@ -109,4 +132,35 @@ export async function searchPlayers(query: string): Promise<PlayerSearchResponse
 
 export async function getSets(): Promise<SetsResponse> {
   return fetchApi<SetsResponse>('/sets');
+}
+
+// --- Tournament facts ------------------------------------------------------
+
+/**
+ * The hard ceiling the API enforces on one availability request. Mirrors
+ * `MAX_AVAILABILITY_IDS` in `backend/src/models/tournament.ts`: over it the
+ * endpoint 400s, so the caller chunks rather than discovering that at runtime.
+ */
+export const MAX_AVAILABILITY_IDS = 50;
+
+/**
+ * Which of these events have standings or a roster worth opening.
+ *
+ * One call answers for a whole day list. Asking per event would be an N+1 on
+ * every calendar render, which is why this endpoint is batched at all.
+ */
+export async function getTournamentAvailability(
+  externalIds: string[]
+): Promise<TournamentAvailabilityResponse> {
+  const ids = externalIds.slice(0, MAX_AVAILABILITY_IDS).join(',');
+  return fetchApi<TournamentAvailabilityResponse>(
+    `/events/tournament-availability?ids=${encodeURIComponent(ids)}`
+  );
+}
+
+/** One event's standings, pairings and roster, with ratings joined on. */
+export async function getEventTournament(externalId: string): Promise<TournamentDetailResponse> {
+  return fetchApi<TournamentDetailResponse>(
+    `/events/${encodeURIComponent(externalId)}/tournament`
+  );
 }

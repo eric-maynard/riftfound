@@ -1,12 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
-
-// Event type colors (must match CalendarPage.tsx)
-const TYPE_COLORS: Record<string, string> = {
-  'Nexus Night': '#bd93f9',      // Purple
-  'Summoner Skirmish': '#ff79c6', // Pink
-  'Pre-Rift': '#73d393',          // Soft pastel green
-  'Other': '#6272a4',             // Muted blue-grey
-};
+import { eventColor } from '../lib/eventColors';
 
 interface TypeSelectProps {
   value: string | null;
@@ -18,7 +11,7 @@ function ColorDot({ type }: { type: string }) {
   return (
     <span
       className="type-color-dot"
-      style={{ backgroundColor: TYPE_COLORS[type] || '#6272a4' }}
+      style={{ backgroundColor: eventColor(type) }}
     />
   );
 }
