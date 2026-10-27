@@ -1,7 +1,12 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import * as rankingService from '../services/rankingService.js';
+import { cacheRanking } from '../middleware/cacheControl.js';
 
 const router = Router();
+
+// The set catalogue changes when Riot releases a set. The refit cadence is
+// several orders of magnitude more often than that, so it is the safe bound.
+router.use(cacheRanking);
 
 // GET /api/sets - sets the rating engine has data for, with any published
 // boundaries. `releaseDate` is null for sets whose dates were never published

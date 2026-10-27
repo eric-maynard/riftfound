@@ -1,8 +1,14 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { RankingQuerySchema, parseScope } from '../models/ranking.js';
 import * as rankingService from '../services/rankingService.js';
+import { cacheRanking } from '../middleware/cacheControl.js';
 
 const router = Router();
+
+// The ladder moves only when the rating engine refits, which is once a day, so
+// this is the most cacheable thing the API serves - and the most expensive to
+// answer. See middleware/cacheControl.ts for the cadences.
+router.use(cacheRanking);
 
 // GET /api/rankings - a leaderboard page for one scope
 // scope = all | set:<id> | component:<id> | set:<id>#component:<id>

@@ -121,6 +121,20 @@ deploy_backend_lambda() {
         --zip-file fileb:///tmp/backend-lambda.zip \
         --region "$AWS_REGION" > /dev/null
 
+    # /api/* is cached at the edge now (see infrastructure/terraform/main.tf and
+    # backend/src/middleware/cacheControl.ts), for up to an hour on the ranking
+    # routes. That is the point when the data changes underneath; it is a trap
+    # when the *code* changes, because a deploy that alters a response shape
+    # would otherwise serve the old shape for an hour to readers whose browsers
+    # have moved on. Data staleness is a design choice, deploy staleness is a
+    # bug, so a backend deploy drops the API cache. Invalidations are free for
+    # the first 1,000 paths a month and this is one path.
+    echo "==> Invalidating CloudFront cache for /api/*..."
+    aws cloudfront create-invalidation \
+        --distribution-id "$CLOUDFRONT_DISTRIBUTION_ID" \
+        --paths "/api/*" \
+        --region "$AWS_REGION" > /dev/null
+
     # Cleanup
     rm -rf "$LAMBDA_DIR"
     rm /tmp/backend-lambda.zip

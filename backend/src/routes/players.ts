@@ -7,8 +7,13 @@ import {
   parseScope,
 } from '../models/ranking.js';
 import * as rankingService from '../services/rankingService.js';
+import { cacheRanking } from '../middleware/cacheControl.js';
 
 const router = Router();
+
+// Profiles, match logs and rating series all come out of the same refit, so
+// they keep the same freshness as the ladder itself.
+router.use(cacheRanking);
 
 /**
  * Player pages carry display names and taglines that Riot already publishes on

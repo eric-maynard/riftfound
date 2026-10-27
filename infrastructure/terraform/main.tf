@@ -315,6 +315,135 @@ resource "aws_cloudfront_function" "spa_router" {
   code    = file("${path.module}/spa_router.js")
 }
 
+# CloudFront caching for /api/*
+#
+# Every /api/* response used to be served with min/default/max TTL of 0, so the
+# edge was a pass-through: one Lambda invocation, one API Gateway request and a
+# full set of DynamoDB reads per visitor per request, even though the answers
+# are byte-identical for everyone. The rankings endpoints are the worst fit for
+# that — the rating engine only refits every RANKING_REFIT_INTERVAL_HOURS
+# (24h), so an hour of edge cache costs nothing in freshness and collapses a
+# traffic spike to a handful of origin hits.
+#
+# **The TTLs are not here.** They are `s-maxage` on the responses themselves
+# (backend/src/middleware/cacheControl.ts), because the code that knows how
+# often a thing changes is the code that serves it: the ranking routes follow
+# the refit cadence, the event list follows the hourly scraper, /visit must
+# never be cached at all. These policies exist to let those headers through —
+# `default_ttl = 0` means a response that forgets to say anything is not
+# cached, which is the safe direction to fail.
+resource "aws_cloudfront_origin_request_policy" "api" {
+  name    = "riftfound-api-origin-${var.environment}"
+  comment = "Forward the whole query string and the CORS trio to the API; no cookies"
+
+  # The cache *key* is deliberately narrower than this (see below), and
+  # anything left out of a cache key is also left out of the origin request
+  # unless an origin request policy puts it back. Without this the API would
+  # stop seeing query parameters it was never caching on.
+  query_strings_config {
+    query_string_behavior = "all"
+  }
+
+  headers_config {
+    header_behavior = "whitelist"
+    headers {
+      items = ["Origin", "Access-Control-Request-Headers", "Access-Control-Request-Method"]
+    }
+  }
+
+  # The API has no sessions and reads no cookies. Forwarding them would only
+  # risk a third-party cookie reaching the origin.
+  cookies_config {
+    cookie_behavior = "none"
+  }
+}
+
+# The general API cache key: every query parameter, nothing else.
+#
+# Keying on all of them is never *wrong* — a parameter that changes the answer
+# always changes the key — it only splits the cache when a caller adds a
+# parameter that does not matter. For the event list that is the right trade:
+# the query carries lat/lng/radiusKm/eventType/dates and the set grows, so a
+# whitelist here would eventually serve one filter's answer for another's.
+resource "aws_cloudfront_cache_policy" "api" {
+  name    = "riftfound-api-${var.environment}"
+  comment = "API responses, TTL from the origin's Cache-Control"
+
+  min_ttl     = 0
+  default_ttl = 0 # no Cache-Control from the origin => not cached
+  max_ttl     = 604800
+
+  parameters_in_cache_key_and_forwarded_to_origin {
+    # CloudFront gzips/brotlis at the edge for free and the API was sending
+    # none: the calendar's `calendarMode` payload measured 149,904 bytes on the
+    # wire with `Accept-Encoding: gzip` already on the request, because the
+    # /api/* behavior never set `compress`. JSON of that shape compresses about
+    # 8x.
+    enable_accept_encoding_gzip   = true
+    enable_accept_encoding_brotli = true
+
+    query_strings_config {
+      query_string_behavior = "all"
+    }
+
+    # `Access-Control-Allow-Origin` is `*` in Lambda mode (see app.ts), so the
+    # body does not vary by Origin and the header has no business in the key.
+    # OPTIONS is not in `cached_methods`, so preflights still reach the origin.
+    headers_config {
+      header_behavior = "none"
+    }
+
+    cookies_config {
+      cookie_behavior = "none"
+    }
+  }
+}
+
+# The ranking family's cache key: only the parameters those routes read.
+#
+# These endpoints are the expensive ones — /api/rankings alone costs ~66 read
+# units and four DynamoDB round trips — and their parameters are a short, fixed
+# list, so the key is worth narrowing: a crawler or a share link that appends
+# something of its own gets the cached answer instead of a refit-scale query.
+#
+# NOTE: a new query parameter on /api/rankings, /api/players/* or /api/sets
+# must be added here, or the edge will ignore it and serve another value's
+# answer. The list as of now, route by route:
+#   /api/rankings              scope, limit, cursor
+#   /api/players/search        q, limit
+#   /api/players/:id           -
+#   /api/players/:id/matches   limit, cursor, setId
+#   /api/players/:id/ratings   scope, limit
+#   /api/sets                  -
+resource "aws_cloudfront_cache_policy" "api_ranking" {
+  name    = "riftfound-api-ranking-${var.environment}"
+  comment = "Ranking/player/set responses, keyed on their own query parameters only"
+
+  min_ttl     = 0
+  default_ttl = 0
+  max_ttl     = 604800
+
+  parameters_in_cache_key_and_forwarded_to_origin {
+    enable_accept_encoding_gzip   = true
+    enable_accept_encoding_brotli = true
+
+    query_strings_config {
+      query_string_behavior = "whitelist"
+      query_strings {
+        items = ["scope", "limit", "cursor", "setId", "q"]
+      }
+    }
+
+    headers_config {
+      header_behavior = "none"
+    }
+
+    cookies_config {
+      cookie_behavior = "none"
+    }
+  }
+}
+
 # CloudFront Distribution
 resource "aws_cloudfront_distribution" "main" {
   enabled             = true
@@ -399,20 +528,40 @@ resource "aws_cloudfront_distribution" "main" {
     }
   }
 
+  # The ranking family, ahead of /api/* so the narrower cache key wins. These
+  # three patterns do not overlap each other, so their relative order is
+  # irrelevant; being *before* the catch-all is not.
+  dynamic "ordered_cache_behavior" {
+    for_each = ["/api/rankings*", "/api/players*", "/api/sets*"]
+    content {
+      path_pattern           = ordered_cache_behavior.value
+      allowed_methods        = ["GET", "HEAD", "OPTIONS"]
+      cached_methods         = ["GET", "HEAD"]
+      target_origin_id       = var.use_dynamodb || !var.use_ec2 ? "APIGateway" : "EC2-API"
+      viewer_protocol_policy = "redirect-to-https"
+      compress               = true
+
+      cache_policy_id          = aws_cloudfront_cache_policy.api_ranking.id
+      origin_request_policy_id = aws_cloudfront_origin_request_policy.api.id
+    }
+  }
+
+  # Everything else under /api/*. Still one behavior, because the thing that
+  # decides whether a response is cached is the response: /api/events answers
+  # with the scraper's cadence, /api/events/<id>/visit answers `no-store` and
+  # keeps its click in the access log. `default_ttl = 0` on the policy means a
+  # route that says nothing is not cached, so a new endpoint is safe by
+  # default and opts in by sending a header.
   ordered_cache_behavior {
     path_pattern           = "/api/*"
     allowed_methods        = ["DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"]
     cached_methods         = ["GET", "HEAD"]
     target_origin_id       = var.use_dynamodb || !var.use_ec2 ? "APIGateway" : "EC2-API"
     viewer_protocol_policy = "redirect-to-https"
-    min_ttl                = 0
-    default_ttl            = 0
-    max_ttl                = 0
-    forwarded_values {
-      query_string = true
-      headers      = ["Origin", "Access-Control-Request-Headers", "Access-Control-Request-Method"]
-      cookies { forward = "none" }
-    }
+    compress               = true
+
+    cache_policy_id          = aws_cloudfront_cache_policy.api.id
+    origin_request_policy_id = aws_cloudfront_origin_request_policy.api.id
   }
 
   # Optional extra cache behavior (see var.extra_origin_*)

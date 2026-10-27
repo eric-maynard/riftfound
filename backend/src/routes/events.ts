@@ -3,11 +3,19 @@ import { EventQuerySchema } from '../models/event.js';
 import * as eventService from '../services/eventService.js';
 import { geocodeCity, geocodeSuggestions, reverseGeocode } from '../services/geocodingService.js';
 import { geocodeLimiter } from '../middleware/rateLimit.js';
+import { cacheEventList, cacheGeocode, noStore } from '../middleware/cacheControl.js';
 
 const router = Router();
 
+/*
+ * Freshness is per route here rather than per router, because these four
+ * things change at four different rates: the event list follows the hourly
+ * scraper, a geocode is a geographic constant, and `/visit` is a redirect that
+ * should always be answered live. See middleware/cacheControl.ts.
+ */
+
 // GET /api/events - List events with filtering
-router.get('/', async (req: Request, res: Response, next: NextFunction) => {
+router.get('/', cacheEventList, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const queryResult = EventQuerySchema.safeParse(req.query);
 
@@ -36,7 +44,7 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
 });
 
 // GET /api/events/info - Get scrape info (last updated, total count)
-router.get('/info', async (_req: Request, res: Response, next: NextFunction) => {
+router.get('/info', cacheEventList, async (_req: Request, res: Response, next: NextFunction) => {
   try {
     const info = await eventService.getScrapeInfo();
     res.json({
@@ -51,7 +59,11 @@ router.get('/info', async (_req: Request, res: Response, next: NextFunction) => 
 });
 
 // GET /api/events/geocode - Geocode a city/location for filtering
-router.get('/geocode', geocodeLimiter, async (req: Request, res: Response, next: NextFunction) => {
+// `cacheGeocode` sits *after* `geocodeLimiter` on all three of these, and the
+// order is load-bearing: the limiter answers 429 itself, so a cache header set
+// ahead of it would be attached to that 429 and CloudFront would then serve one
+// throttled caller's rejection to everyone for a day.
+router.get('/geocode', geocodeLimiter, cacheGeocode, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const query = req.query.q as string;
 
@@ -80,7 +92,7 @@ router.get('/geocode', geocodeLimiter, async (req: Request, res: Response, next:
 });
 
 // GET /api/events/geocode/suggest - Autocomplete suggestions for location search
-router.get('/geocode/suggest', geocodeLimiter, async (req: Request, res: Response, next: NextFunction) => {
+router.get('/geocode/suggest', geocodeLimiter, cacheGeocode, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const query = req.query.q as string;
 
@@ -97,7 +109,7 @@ router.get('/geocode/suggest', geocodeLimiter, async (req: Request, res: Respons
 });
 
 // GET /api/events/geocode/reverse - Reverse geocode coordinates to location name
-router.get('/geocode/reverse', geocodeLimiter, async (req: Request, res: Response, next: NextFunction) => {
+router.get('/geocode/reverse', geocodeLimiter, cacheGeocode, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const lat = parseFloat(req.query.lat as string);
     const lon = parseFloat(req.query.lon as string);
@@ -127,7 +139,7 @@ router.get('/geocode/reverse', geocodeLimiter, async (req: Request, res: Respons
 });
 
 // GET /api/events/:id - Get single event
-router.get('/:id', async (req: Request, res: Response, next: NextFunction) => {
+router.get('/:id', cacheEventList, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const event = await eventService.getEventById(req.params.id);
 
@@ -145,7 +157,7 @@ router.get('/:id', async (req: Request, res: Response, next: NextFunction) => {
 const PLAYRIFTBOUND_EVENT_URL_PREFIX = 'https://playriftbound.com/en-us/events/';
 
 // GET /api/events/:id/visit - Track click and redirect to external event page
-router.get('/:id/visit', async (req: Request, res: Response, next: NextFunction) => {
+router.get('/:id/visit', noStore, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const event = await eventService.getEventById(req.params.id);
 

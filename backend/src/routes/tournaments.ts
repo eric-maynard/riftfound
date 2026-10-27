@@ -5,6 +5,7 @@ import {
   isValidEventExternalId,
 } from '../models/tournament.js';
 import * as tournamentService from '../services/tournamentService.js';
+import { cacheTournamentFacts } from '../middleware/cacheControl.js';
 
 /**
  * Tournament facts for one event: standings, pairings and roster, with each
@@ -28,6 +29,15 @@ router.use((_req: Request, res: Response, next: NextFunction) => {
   res.setHeader('X-Robots-Tag', 'noindex, nofollow');
   next();
 });
+
+/**
+ * Captures arrive with the hourly scraper, so a quarter of an hour at the edge
+ * keeps a finished event's standings appearing inside the hour they were
+ * recorded. The availability sweep is why this matters: the calendar asks about
+ * every visible event on every page load, and each 50-id request is a 100-key
+ * BatchGet whose answer is almost always the one it gave five minutes ago.
+ */
+router.use(cacheTournamentFacts);
 
 // GET /api/events/tournament-availability?ids=a,b,c
 // Which of these events have results and/or a roster. Registered before the

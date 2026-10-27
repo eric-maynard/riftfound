@@ -16,6 +16,7 @@ import {
   BatchWriteCommand,
   ScanCommand,
 } from '../config/dynamodb.js';
+import type { QueryCommandOutput } from '@aws-sdk/lib-dynamodb';
 import type { Event, EventQuery } from '../models/event.js';
 import geohash from 'ngeohash';
 
@@ -404,6 +405,69 @@ async function queryEventsByDateRange(startDate: string, endDate: string): Promi
   return events;
 }
 
+/**
+ * How many events sit in a date range, without reading them.
+ *
+ * `getScrapeInfo` wants a single integer and used to get it from
+ * `queryEventsByDateRange(...).length` - which materialised **every event row
+ * in the window** (~110k items, ~100MB) in Lambda memory to take `.length`.
+ * That was the most expensive endpoint in the API by a wide margin, and by
+ * 2026-10-27 it had stopped working altogether: 90s to a CloudFront 504,
+ * reproduced twice, because it blows through API Gateway's 29s integration
+ * limit. `Select: 'COUNT'` asks DynamoDB for the number instead, so the rows
+ * are never serialised, never transferred and never held.
+ *
+ * **It paginates, and the function it replaces does not.** A Query stops at
+ * 1MB whatever the `Select`, so a day busier than ~1MB of rows is truncated
+ * unless `LastEvaluatedKey` is followed. At current volume a single day
+ * already exceeds that, which means the old count was not merely expensive but
+ * silently low - and `queryEventsByDateRange` still has that bug on the
+ * calendar's non-location path (`getEventsDynamoDB`, two call sites). Fixing
+ * that one changes how many events the calendar returns, so it is left alone
+ * here and reported rather than quietly altered.
+ *
+ * Read capacity is unchanged - a COUNT still reads what it counts - so this is
+ * a latency and memory fix, not a cost one. The cost fix is the edge cache in
+ * front of the route.
+ */
+async function countEventsByDateRange(startDate: string, endDate: string): Promise<number> {
+  const client = getDynamoClient();
+  const tableName = getTableName();
+
+  const dates: string[] = [];
+  const current = new Date(startDate);
+  const end = new Date(endDate);
+  while (current <= end) {
+    dates.push(current.toISOString().split('T')[0]);
+    current.setDate(current.getDate() + 1);
+  }
+
+  let total = 0;
+  const batchSize = 10;
+  for (let i = 0; i < dates.length; i += batchSize) {
+    const counts = await Promise.all(dates.slice(i, i + batchSize).map(async (date) => {
+      let dayTotal = 0;
+      let startKey: Record<string, unknown> | undefined;
+      do {
+        const response: QueryCommandOutput = await client.send(new QueryCommand({
+          TableName: tableName,
+          IndexName: 'GSI1',
+          KeyConditionExpression: 'GSI1PK = :pk',
+          ExpressionAttributeValues: { ':pk': `DATE#${date}` },
+          Select: 'COUNT',
+          ExclusiveStartKey: startKey,
+        }));
+        dayTotal += response.Count ?? 0;
+        startKey = response.LastEvaluatedKey;
+      } while (startKey);
+      return dayTotal;
+    }));
+    total += counts.reduce((sum, n) => sum + n, 0);
+  }
+
+  return total;
+}
+
 // Main event query function for DynamoDB
 export async function getEventsDynamoDB(
   query: EventQuery,
@@ -550,14 +614,11 @@ export async function getScrapeInfoDynamoDB(): Promise<{ lastScrapeAt: Date | nu
     ? new Date(completedRun.completedAt)
     : null;
 
-  // Count events by querying the date range
-  // For better performance, we could maintain a counter item, but this works at our scale
   const now = new Date();
   const threeMonthsAgo = new Date(now);
   threeMonthsAgo.setMonth(threeMonthsAgo.getMonth() - 3);
 
-  const events = await queryEventsByDateRange(threeMonthsAgo.toISOString(), now.toISOString());
-  const totalEvents = events.length;
+  const totalEvents = await countEventsByDateRange(threeMonthsAgo.toISOString(), now.toISOString());
 
   return {
     lastScrapeAt: lastScrapeAt && !isNaN(lastScrapeAt.getTime()) ? lastScrapeAt : null,
