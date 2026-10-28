@@ -24,6 +24,18 @@
  *   recluster.ts --max-moves 40       # how many moved stores to list
  *   recluster.ts --json               # machine-readable, for an agent driving it
  *
+ *   recluster.ts --method geo                      # cluster the stores, not the graph
+ *   recluster.ts --method geo --max-diameter 30    # the bound on a scene's width
+ *   recluster.ts --method geo --min-intra-share 0.5  # the rankability gate
+ *   recluster.ts --method geo --show-scenes 25     # list the biggest proposals
+ *
+ * **Two methods, and neither replaces the other.** `louvain` is the better
+ * long-term definition of a scene and stays the default; see `scenes.ts`.
+ * `geo` clusters venue coordinates instead, because the co-play graph is not
+ * yet connected enough for Louvain to clear its own gate while venue
+ * coordinates are 100% complete today; see `geoScenes.ts`. Both write the same
+ * `SceneAssignment` through the same `--write` gate.
+ *
  * Nothing player-identifying is logged, exactly as in the passes: this prints
  * venue keys, scene ids and counts. A venue key is a shop id, not a person.
  */
@@ -38,17 +50,33 @@ import {
   DEFAULT_SCENE_RESOLUTION,
   type SceneAssignment,
   type SceneDiff,
+  type SceneMethod,
 } from './scenes.js';
+import {
+  geoVenues,
+  proposeGeoScenes,
+  DEFAULT_GEO_BUCKET_KM,
+  DEFAULT_GEO_MAX_DIAMETER_KM,
+  DEFAULT_MIN_INTRA_SHARE,
+  type GeoVenue,
+} from './geoScenes.js';
+import type { ObservationSet } from './observations.js';
 
 interface Args {
   write: boolean;
   show: boolean;
   rollback: boolean;
   json: boolean;
+  method: SceneMethod;
   resolution: number;
   carryJaccard: number;
   historyDays: number;
   maxMoves: number;
+  maxDiameterKm: number;
+  bucketKm: number;
+  minIntraShare: number;
+  showScenes: number;
+  keepUnrankable: boolean;
 }
 
 function parseArgs(argv: string[]): Args {
@@ -60,15 +88,36 @@ function parseArgs(argv: string[]): Args {
     if (index >= 0 && argv[index + 1] !== undefined) return Number(argv[index + 1]);
     return fallback;
   };
+  const text = (name: string, fallback: string): string => {
+    const inline = argv.find(arg => arg.startsWith(`--${name}=`));
+    if (inline) return inline.slice(name.length + 3);
+    const index = argv.indexOf(`--${name}`);
+    if (index >= 0 && argv[index + 1] !== undefined) return argv[index + 1];
+    return fallback;
+  };
+
+  const method = text('method', 'louvain');
+  if (method !== 'louvain' && method !== 'geo') {
+    throw new Error(`--method must be 'louvain' or 'geo', not '${method}'`);
+  }
+
   return {
     write: flag('write'),
     show: flag('show'),
     rollback: flag('rollback'),
     json: flag('json'),
+    method,
     resolution: value('resolution', Number(process.env.RANKING_SCENE_RESOLUTION ?? DEFAULT_SCENE_RESOLUTION)),
     carryJaccard: value('carry-jaccard', DEFAULT_CARRY_JACCARD),
     historyDays: value('days', Number(process.env.RANKING_HISTORY_DAYS ?? '400')),
     maxMoves: value('max-moves', 25),
+    // `--radius` is accepted as an alias because the bound was called a radius
+    // before the method settled on complete linkage, where it is a diameter.
+    maxDiameterKm: value('max-diameter', value('radius', DEFAULT_GEO_MAX_DIAMETER_KM)),
+    bucketKm: value('bucket-km', DEFAULT_GEO_BUCKET_KM),
+    minIntraShare: value('min-intra-share', DEFAULT_MIN_INTRA_SHARE),
+    showScenes: value('show-scenes', 0),
+    keepUnrankable: flag('keep-unrankable'),
   };
 }
 
@@ -91,22 +140,47 @@ function table(rows: Record<string, string | number>[]): string {
   ].join('\n');
 }
 
+/** An assignment with no `method` predates geographic mode, so it is Louvain. */
+function methodOf(assignment: SceneAssignment): SceneMethod {
+  return assignment.method ?? 'louvain';
+}
+
 function printAssignment(label: string, assignment: SceneAssignment | null): void {
   if (!assignment) {
     console.log(`${label}: none stored - no re-clustering has ever been accepted.`);
     return;
   }
-  console.log(`${label}: ${assignment.venues.length} venues in ${assignment.scenes.length} scenes`);
+  const method = methodOf(assignment);
   console.log(
-    `  made ${assignment.generatedAt}, resolution ${assignment.resolution}, ` +
+    `${label}: ${assignment.venues.length} venues in ${assignment.scenes.length} scenes (${method})`
+  );
+  console.log(
+    `  made ${assignment.generatedAt}, ` +
+      (method === 'geo'
+        ? `max diameter ${assignment.geo?.maxDiameterKm}km, ` +
+          `min intra-share ${assignment.geo?.minIntraShare}, `
+        : `resolution ${assignment.resolution}, `) +
       `carry-jaccard ${assignment.carryJaccard}`
   );
   const stats = assignment.stats;
   console.log(
     `  at clustering time: ${stats.players} players, ${stats.matches} matches, ` +
-      `modularity ${stats.modularity.toFixed(4)}, ${stats.communities} communities, ` +
+      (stats.modularity !== null ? `modularity ${stats.modularity.toFixed(4)}, ` : '') +
+      (stats.communities !== null ? `${stats.communities} communities, ` : '') +
       `median purity ${percent(stats.medianPurity)}, ${stats.splitVenues} split venues`
   );
+  const geo = stats.geo;
+  if (geo) {
+    console.log(
+      `  geometry: ${geo.clusters} clusters, extent median ${geo.medianExtentKm}km / ` +
+        `max ${geo.maxExtentKm}km; intra-scene play share (player-weighted median) ` +
+        `${percent(geo.medianIntraShare)}`
+    );
+    console.log(
+      `  not rankable: ${geo.unrankableScenes} clusters holding ${geo.unrankableVenues} venues ` +
+        `and ${geo.unrankablePlayers} players - published with no scene`
+    );
+  }
   console.log(`  rollback available: ${assignment.previous ? `yes (${assignment.previous.generatedAt})` : 'no'}`);
 }
 
@@ -121,24 +195,93 @@ function warnings(diff: SceneDiff, proposed: SceneAssignment, current: SceneAssi
   // co-play graph not yet being connected enough to have scenes, and a
   // complete region looked nothing like it (390 venues, 51 communities).
   const venuesPerScene = proposed.scenes.length > 0 ? proposed.venues.length / proposed.scenes.length : 0;
-  if (proposed.scenes.length > 0 && venuesPerScene < 3) {
+  const geo = proposed.stats.geo;
+
+  if (methodOf(proposed) === 'louvain') {
+    if (proposed.scenes.length > 0 && venuesPerScene < 3) {
+      notes.push(
+        `STOP: ${proposed.venues.length} venues in ${proposed.scenes.length} scenes is ` +
+          `${venuesPerScene.toFixed(1)} stores per scene. A scene pools several stores - that is what ` +
+          'makes it a scene rather than a venue - so this is a fragmented graph, almost always because ' +
+          'the results backfill has not filled in enough of the window yet. Very high modularity ' +
+          'alongside it is the same symptom, not reassurance. Wait for coverage; do not publish this.'
+      );
+    }
+  } else if (geo) {
+    // Geographic mode does **not** gate on stores per scene, and that is a
+    // deliberate replacement rather than a missing check. Stores per scene was
+    // a proxy the Louvain path used because a sparse co-play graph gave it no
+    // better signal; the thing it was proxying for - whether a scene's players
+    // actually play each other enough to be ranked - is measured directly
+    // here. A 30km diameter cap produces single-store scenes *by design*, so
+    // the old proxy would stop a good proposal for the wrong reason.
+    const share = geo.rankablePlayers + geo.unrankablePlayers;
+    const unplacedShare = share > 0 ? geo.unrankablePlayers / share : 0;
+    if (geo.medianIntraShare < 0.5) {
+      notes.push(
+        `STOP: the player-weighted median scene plays only ${percent(geo.medianIntraShare)} of its ` +
+          'matches against its own members. A scene exists so that the players in it can be ranked ' +
+          'against each other, and below about half its play being internal there is not enough ' +
+          'mutual evidence to order anybody - whatever the map says. Loosen the diameter cap or ' +
+          'wait for coverage; do not publish this.'
+      );
+    } else if (geo.medianIntraShare < 0.65) {
+      notes.push(
+        `CAUTION: median intra-scene play share ${percent(geo.medianIntraShare)}. Workable, but read ` +
+          'the per-scene list before accepting: a scene near the gate is one travelling cohort away ' +
+          'from failing it.'
+      );
+    }
+    if (unplacedShare > 0.5) {
+      notes.push(
+        `CAUTION: ${geo.unrankableScenes} clusters failed the play-share gate, holding ` +
+          `${geo.unrankablePlayers} of ${share} players (${percent(unplacedShare)}). Those venues are ` +
+          'published with **no scene**, which is honest and is the intended behaviour - but if most ' +
+          'players land there, the bound is cutting through real scenes rather than between them.'
+      );
+    }
+    if (geo.maxExtentKm > (proposed.geo?.maxDiameterKm ?? DEFAULT_GEO_MAX_DIAMETER_KM) + 0.5) {
+      notes.push(
+        `STOP: a scene is ${geo.maxExtentKm}km across against a cap of ${proposed.geo?.maxDiameterKm}km. ` +
+          'Complete linkage cannot produce that, so this is a bug in the clustering rather than a ' +
+          'judgement call about the data.'
+      );
+    }
+  }
+
+  if (current !== null && methodOf(current) !== methodOf(proposed)) {
     notes.push(
-      `STOP: ${proposed.venues.length} venues in ${proposed.scenes.length} scenes is ` +
-        `${venuesPerScene.toFixed(1)} stores per scene. A scene pools several stores - that is what ` +
-        'makes it a scene rather than a venue - so this is a fragmented graph, almost always because ' +
-        'the results backfill has not filled in enough of the window yet. Very high modularity ' +
-        'alongside it is the same symptom, not reassurance. Wait for coverage; do not publish this.'
+      `NOTE: method changed ${methodOf(current)} -> ${methodOf(proposed)}. The two cluster different ` +
+        'things, so near-total churn and almost no carried ids are expected and are not a signal ' +
+        'about the data. Read the moved list as a comparison of the two methods, not as drift.'
     );
   }
 
   if (current === null) {
-    notes.push(
-      notes.length > 0
-        ? 'FIRST RUN: nothing to diff against, so the churn and id-carry gates do not apply - ' +
-            'which is exactly why the gates above are the ones that have to hold.'
-        : 'FIRST RUN: nothing to diff against, so every scene is new by definition. Check ' +
-            'modularity, purity and stores-per-scene before accepting.'
-    );
+    if (notes.length > 0) {
+      notes.push(
+        'FIRST RUN: nothing to diff against, so the churn and id-carry gates do not apply - ' +
+          'which is exactly why the gates above are the ones that have to hold.'
+      );
+    } else if (methodOf(proposed) === 'geo') {
+      // Deliberately different advice from the Louvain branch. Modularity does
+      // not exist here, and stores-per-scene is *expected* to be low: a 30km
+      // diameter cap produces single-store scenes by design, so reading it as
+      // fragmentation would reject a good proposal for the wrong reason.
+      notes.push(
+        'FIRST RUN: nothing to diff against, so every scene is new by definition. Read the extent ' +
+          'column (a scene wider than a metro is the defect this method exists to prevent), the ' +
+          'intra-share column (the share of a scene\'s play that is against its own members - the ' +
+          'reason to pool stores at all), and the not-rankable counts above. Do **not** read ' +
+          'stores-per-scene as fragmentation here: a diameter cap produces small scenes on purpose, ' +
+          'and the play-share gate is what replaces that proxy.'
+      );
+    } else {
+      notes.push(
+        'FIRST RUN: nothing to diff against, so every scene is new by definition. Check ' +
+          'modularity, purity and stores-per-scene before accepting.'
+      );
+    }
     return notes;
   }
   if (diff.churn > 0.25) {
@@ -160,7 +303,7 @@ function warnings(diff: SceneDiff, proposed: SceneAssignment, current: SceneAssi
         'redrawn and every saved link or bookmark to a scene would break.'
     );
   }
-  if (proposed.stats.modularity < 0.3) {
+  if (proposed.stats.modularity !== null && proposed.stats.modularity < 0.3) {
     notes.push(
       `STOP: modularity ${proposed.stats.modularity.toFixed(4)} is below the ~0.3 the literature ` +
         'treats as real community structure. There is no scene structure in this graph to publish; ' +
@@ -174,7 +317,11 @@ function warnings(diff: SceneDiff, proposed: SceneAssignment, current: SceneAssi
         'on a complete region. "A store belongs to one scene" is only honest while this is high.'
     );
   }
-  if (proposed.resolution !== (current?.resolution ?? proposed.resolution)) {
+  if (
+    proposed.resolution !== null &&
+    current?.resolution !== null &&
+    proposed.resolution !== (current?.resolution ?? proposed.resolution)
+  ) {
     notes.push(
       `NOTE: resolution changed ${current?.resolution} -> ${proposed.resolution}. gamma = 1 is the ` +
         'measured stability optimum (12.1% churn, vs 19.7% at 0.5 and 21.8% at 2), so churn from a ' +
@@ -183,6 +330,60 @@ function warnings(diff: SceneDiff, proposed: SceneAssignment, current: SceneAssi
   }
   if (notes.length === 0) notes.push('OK: churn, id carry-over, modularity and purity are all in range.');
   return notes;
+}
+
+/**
+ * The biggest proposed scenes, as a table a human can judge the naming on.
+ *
+ * `cities` is the point of it: a scene's published label is one name, and the
+ * only way to tell whether that name is right is to see which towns the scene
+ * actually spans. The busiest store's shop id is printed because that is the
+ * key a curated override is written against (`sceneNames.ts`), so a reader who
+ * disagrees with a name has the one number they need to fix it.
+ */
+function sceneRows(
+  proposed: SceneAssignment,
+  observations: ObservationSet,
+  venueLabels: Map<string, string>,
+  limit: number
+): Record<string, string | number>[] {
+  const venues = geoVenues(observations, venueLabels);
+  const byKey = new Map(venues.map(venue => [venue.venue, venue]));
+  const members = new Map<string, GeoVenue[]>();
+  for (const row of proposed.venues) {
+    const venue = byKey.get(row.venue);
+    if (!venue) continue;
+    const list = members.get(row.sceneId);
+    if (list) list.push(venue);
+    else members.set(row.sceneId, [venue]);
+  }
+
+  const labelOf = new Map(proposed.scenes.map(scene => [scene.sceneId, scene]));
+  return [...members.entries()]
+    .map(([sceneId, list]) => {
+      const matches = list.reduce((total, venue) => total + venue.matches, 0);
+      const busiest = [...list].sort(
+        (a, b) => b.matches - a.matches || a.shopExternalId - b.shopExternalId
+      );
+      const cities = [
+        ...new Map(
+          busiest.filter(venue => venue.label).map(venue => [venue.label as string, true])
+        ).keys(),
+      ];
+      const scene = labelOf.get(sceneId);
+      return {
+        sceneId,
+        stores: list.length,
+        matches,
+        km: scene?.extentKm ?? '-',
+        intra: scene?.intraShare !== undefined ? percent(scene.intraShare) : '-',
+        busiestShop: busiest[0].shopExternalId,
+        label: scene?.label ?? '(unnamed)',
+        cities: cities.slice(0, 3).join(' / ') + (cities.length > 3 ? ` +${cities.length - 3}` : ''),
+      };
+    })
+    .sort((a, b) => b.matches - a.matches || (a.sceneId < b.sceneId ? -1 : 1))
+    .slice(0, limit);
 }
 
 async function main(): Promise<void> {
@@ -239,12 +440,23 @@ async function main(): Promise<void> {
   }
 
   const venueLabels = await resolveVenueLabels(observations);
-  const proposed = proposeScenes(observations, {
-    resolution: args.resolution,
-    carryJaccard: args.carryJaccard,
-    venueLabels,
-    previous: current,
-  });
+  const proposed =
+    args.method === 'geo'
+      ? proposeGeoScenes(observations, {
+          maxDiameterKm: args.maxDiameterKm,
+          bucketKm: args.bucketKm,
+          minIntraShare: args.minIntraShare,
+          carryJaccard: args.carryJaccard,
+          venueLabels,
+          previous: current,
+          keepUnrankable: args.keepUnrankable,
+        })
+      : proposeScenes(observations, {
+          resolution: args.resolution,
+          carryJaccard: args.carryJaccard,
+          venueLabels,
+          previous: current,
+        });
   const diff = diffSceneAssignments(current, proposed);
   const notes = warnings(diff, proposed, current);
 
@@ -291,6 +503,14 @@ async function main(): Promise<void> {
         },
       ])
     );
+
+    if (args.showScenes > 0) {
+      console.log(`\n--- THE ${args.showScenes} BIGGEST PROPOSED SCENES ---\n`);
+      console.log(table(sceneRows(proposed, observations, venueLabels, args.showScenes)));
+      if (proposed.scenes.length > args.showScenes) {
+        console.log(`  ... and ${proposed.scenes.length - args.showScenes} more (--show-scenes to see them)`);
+      }
+    }
 
     if (diff.moved.length > 0) {
       console.log('\nStores that would change scene (highest purity first - those are the real changes of mind)');

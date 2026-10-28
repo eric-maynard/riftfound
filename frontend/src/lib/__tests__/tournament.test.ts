@@ -454,14 +454,31 @@ describe('roster', () => {
 // Which scene the event belongs to
 // ---------------------------------------------------------------------------
 
+/**
+ * The shape production actually produced, which is why these tests exist.
+ *
+ * The component really is `ce3da9bead6`: 1,688 players over 110 venues with a
+ * 1,514km spread, labelled `New York, New York`, with all five of its busiest
+ * stores in California. The event is at a store on the San Francisco
+ * Peninsula. So the component fields and the scene fields disagree here on
+ * purpose - a line that reads the wrong one is visibly wrong, and that is the
+ * bug this fixture reproduces.
+ */
 function scene(overrides: Partial<TournamentScene> = {}): TournamentScene {
   return {
     status: 'scene',
+    shopExternalId: 1826,
+    sceneId: 's4f1c2a0b19',
+    sceneLabel: 'Peninsula',
+    scenePurity: 0.85,
+    sceneVenues: 3,
+    scenePlayers: 49,
+    sceneRatedPlayers: 4,
     matchPlayers: 14,
     placedPlayers: 14,
     componentCount: 1,
     componentId: 'ce3da9bead6',
-    regionLabel: 'Simi Valley, CA',
+    regionLabel: 'New York, New York',
     componentSize: 1688,
     ratedPlayers: 6,
     comparable: true,
@@ -486,52 +503,79 @@ function asPending(line: SceneLine) {
 }
 
 describe('the scene line', () => {
-  it('names the scene and sizes it by the scene, not by the event', () => {
+  it('names the venue scene, never the component', () => {
     const line = asScene(sceneLine(scene(), 8));
-    // The id travels on the line, so the page builds both links from it
-    // without asserting that a nullable field is not null.
-    expect(line.componentId).toBe('ce3da9bead6');
-    expect(line.name).toBe('Simi Valley, CA');
-    // 1,688 is the whole scene; 14 is this event. The summary must be the
-    // former, or the line is only the field size under a new name.
-    expect(line.summary).toBe('1,688 players · 6 rated');
+    // The regression. The component is labelled `New York, New York` and this
+    // event is on the San Francisco Peninsula; naming it off the component is
+    // exactly the bug a reader reported, so the name must come off the store.
+    expect(line.name).toBe('Peninsula');
+    expect(line.name).not.toContain('New York');
+  });
+
+  it('sizes the line by the scene, not by the component or the event', () => {
+    const line = asScene(sceneLine(scene(), 8));
+    // 49 is the scene, 1,688 the component, 14 this event's field. Printing
+    // the component's size beside the scene's name would overstate the scene
+    // by a factor of 34 - the same error as the name, in numbers.
+    expect(line.summary).toBe('49 players · 4 rated · 3 stores');
+    expect(line.summary).not.toContain('1,688');
     expect(line.partial).toBe(false);
   });
 
-  it('says what the claim rests on, in the hint rather than inline', () => {
+  it('links the ladder at the component, and says that is what it is', () => {
     const line = asScene(sceneLine(scene(), 8));
-    expect(line.hint).toContain('14 of the 14 players who played here');
-    // The reason an event *has* a scene at all, which is the only thing that
-    // makes this line a fact rather than a guess.
-    expect(line.hint).toContain('chain of recorded games');
+    // A ladder is only meaningful over one rating scale, and a component is
+    // what defines one, so the link stays component-scoped. The hint has to
+    // carry that, or the link silently asserts the scene and the pool are the
+    // same set of people.
+    expect(line.componentId).toBe('ce3da9bead6');
+    expect(line.hint).toContain('This store belongs to this scene');
+    expect(line.hint).toContain('wider pool of 1,688 players');
   });
 
   it('prints zero rated rather than omitting it', () => {
     // The common case at this coverage: a real scene with nobody over the bar.
-    expect(asScene(sceneLine(scene({ ratedPlayers: 0 }), 8)).summary).toBe(
-      '1,688 players · 0 rated'
+    expect(asScene(sceneLine(scene({ sceneRatedPlayers: 0 }), 8)).summary).toBe(
+      '49 players · 0 rated · 3 stores'
     );
   });
 
-  it('falls back to the id, never to a home city', () => {
-    // A scene whose stores are not geocoded has no name. The ladder's own
-    // picker shows the id in that state; inventing one from a member's
-    // regionLabel would name the same scene differently on every event page.
-    expect(asScene(sceneLine(scene({ regionLabel: null }), 8)).name).toBe('Scene ce3da9bead6');
-    expect(asScene(sceneLine(scene({ regionLabel: '   ' }), 8)).name).toBe('Scene ce3da9bead6');
+  it('falls back to the scene id, never to a home city or a component label', () => {
+    // A scene whose stores are not reverse-geocoded has no name. The ladder's
+    // own picker shows an id in that state; borrowing the component's label
+    // would reintroduce the bug this line was changed to fix.
+    expect(asScene(sceneLine(scene({ sceneLabel: null }), 8)).name).toBe('Scene s4f1c2a0b19');
+    expect(asScene(sceneLine(scene({ sceneLabel: '   ' }), 8)).name).toBe('Scene s4f1c2a0b19');
   });
 
-  it('flags a split event instead of asserting one scene', () => {
+  it('still flags a split rating pool instead of asserting one', () => {
     // An event's pairings connect the players they pair, not all of them, and
     // the engine places a player from the history it last replayed - so this
-    // state is reachable and must not read as unanimous.
+    // state is reachable and must not read as unanimous. Note it is a fact
+    // about the *pools*, not about the scene, which cannot be split.
     const line = asScene(sceneLine(scene({ componentCount: 2, playersInScene: 11 }), 8));
     expect(line.partial).toBe(true);
-    expect(line.hint).toContain('11 of the 14 players');
-    expect(line.hint).toContain('1 other scene');
+    expect(line.hint).toContain('2 different rating pools');
   });
 
-  it('carries the scene-size caveat in the ladder own words', () => {
+  it('names the scene even when nobody who played here is placed', () => {
+    // The whole point of reading the venue: the store's scene does not depend
+    // on the ladder having replayed anybody. The name is printed and the link
+    // is withheld, because there is no pool to link at.
+    const line = asScene(
+      sceneLine(
+        scene({ placedPlayers: 0, componentCount: 0, componentId: null, componentSize: null }),
+        8
+      )
+    );
+    expect(line.name).toBe('Peninsula');
+    expect(line.componentId).toBeNull();
+    expect(line.hint).toContain('has not placed anybody who played here');
+    // And no size caveat: there is no pool for one to be about.
+    expect(line.hint).not.toContain('too small to order');
+  });
+
+  it('carries the pool-size caveat in the ladder own words', () => {
     // Verbatim `sceneTooSmallExplanation`, the sentence the ladder this line
     // links to already uses for the same fact - not a second wording of it.
     const line = asScene(sceneLine(scene({ componentSize: 4, comparable: false }), 8));
@@ -541,7 +585,7 @@ describe('the scene line', () => {
     expect(line.hint).toContain('The rating itself stands');
   });
 
-  it('adds no size caveat to a scene big enough to order', () => {
+  it('adds no size caveat to a pool big enough to order', () => {
     expect(asScene(sceneLine(scene(), 8)).hint).not.toContain('too small to order');
   });
 
@@ -556,41 +600,48 @@ describe('the scene line', () => {
         placedPlayers: 0,
         componentCount: 0,
         componentId: null,
+        sceneId: null,
+        sceneLabel: null,
       }),
       8
     );
     expect(line.kind).toBe('none');
   });
 
-  it('tells no scene apart from not placed yet', () => {
-    // Games were played; the ladder has not replayed them. Only the second
-    // claim is true, and it is worth one line rather than silence.
-    const line = asPending(
-      sceneLine(
-        scene({ status: 'unplaced', placedPlayers: 0, componentCount: 0, componentId: null }),
-        8
-      )
+  it('says nothing when the event has no resolved store', () => {
+    // A Riot organiser that never matched a shop row has no venue item, so
+    // there is nothing to carry a scene. A line about a store the event does
+    // not name would have nothing to attach to.
+    const line = sceneLine(
+      scene({ status: 'no-venue', shopExternalId: null, sceneId: null, sceneLabel: null }),
+      8
     );
-    expect(line.hint).toContain('has not placed any of the 14 players');
-    expect(line.hint).toContain('refit');
-    // And no name at all: the union has none to read on this branch, which is
-    // what stops a page printing an empty one.
+    expect(line.kind).toBe('none');
+  });
+
+  it('tells no scene apart from a store not in a rankable scene yet', () => {
+    // The common state today: the store is known, and the engine has not
+    // grouped it with neighbours it plays often enough to rank against. Only
+    // the second claim is true, and it is worth one line rather than silence.
+    const line = asPending(
+      sceneLine(scene({ status: 'unassigned', sceneId: null, sceneLabel: null }), 8)
+    );
+    expect(line.hint).toContain('not in a rankable scene yet');
+    // It says why, rather than promising it will change: a scene is only drawn
+    // where there is enough play between the stores to rank anybody.
+    expect(line.hint).toContain('actually play each other');
+    // And it does not tell the reader their games were wasted.
+    expect(line.hint).toContain('still count');
+    // No name at all: the union has none to read on this branch, which is what
+    // stops a page printing an empty one.
     expect('name' in line).toBe(false);
   });
 
-  it('reads a lone player as singular', () => {
-    const line = asPending(
-      sceneLine(
-        scene({
-          status: 'unplaced',
-          matchPlayers: 1,
-          placedPlayers: 0,
-          componentCount: 0,
-          componentId: null,
-        }),
-        8
-      )
-    );
-    expect(line.hint).toContain('has not placed the player');
+  it('treats a missing scene id as unassigned whatever the status says', () => {
+    // Belt and braces across a deploy skew: an older API that still sends
+    // `scene` with no scene fields must not produce a line reading
+    // `Scene null`.
+    const line = sceneLine(scene({ sceneId: null, sceneLabel: null }), 8);
+    expect(line.kind).toBe('pending');
   });
 });

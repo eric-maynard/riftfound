@@ -19,11 +19,25 @@
 #   ./scene-recluster.sh --remote --rollback --write   # restore the assignment this one replaced
 #
 #   --remote              Read (and with --write, write) production DynamoDB
+#   --method M            'louvain' (default) or 'geo' - see below
 #   --resolution N        Louvain resolution (default: 1, the measured stability optimum)
 #   --carry-jaccard N     Minimum venue-set overlap to keep a scene's id (default: 0.5)
 #   --days N              History window to replay (default: 400)
 #   --max-moves N         How many moved stores to list (default: 25)
+#   --show-scenes N       List the N biggest proposed scenes, for judging the names
 #   --json                Machine-readable output, for an agent driving this
+#
+# Geographic mode (--method geo) clusters venue COORDINATES instead of the
+# co-play graph, by complete linkage under a diameter cap. It exists because
+# Louvain needs cross-venue edges the results backfill has not captured yet,
+# while venue coordinates are 100% complete today. It is not a replacement:
+# Louvain stays the better definition and the default. See
+# scraper/src/ranking/geoScenes.ts.
+#
+#   --max-diameter N      Cap on a scene's width, km (default: 30, measured)
+#   --bucket-km N         Loose bucketing radius; a performance knob (default: 70)
+#   --min-intra-share N   Minimum share of a scene's play that is internal (default: 0.5)
+#   --keep-unrankable     Keep scenes that fail that gate, to inspect them
 #
 # What to look at before accepting, what a bad result looks like, and how to roll
 # back are all in the runbook: scripts/metrics/README.md, "Re-clustering scenes".
@@ -51,16 +65,20 @@ while [[ $# -gt 0 ]]; do
             PASSTHROUGH+=("$1")
             shift
             ;;
-        --resolution|--carry-jaccard|--days|--max-moves)
+        --keep-unrankable)
+            PASSTHROUGH+=("$1")
+            shift
+            ;;
+        --method|--resolution|--carry-jaccard|--days|--max-moves|--show-scenes|--max-diameter|--radius|--bucket-km|--min-intra-share)
             PASSTHROUGH+=("$1=$2")
             shift 2
             ;;
-        --resolution=*|--carry-jaccard=*|--days=*|--max-moves=*)
+        --method=*|--resolution=*|--carry-jaccard=*|--days=*|--max-moves=*|--show-scenes=*|--max-diameter=*|--radius=*|--bucket-km=*|--min-intra-share=*)
             PASSTHROUGH+=("$1")
             shift
             ;;
         -h|--help)
-            sed -n '2,29p' "${BASH_SOURCE[0]}"
+            sed -n '2,42p' "${BASH_SOURCE[0]}"
             exit 0
             ;;
         *)

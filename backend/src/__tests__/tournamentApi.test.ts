@@ -630,34 +630,74 @@ describe('GET /api/events/tournament-availability', () => {
  * and upcoming blocks above.
  */
 describe('the scene an event belongs to', () => {
-  it('reads the scene off the players who played, not off the field', async () => {
+  it('reads the scene off the event venue, not off the players', async () => {
     const detail = await getTournament(PLAYED);
-    // Seven in the field; six of them the engine has placed, and the seventh
-    // (`u-fieldguest-1`) it has never seen - which is most of a real field.
-    expect(detail?.scene).toEqual({
-      status: 'scene',
+    // 48812 was played at shop 1041 (Berkeley), which the engine assigned to
+    // the `sf-berkeley` scene. That is a lookup on the *store*, so it holds
+    // whoever turned up and whether or not the ladder has replayed them.
+    expect(detail?.scene.status).toBe('scene');
+    expect(detail?.scene.shopExternalId).toBe(1041);
+    expect(detail?.scene.sceneId).toBe('sf-berkeley');
+    expect(detail?.scene.sceneLabel).toBe('San Francisco & Berkeley');
+
+    // The component fields are untouched and still mean a component: seven in
+    // the field, six of them placed, the seventh (`u-fieldguest-1`) never seen
+    // by the engine - which is most of a real field.
+    expect(detail?.scene).toMatchObject({
       matchPlayers: 7,
       placedPlayers: 6,
       componentCount: 1,
       componentId: 'c-bay',
-      regionLabel: 'San Francisco Bay Area',
       componentSize: 23,
-      ratedPlayers: 6,
       comparable: true,
       playersInScene: 6,
     });
   });
 
-  it('names the scene from the component, never from a player', async () => {
+  it('does not let the component decide the scene or its size', async () => {
+    // The bug this replaced. A component is a transitive closure over
+    // co-play, so one travelling player merges two cities permanently: on
+    // production, `ce3da9bead6` spanned 1,514km, was labelled `New York, New
+    // York`, and had all five of its busiest stores in California - so a
+    // Redwood City shop read "Scene: New York, New York".
+    //
+    // In the fixture the Bay component spans three stores in **two** scenes,
+    // so the two answers are different numbers and a regression is visible:
+    // the scene's size must be the scene's, never the component's.
+    const detail = await getTournament(PLAYED);
+    const scene = await fixtureRankingStore.getScene!('sf-berkeley');
+    const component = await fixtureRankingStore.getComponent!('c-bay');
+
+    expect(detail?.scene.sceneVenues).toBe(scene?.venueCount);
+    expect(detail?.scene.scenePlayers).toBe(scene?.playerCount);
+    expect(detail?.scene.sceneRatedPlayers).toBe(scene?.ratedCount);
+    // The component is strictly bigger, and is reported separately rather than
+    // standing in for the scene.
+    expect(detail?.scene.componentSize).toBe(component?.componentSize);
+    expect(detail!.scene.scenePlayers!).toBeLessThan(detail!.scene.componentSize!);
+  });
+
+  it('names the scene from the scene, never from a player or a component', async () => {
     const detail = await getTournament(PLAYED);
     // `PlayerRecord.regionLabel` is the *player's* home region and differs
     // between members of one scene - measured on the live board, one
-    // 5,405-player component holds players labelled across four regions. The
-    // label has to come off the component's own catalogue item, or the same
-    // scene gets a different name on every event page and a different name
-    // again on the ladder this links to.
-    const catalogue = await fixtureRankingStore.getComponent!('c-bay');
-    expect(detail?.scene.regionLabel).toBe(catalogue?.regionLabel);
+    // 5,405-player component holds players labelled across four regions. And
+    // the component's own label spans several scenes. So the name has to come
+    // off the scene's own item, or one scene gets a different name on every
+    // event page.
+    const scene = await fixtureRankingStore.getScene!('sf-berkeley');
+    expect(detail?.scene.sceneLabel).toBe(scene?.label);
+    expect(detail?.scene.sceneLabel).not.toBe(detail?.scene.regionLabel);
+  });
+
+  it('two events at two stores in one scene agree on its name', async () => {
+    // 48812 is in Berkeley and 48540 in San Francisco, 17km apart and in the
+    // same scene. One scene must not be named twice.
+    const berkeley = await getTournament(PLAYED);
+    const sanFrancisco = await getTournament(TRIMMED);
+    expect(berkeley?.scene.shopExternalId).not.toBe(sanFrancisco?.scene.shopExternalId);
+    expect(sanFrancisco?.scene.sceneId).toBe(berkeley?.scene.sceneId);
+    expect(sanFrancisco?.scene.sceneLabel).toBe(berkeley?.scene.sceneLabel);
   });
 
   it('claims no scene for an event with no recorded matches', async () => {
@@ -691,21 +731,77 @@ describe('the scene an event belongs to', () => {
     expect(detail?.scene.matchPlayers).toBeGreaterThan(0);
   });
 
-  it('reports players it cannot place rather than inventing a scene', async () => {
+  it('still knows the scene when the ladder has placed nobody', async () => {
     // The engine refits daily and places a player from the history it last
     // replayed, so a capture newer than the last refit has pairings full of
-    // players with no component. That is "the ladder has not caught up", not
-    // "this event has no scene", and the two have to be tellable apart.
+    // players with no component. Under the old derivation that meant **no
+    // scene at all**; the venue's scene does not depend on the replay, so the
+    // event is still placed and only the rating pool is unknown.
     setRankingStore(createFixtureRankingStore({ players: [], matches: {}, boards: {}, ratings: {} }));
     try {
       const detail = await getTournament(PLAYED);
       expect(detail?.scene).toMatchObject({
-        status: 'unplaced',
+        status: 'scene',
+        sceneId: 'sf-berkeley',
         matchPlayers: 7,
         placedPlayers: 0,
         componentCount: 0,
         componentId: null,
       });
+    } finally {
+      setRankingStore(fixtureRankingStore);
+    }
+  });
+
+  it('says a store is not in a scene yet rather than inventing one', async () => {
+    // The normal state until an operator accepts a re-clustering: every
+    // venue's `sceneId` is null, and a store whose neighbours do not play it
+    // often enough to rank against keeps it null afterwards. "Not in a
+    // rankable scene yet" is a real answer; borrowing the component's scene
+    // would be the bug all over again.
+    setRankingStore({ ...fixtureRankingStore, getVenue: async () => null });
+    try {
+      const detail = await getTournament(PLAYED);
+      expect(detail?.scene).toMatchObject({
+        status: 'unassigned',
+        shopExternalId: 1041,
+        sceneId: null,
+        sceneLabel: null,
+        // The component is still reported: it is what says whether these
+        // ratings are comparable, and that question is unaffected.
+        componentId: 'c-bay',
+      });
+    } finally {
+      setRankingStore(fixtureRankingStore);
+    }
+  });
+
+  it('survives a store with no venue reader at all', async () => {
+    // `getVenue` is optional on the store, like `getComponent`, so a deploy
+    // that predates it must report "no scene known for this store" rather
+    // than a 500 - and must not read `no-venue`, which would claim the event
+    // has no store when it names one.
+    setRankingStore({ ...fixtureRankingStore, getVenue: undefined });
+    try {
+      const detail = await getTournament(PLAYED);
+      expect(detail?.scene.status).toBe('unassigned');
+      expect(detail?.scene.shopExternalId).toBe(1041);
+    } finally {
+      setRankingStore(fixtureRankingStore);
+    }
+  });
+
+  it('reports a scene with no size when the scene directory is absent', async () => {
+    // `getScene` is optional on the same terms. The name still arrives,
+    // because the engine denormalises it onto the venue - the same fallback
+    // `componentSize` gets from the player profiles.
+    setRankingStore({ ...fixtureRankingStore, getScene: undefined });
+    try {
+      const detail = await getTournament(PLAYED);
+      expect(detail?.scene.sceneId).toBe('sf-berkeley');
+      expect(detail?.scene.sceneLabel).toBe('San Francisco & Berkeley');
+      expect(detail?.scene.scenePlayers).toBeNull();
+      expect(detail?.scene.sceneVenues).toBeNull();
     } finally {
       setRankingStore(fixtureRankingStore);
     }

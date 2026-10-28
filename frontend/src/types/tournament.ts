@@ -215,55 +215,91 @@ export interface TournamentField {
 }
 
 /**
- * Why this event has a scene, or why it has not. None is an error.
+ * Why this event has a scene, or why it has not. None of them is an error.
  *
- * - `scene` - someone who played a recorded pairing here is placed in a scene.
+ * - `scene` - the store this event was held at belongs to a scene.
  * - `no-matches` - nothing was paired here: an upcoming event, an event with
  *   no capture, or the ~29% of finished ones whose organiser never ran
  *   pairings through Riot's software.
- * - `unplaced` - pairings exist and no player in them is placed yet. The
- *   engine refits daily, so this is the normal state of a fresh capture.
+ * - `no-venue` - games were played, and no store is resolved for the event, so
+ *   there is nothing to carry a scene.
+ * - `unassigned` - the store is known and is not in a scene **yet**. The
+ *   normal value rather than an edge case: no store has a scene until an
+ *   operator accepts a re-clustering, and a store whose neighbours do not play
+ *   it often enough to rank against stays without one afterwards.
  */
-export type TournamentSceneStatus = 'scene' | 'no-matches' | 'unplaced';
+export type TournamentSceneStatus = 'scene' | 'no-matches' | 'no-venue' | 'unassigned';
 
 /**
  * The scene this event belongs to.
  *
- * A scene is a connected component of the co-play graph, and an event's own
- * matches are edges in it, so the scene is **read off the players who played
- * here** rather than voted on - the API does the counting (see
- * `backend/src/models/tournament.ts`). Two fields carry the parts of that
- * which are not certain:
+ * ## It is the **venue's** scene
  *
- * - `matchPlayers` / `placedPlayers` - the roster is deliberately not counted.
- *   A player who signed up and never sat down contributed no edge, so this
- *   event says nothing about which scene they are in.
- * - `componentCount` - normally 1. It can be more, because an event's pairings
- *   connect the players they pair rather than all of them, and because the
- *   engine places a player from the history it last replayed. Verified against
- *   production: 7 played events across 2 scenes, 5 to 53 players each, all
- *   unanimous.
+ * A scene is a set of stores close enough together that their players really
+ * do play each other, and the engine assigns one to each *store*. An event has
+ * a store, so the API reads the answer off that store - one item, with no
+ * inference about who attended.
  *
- * `regionLabel` is the **component's own** name, not any player's: members of
- * one scene carry different home labels (one 5,405-player scene's players span
- * four of them), so naming the scene from whoever turned up would give it a
- * different name on every event page and a different name again on the ladder
- * this links to.
+ * It used to be derived by tallying the connected components of the players
+ * who played here, and that produced a wrong answer a reader could see.
+ * Reachability is a transitive closure, so one travelling player welds two
+ * cities into a single component permanently. Measured on production, one
+ * component held 1,688 players across 110 venues with a 1,514km spread,
+ * carried the label `New York, New York`, and its five busiest stores were all
+ * in California - which is why a shop in Redwood City, CA displayed
+ * "Scene: New York, New York" on its own event page.
+ *
+ * ## The component fields remain, and still mean a component
+ *
+ * They are not leftovers. `componentId` is the set of players whose ratings are
+ * on one scale, which is what a ladder position rests on, and `comparable` is a
+ * statement about that scale rather than about the scene. The ladder this page
+ * links to is still scoped to the component, so the two travel together and
+ * answer different questions.
  */
 export interface TournamentScene {
   status: TournamentSceneStatus;
+
+  /** The store this event was held at, or null when none is resolved. */
+  shopExternalId: number | null;
+  /** The store's scene, or null unless `status === 'scene'`. */
+  sceneId: string | null;
+  /**
+   * The **scene's own** name, never a player's home city: members of one scene
+   * carry different home labels, so naming it from whoever turned up would
+   * give one scene a different name on every event page.
+   */
+  sceneLabel: string | null;
+  /** How much of this store's own play is by players who live in its scene. */
+  scenePurity: number | null;
+  /** Stores in the whole scene, not at this event. */
+  sceneVenues: number | null;
+  /** Players whose home store is in the scene. Never this event's field. */
+  scenePlayers: number | null;
+  sceneRatedPlayers: number | null;
+
   /** Players who played at least one recorded pairing here. */
   matchPlayers: number;
-  /** Of those, how many the engine has placed in a scene. */
+  /**
+   * Of those, how many the engine has placed in a component. The roster is
+   * deliberately not counted: a player who signed up and never sat down
+   * contributed no edge.
+   */
   placedPlayers: number;
-  /** Distinct scenes among the placed players. 1 is the normal case. */
+  /**
+   * Distinct components among the placed players. Normally 1; more when an
+   * event's pairings did not connect everyone, or when the engine has not
+   * replayed this event yet.
+   */
   componentCount: number;
+  /** The dominant component - the rating pool, not the scene. */
   componentId: string | null;
+  /** The **component's** own label. Not what this page calls the scene. */
   regionLabel: string | null;
-  /** Players in the whole scene, not at this event. */
+  /** Players in the whole component. */
   componentSize: number | null;
   ratedPlayers: number | null;
-  /** The scene is big enough for its own ladder to be ordered. */
+  /** The component is big enough for its order to be a placement. */
   comparable: boolean;
   /** Of `placedPlayers`, how many are in `componentId`. */
   playersInScene: number;

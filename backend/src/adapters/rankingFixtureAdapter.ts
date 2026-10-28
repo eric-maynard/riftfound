@@ -7,7 +7,9 @@ import type {
   PlayerRecord,
   RankingStore,
   SceneCatalogueEntry,
+  SceneDirectoryEntry,
   SetRatingRecord,
+  VenueCatalogueEntry,
 } from './rankingStore.js';
 
 /**
@@ -154,12 +156,75 @@ const SEEDS: Seed[] = [
   { id: 'p-nori', name: 'Norinori', tag: 'NA1', rating: 1472, uncertainty: 266, matches: 2, component: SEA },
 ];
 
+/**
+ * The fixture's stores, and the scene each one belongs to.
+ *
+ * The scene fields are the point of this table, not decoration. The engine
+ * assigns a scene to a **venue** and the event page reads it from there, so a
+ * fixture that had no venue scenes could not exercise the path at all - and
+ * the arrangement here is chosen to make the three states the page has to
+ * render reachable:
+ *
+ * - **Two stores sharing a scene** (Berkeley and San Francisco, 17km apart,
+ *   inside the engine's 30km diameter cap).
+ * - **A store in a scene of its own** (Cupertino, 48km from San Francisco, so
+ *   a separate scene however connected its players are).
+ * - **A store with no scene at all** (Bellevue). Null is the *normal* value -
+ *   every venue carries it until an operator accepts a re-clustering, and a
+ *   store whose cluster fails the rankability gate keeps carrying it - so the
+ *   fixture has to hold one or the page's honest empty state is untested.
+ *
+ * Note what this makes true, because it is the whole argument for the change:
+ * the Bay component spans all three Bay venues, so its players sit in **two**
+ * scenes and one component. A scene read off the component would give the
+ * Cupertino store San Francisco's name.
+ */
 const VENUES = [
-  { shopId: '1041', lat: 37.8716, lng: -122.2727 },
-  { shopId: '1088', lat: 37.7749, lng: -122.4394 },
-  { shopId: '1132', lat: 37.3688, lng: -122.0363 },
-  { shopId: '2210', lat: 47.6101, lng: -122.2015 },
-];
+  {
+    shopId: '1041',
+    lat: 37.8716,
+    lng: -122.2727,
+    name: 'Berkeley, CA',
+    sceneId: 'sf-berkeley',
+    sceneLabel: 'San Francisco & Berkeley',
+    scenePurity: 0.94,
+  },
+  {
+    shopId: '1088',
+    lat: 37.7749,
+    lng: -122.4394,
+    name: 'San Francisco, CA',
+    sceneId: 'sf-berkeley',
+    sceneLabel: 'San Francisco & Berkeley',
+    scenePurity: 0.97,
+  },
+  {
+    shopId: '1132',
+    lat: 37.3688,
+    lng: -122.0363,
+    name: 'Cupertino, CA',
+    sceneId: 'south-bay',
+    sceneLabel: 'South Bay',
+    scenePurity: 1,
+  },
+  {
+    shopId: '2210',
+    lat: 47.6101,
+    lng: -122.2015,
+    name: 'Bellevue, WA',
+    sceneId: null,
+    sceneLabel: null,
+    scenePurity: null,
+  },
+] satisfies {
+  shopId: string;
+  lat: number;
+  lng: number;
+  name: string;
+  sceneId: string | null;
+  sceneLabel: string | null;
+  scenePurity: number | null;
+}[];
 
 interface FixtureEvent {
   externalId: string;
@@ -631,6 +696,108 @@ export function createFixtureRankingStore(data: FixtureData = LAUNCH_FIXTURE_DAT
     async getComponent(componentId: string): Promise<SceneCatalogueEntry | null> {
       const catalogue = await store.listSceneCatalogue!();
       return catalogue.find((entry) => entry.componentId === componentId) ?? null;
+    },
+
+    /**
+     * One store's item, including the scene it belongs to.
+     *
+     * The aggregates are tallied off the fixture's own match log rather than
+     * written down beside the store, for the same reason the whole dataset is
+     * generated from the log outwards: a count here that disagreed with the
+     * matches the API serves would be a fixture that cannot catch the bug it
+     * exists to catch.
+     */
+    async getVenue(shopExternalId: number): Promise<VenueCatalogueEntry | null> {
+      const venue = VENUES.find((row) => Number(row.shopId) === shopExternalId);
+      if (!venue) return null;
+
+      const players = new Set<string>();
+      const rated = new Set<string>();
+      const events = new Set<string>();
+      let halfMatches = 0;
+      for (const player of data.players) {
+        for (const match of data.matches[player.playerId] ?? []) {
+          if (match.shopId !== venue.shopId) continue;
+          halfMatches += 1;
+          players.add(player.playerId);
+          if (!resolveVerdict(player).provisional) rated.add(player.playerId);
+          if (match.eventExternalId !== null) events.add(match.eventExternalId);
+        }
+      }
+
+      return {
+        shopExternalId,
+        name: venue.name,
+        latitude: venue.lat,
+        longitude: venue.lng,
+        players: players.size,
+        ratedPlayers: rated.size,
+        // Halved for the reason `listSceneCatalogue` halves: each match sits
+        // in both players' logs, so the raw tally counts participations.
+        matches: Math.round(halfMatches / 2),
+        events: events.size,
+        sceneId: venue.sceneId,
+        sceneLabel: venue.sceneLabel,
+        scenePurity: venue.scenePurity,
+        generatedAt: FIXTURE_GENERATED_AT,
+      };
+    },
+
+    /**
+     * One scene's directory row, summed over the venues assigned to it.
+     *
+     * A player belongs to a scene through their **home** venue - the store
+     * they played the most matches at - so scenes partition the players rather
+     * than double-counting a visitor. That is the engine's own rule
+     * (`scraper/src/ranking/snapshot.ts`), and getting it wrong here would
+     * make the fixture's scene bigger than the fixture.
+     */
+    async getScene(sceneId: string): Promise<SceneDirectoryEntry | null> {
+      const shops = VENUES.filter((row) => row.sceneId === sceneId);
+      if (shops.length === 0) return null;
+      const shopIds = new Set(shops.map((row) => row.shopId));
+
+      let halfMatches = 0;
+      const players = new Set<string>();
+      const rated = new Set<string>();
+      for (const player of data.players) {
+        const matches = data.matches[player.playerId] ?? [];
+        const perShop = new Map<string, number>();
+        for (const match of matches) {
+          if (match.shopId === null) continue;
+          perShop.set(match.shopId, (perShop.get(match.shopId) ?? 0) + 1);
+          if (shopIds.has(match.shopId)) halfMatches += 1;
+        }
+        // Home venue: most matches, ties on the shop id, exactly as the engine
+        // breaks them, so the choice cannot depend on iteration order.
+        let home: string | null = null;
+        let best = -1;
+        for (const [shopId, count] of perShop) {
+          if (count > best || (count === best && home !== null && shopId < home)) {
+            home = shopId;
+            best = count;
+          }
+        }
+        if (home === null || !shopIds.has(home)) continue;
+        players.add(player.playerId);
+        if (!resolveVerdict(player).provisional) rated.add(player.playerId);
+      }
+
+      const purities = shops
+        .map((row) => row.scenePurity)
+        .filter((purity): purity is number => purity !== null)
+        .sort((a, b) => a - b);
+
+      return {
+        sceneId,
+        label: shops[0].sceneLabel,
+        venueCount: shops.length,
+        playerCount: players.size,
+        ratedCount: rated.size,
+        matchCount: Math.round(halfMatches / 2),
+        medianPurity: purities.length === 0 ? null : purities[purities.length >> 1],
+        assignedAt: FIXTURE_GENERATED_AT,
+      };
     },
 
     async listComponents() {

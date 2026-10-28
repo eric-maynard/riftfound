@@ -190,6 +190,30 @@ export function componentProfileKeys(componentId: string) {
   };
 }
 
+/**
+ * One store's own catalogue item, by shop id.
+ *
+ * The same cheap access pattern as `componentProfileKeys`, for the read that
+ * answers **"which scene is this event in"**. The engine assigns a scene to a
+ * *venue* rather than to a player (`scraper/src/ranking/scenes.ts`), and an
+ * event carries a `shopExternalId`, so the question is one GetItem on the
+ * store - not a tally over the components of whoever happened to attend.
+ */
+export function venueProfileKeys(shopExternalId: number) {
+  return {
+    PK: `${VENUE_CATALOGUE_PARTITION}#${shopExternalId}`,
+    SK: 'PROFILE',
+  };
+}
+
+/** One scene's own directory item, by id. Carries the scene's size. */
+export function sceneProfileKeys(sceneId: string) {
+  return {
+    PK: `${SCENE_CATALOGUE_PARTITION}#${sceneId}`,
+    SK: 'PROFILE',
+  };
+}
+
 // --- Tournament facts (written by the scraper's playriftboundResults pass) ---
 // RESULTS#<externalId> / RESULTS#<externalId>  - standings, pairings, per-game
 // ROSTER#<externalId>  / ROSTER#<externalId>   - dated registrations

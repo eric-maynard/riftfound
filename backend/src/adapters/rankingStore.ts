@@ -174,6 +174,82 @@ export interface RankingStore {
    * rather than take a page down. A null here is never an error.
    */
   getComponent?(componentId: string): Promise<SceneCatalogueEntry | null>;
+
+  /**
+   * One store's `VENUE#<shopExternalId>` item, or null when there is none.
+   *
+   * This is how an event page learns **which scene it is in**. The engine
+   * assigns a scene to a *venue* - see `scraper/src/ranking/scenes.ts`, "a
+   * scene belongs to the venue, not the player" - so a store carries the
+   * answer directly and an event carries a `shopExternalId`. One GetItem.
+   *
+   * It replaced inferring the scene from the components of the players who
+   * attended, which was wrong in a way a reader could see: a component is a
+   * connected component of the co-play graph, one travelling player welds two
+   * cities into one permanently, and the measured result was a 1,688-player
+   * component labelled `New York, New York` whose five busiest venues were all
+   * in California - so a shop in Redwood City read "Scene: New York, New
+   * York". The venue's own scene cannot do that.
+   *
+   * Optional and allowed to come back null, exactly like `getComponent`. Null
+   * is the **normal** value today: `VENUE#` items only exist once a refit has
+   * run with venue publishing deployed, and `sceneId` on one is null until an
+   * operator has accepted a re-clustering. Neither is an error and neither may
+   * take a page down.
+   */
+  getVenue?(shopExternalId: number): Promise<VenueCatalogueEntry | null>;
+
+  /**
+   * One scene's `SCENE#<sceneId>` item: the scene's own size, not this event's.
+   *
+   * Read for the same reason `getComponent` is - a caller that already has the
+   * id should not pay for a catalogue to find the counts - and read off the
+   * **scene** rather than off any member, because a scene's size is a property
+   * of the scene. Optional and nullable on the same terms.
+   */
+  getScene?(sceneId: string): Promise<SceneDirectoryEntry | null>;
+}
+
+/**
+ * One `VENUE#<shopExternalId>` item, with nothing derived.
+ *
+ * Every field is nullable because null is the normal value for most of them:
+ * `name` is null until the shop is reverse-geocoded, and the three scene
+ * fields are null until a re-clustering has been accepted.
+ */
+export interface VenueCatalogueEntry {
+  shopExternalId: number;
+  /** The shop's city label, or null until reverse geocoding lands. */
+  name: string | null;
+  latitude: number | null;
+  longitude: number | null;
+  players: number | null;
+  ratedPlayers: number | null;
+  matches: number | null;
+  events: number | null;
+  /** The scene this store belongs to. Null until an operator re-clusters. */
+  sceneId: string | null;
+  sceneLabel: string | null;
+  /**
+   * How true "this store belongs to one scene" is, as a share of the store's
+   * play. A low number is a genuinely split store, not an error.
+   */
+  scenePurity: number | null;
+  generatedAt: string | null;
+}
+
+/** One `SCENE#<sceneId>` item: the scene directory's own row. */
+export interface SceneDirectoryEntry {
+  sceneId: string;
+  label: string | null;
+  venueCount: number | null;
+  /** Players whose **home** venue is in this scene, so scenes partition them. */
+  playerCount: number | null;
+  ratedCount: number | null;
+  matchCount: number | null;
+  medianPurity: number | null;
+  /** When the **assignment** was made, which is not the refit time. */
+  assignedAt: string | null;
 }
 
 /**

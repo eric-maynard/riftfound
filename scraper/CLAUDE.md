@@ -1294,6 +1294,229 @@ in place, nothing is assigned, and every `sceneId` is null.** Re-run the dry run
 once the backfill has drained (~4 days from 2026-10-26) and the national picture
 should look like the regional one.
 
+Re-measured 2026-10-27 with the backfill further along (403 days replayed,
+75,120 matches, 39,390 players, 2,574 venues): **1,123 scenes, 2.3 stores
+each**. Still refused, for the same reason, and the gap is narrowing slowly.
+That is what motivated the second method below.
+
+### Geographic scenes: clustering the stores while the graph fills in
+
+`src/ranking/geoScenes.ts`, `--method geo` on the re-clustering CLI. **Louvain
+stays the default and the better definition**; this is the answer to the same
+question from the other side, using the input that is already complete.
+
+The asymmetry is the whole argument. Louvain needs cross-venue play, and the
+results backfill has not captured enough of it to clear the gate above.
+Coordinates need nothing: **2,574 of 2,574 production venues have them.** And
+this is what the recommendation at the end of the section above already
+described - "geography as the label, inference as the definition" - with the
+order reversed until the graph catches up.
+
+#### What a scene is, in two properties
+
+Both are load-bearing, and the first method tried satisfied neither:
+
+1. **It is metro-scale.** A city or a district of one, not a region, a corridor
+   or a country.
+2. **Its players play each other enough to be ranked.** That is the *purpose*
+   of pooling stores at all, and it is measurable rather than a matter of
+   taste.
+
+#### Measured: single linkage is categorically the wrong method
+
+The first attempt was single-linkage union-find over great-circle distance,
+swept against the 2,516 `VENUE#` coordinates:
+
+| threshold | scenes | stores/scene | biggest | max extent |
+|---|---|---|---|---|
+| 15 km | 1,278 | 2.0 | 96 | 36 km |
+| 25 km | 987 | 2.5 | 97 | 59 km |
+| 40 km | 754 | 3.3 | 97 | 59 km |
+| 60 km | 538 | 4.7 | 133 | **582 km** |
+| 80 km | 399 | 6.3 | 453 | **1,432 km** |
+
+40km looked like the answer - it cleared the stores-per-scene gate and the
+largest cluster was a compact 59km - and the top of its output gives it away:
+"New York" at **240km**, "Los Angeles" at **205km**, Karlsruhe/Ludwigsburg/
+Darmstadt at **201km**, Brussels/Tilburg at **176km**. Those are not metros.
+
+The defect is not the threshold, it is the linkage. Single linkage joins two
+stores when they are merely *near* each other, and nearness is not transitive
+the way a scene is:
+
+> "i think its reasonable if we end up with a nyc scene but a nassau county
+> scene and a westchester scene. it would probably be odd to link westchester
+> with nassau because they both play in nyc."
+
+Westchester plays in New York and Nassau plays in New York, and they are 60km
+apart with the city in between. Single linkage **cannot express that
+distinction** - it chains through the hub and welds all three - so no threshold
+fixes it. `rankingGeoScenes.test.ts` pins the three-store version of exactly
+that case.
+
+#### Complete linkage, cut at a 30km diameter
+
+So the clustering agglomerates only while the merged cluster's **diameter** -
+its maximum pairwise distance - stays inside the bound. Every member is then
+within the bound of every other member, a finished cluster is a clique in the
+"within-bound" graph, and transitivity through a hub is impossible by
+construction rather than by choice of threshold.
+
+**30km**, measured on the real coordinates, and it reproduces the structure a
+local would draw:
+
+```
+NEW YORK AREA (33 venues) -> 7 scenes at 30km
+   19 stores  754 matches   New York / Flushing NY / Hoboken NJ
+    3 stores  171 matches   Valley Stream / Levittown / Westbury   <- Nassau
+    4 stores   92 matches   Bloomfield / Hackensack / Montclair    <- north Jersey
+    4 stores   82 matches   Edison / South Amboy                   <- central Jersey
+    3 stores   52 matches   Irvington / Cortlandt Manor / New City <- Westchester
+    1 store    45 matches   Boonton NJ
+
+SF BAY AREA (24 venues) -> 8 scenes at 30km
+    8 stores  586 matches   Milpitas / San Jose / Sunnyvale        <- South Bay
+    3 stores  111 matches   Redwood City / San Mateo / San Carlos  <- Peninsula
+    6 stores   93 matches   Martinez / Vallejo / Concord
+    5 stores   78 matches   Union City / Dublin / Castro Valley
+```
+
+At 50km it starts merging across San Francisco Bay (Redwood City with
+Alameda), which is a ferry, not a scene. 30km is the largest bound that does
+not. **Game Kastle Redwood City - the shop that started this, which was
+displaying "Scene: New York, New York" - lands in the Peninsula scene.**
+
+Singapore is the sanity check, because it is the one unambiguously real, dense,
+compact scene in the corpus at every threshold tried. Under a 30km cap it
+**splits in two, and the split is informative**: the island core keeps 83 of its
+97 stores (4,773 matches, 16.2km across, 87% internal play), and what separates
+is Singapore's west plus Johor Bahru across the strait - 13 stores, 25.4km, and
+**56% internal play against a corpus median of 94%**. The number says what the
+map cannot: that cluster is two half-scenes meeting at a border crossing. It is
+published, narrowly, and named `Jurong & Johor Bahru` rather than after either
+half.
+
+#### The gate: the intra-scene share of play
+
+The Louvain path gates on stores-per-scene because a sparse co-play graph gives
+it no better signal. Stores-per-scene is a *proxy*, and geographic mode can
+measure the thing it proxies for directly: **of all the matches involving a
+scene's players, what share are against other players in the same scene.** A
+player belongs to a scene through their home venue, exactly as everywhere else
+in this pass.
+
+Measured over the 1,155 clusters a 30km cap produces, **player-weighted** -
+because a scene of 3 and a scene of 1,702 are not equally interesting:
+
+| percentile (by players) | p10 | p25 | p50 | p75 | p90 |
+|---|---|---|---|---|---|
+| intra-scene share of play | 0.77 | 0.87 | **0.94** | 1.00 | 1.00 |
+
+**The threshold is 0.5**, and the distribution is why. It sits below p10, in the
+sparse left tail, so it rejects genuine outliers without cutting into the body;
+and 0.5 is the point with a *meaning* rather than a percentile - below it a
+scene's players play more outside it than inside, and "most of your games are
+against your own scene" is the minimum claim that makes a scene-scoped ladder
+mean anything. What each candidate costs:
+
+| gate | scenes published | players published | players with no scene |
+|---|---|---|---|
+| 0.3 | 1,138 | 33,872 | 37 |
+| **0.5** | **1,123** | **33,737** | **172** |
+| 0.6 | 1,089 | 33,109 | 800 |
+| 0.7 | 1,041 | 32,018 | 1,891 |
+
+0.7 would reject 114 more clusters and 1,891 players for nothing gained - among
+them Bangkok's real district scenes at 63% and 71%, which are plainly scenes.
+
+**What happens to the failures is the honest part.** They are not published at
+all: their venues come back with `sceneId: null`, which is the state every
+reader already has to render, and the event page says "this store is not in a
+rankable scene yet". The 32 rejected clusters are 38 venues and **172 of 39,390
+players (0.4%)**, and inspecting them confirms the gate is finding the right
+thing - almost all are a single isolated store with 1-40 matches whose regulars
+only ever play visitors (Antioch CA at 37%, Deer Park NY at 42%, Fairfield CA at
+45%). Not one is large.
+
+The honest headline, stated as the owner asked: **1,123 scenes covering 2,574
+venues and 33,737 players are rankable; 38 venues holding 172 players are not in
+one yet.** That is a better answer than labelling everything.
+
+#### Naming: match-weighted modal, plus a curated table
+
+The default rule is the modal city label of a scene's venues **weighted by
+matches**, not by player count. The player-count version is `modalRegion` in
+`snapshot.ts` and it has a measured defect: it names a cluster after where its
+*residents* are rather than where the *games* are, so two sleepy stores sharing
+a label outvote one busy store that is the whole scene.
+
+That is still only right about half the time at this scale, and it fails in one
+predictable direction - naming a region after whichever town holds the busiest
+store ("Milpitas CA" for eight stores across San Jose, Santa Clara and
+Sunnyvale). So there is a **curated override table**, `sceneNames.ts`, checked
+into the repo and keyed on that store's `shopExternalId`.
+
+Why a shop id and not a scene id: an override has to survive the thing it names
+being re-clustered. A scene id is carried forward by venue-set Jaccard overlap,
+so it is stable *most* of the time and silently is not when a scene splits -
+which is exactly when the override is most needed. A city label is the thing
+being corrected. A shop id is durable, a store does not move, and it is already
+the only identifier a scene is allowed to be keyed on anywhere in this pass.
+
+One failure mode the table exists for beyond vagueness: **two scenes with the
+same name.** Measured across the whole 30km proposal, 7 default labels are
+shared by 16 passing scenes - three separate `Bangkok, 10`, two `Jakarta, JK`,
+three `Sydney, NSW`, two `Toronto, Canada` - and a picker listing the same entry
+three times is worse than a vague one. Those are named by their own centroids
+(`East Bangkok`, `North Bangkok`) rather than by guesswork.
+
+#### What this does not change
+
+- **`componentId` keeps its meaning, permanently.** It answers "are these two
+  ratings on the same scale" and `crossComponentUncertainty` is only correct
+  for a connected component. Scenes are additive under either method.
+- **No new storage.** The output is a `SceneAssignment` - same row, same
+  `previous` rollback slot, same `diffSceneAssignments`, same `--write` gate.
+  `method` and `geo` are additive fields, and `resolution` / `stats.modularity`
+  / `stats.communities` are **null** rather than a stand-in number, because
+  writing the Louvain default there would claim a knob was used when it was
+  not.
+- **Ids are carried the same way.** `carrySceneIds` is shared by both methods:
+  the overlap carry-over is about *naming stability* and has nothing to do with
+  which clustering proposed the membership.
+- **No geocode is ever an id.** `venueKey`'s `geo:` fallback rounds to ~1km, so
+  only a real `shopExternalId` gets a scene - the same rule as everywhere else.
+
+#### Cost
+
+Negligible. Complete linkage is quadratic in a cluster's size, so venues are
+first bucketed by a loose single-link pass at `--bucket-km` (70) and clustered
+inside each bucket. **That pre-pass cannot change the answer**, and the reason
+is worth stating because it would fail silently: every pair of venues in a
+finished cluster is within the diameter cap of each other, so every cluster is
+single-link-connected at any radius at or above that cap, so no cluster can
+span two buckets. `rankingGeoScenes.test.ts` pins it three ways - at the cap, at
+the default, and at 40,000km - and also against the unbucketed clustering on a
+120-point cloud. Measured on production: **36ms** for 2,574 venues, against a
+14s replay.
+
+#### The first production dry run
+
+2026-10-27, 403-day replay, nothing written:
+
+| | |
+|---|---|
+| matches replayed | 75,120 |
+| players | 39,390 |
+| venues with coordinates | **2,574 of 2,574** |
+| clusters at 30km | 1,155 |
+| **scenes published** | **1,123** |
+| max extent / median extent | **29.9km** / 0km |
+| intra-scene play share (player-weighted median) | **94.3%** |
+| rejected by the gate | 32 clusters, 38 venues, **172 players (0.4%)** |
+| median venue purity | 100.0% |
+| clustering time | 36ms |
+
 
 ### The model: Whole-History Rating with a global prior
 
