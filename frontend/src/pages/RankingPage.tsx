@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useLocation, useSearchParams } from 'react-router-dom';
 import { getRankings, getSets, searchPlayers } from '../services/api';
 import SceneSelect from '../components/SceneSelect';
-import RankingViewSwitch from '../components/RankingViewSwitch';
 import SetScope from '../components/SetScope';
 import type {
   ComponentSummary,
@@ -100,7 +99,6 @@ const EMPTY_STATE: RankingState = {
 };
 
 function RankingPage() {
-  const { search } = useLocation();
   const [searchParams, setSearchParams] = useSearchParams();
   const setId = searchParams.get(URL_PARAMS.SET) ?? ALL_SETS;
   const regionParam = searchParams.get(URL_PARAMS.REGION);
@@ -210,9 +208,16 @@ function RankingPage() {
         </p>
       </div>
 
-      <RankingViewSwitch active="ladder" search={search} />
+      {/* One filter row, above everything it scopes.
 
-      {/* One filter row, above everything it scopes. */}
+          The map of scenes is **not** a fourth control here and not a peer tab
+          above them either: it is the second mode of the Scene picker, because
+          "which scene" and "which place" are one question asked two ways. A
+          segmented `Ladder | Scene map` pair was tried above this row and
+          removed - it claimed the map was a second view of the ladder, which
+          put a reader one click from a page that answers a different question
+          than the one they were in the middle of. The way to the full map is
+          the expand control inside the picker's own mini map. */}
       <div className="ranking-filters">
         <SetScope
           sets={sets}
@@ -226,6 +231,11 @@ function RankingPage() {
           value={regionParam}
           onChange={(componentId) => updateParam(URL_PARAMS.REGION, componentId)}
           hint={HINTS.scene}
+          // The API's own name for the scope it just served, for the scenes
+          // `components` does not carry - which is most of them: that list is
+          // 41 scenes of 1,307, so a scene picked on the map or arriving in a
+          // shared link would otherwise leave the closed field blank.
+          selectedLabel={selectedComponent?.regionLabel ?? null}
         />
 
         <PlayerSearch />

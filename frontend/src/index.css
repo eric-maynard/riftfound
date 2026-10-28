@@ -1716,6 +1716,15 @@ select:disabled {
   position: relative;
 }
 
+/* With the scene picker in Map mode the row is a ~300px column beside two 36px
+   fields, and `flex-end` leaves those two stranded at the bottom of it. They
+   belong beside the control's label instead. `:has` is progressive
+   enhancement here - a browser without it gets the old alignment, which is
+   untidy rather than broken. */
+.ranking-filters:has(.scene-mini) {
+  align-items: flex-start;
+}
+
 .filter-label {
   font-size: var(--t-label);
   font-weight: 600;
@@ -1889,6 +1898,195 @@ select:disabled {
 }
 
 .scene-option.is-active .scene-option-meta {
+  color: var(--color-text-muted-lifted);
+}
+
+/* By name / Map, on the picker's label line.
+   Borrows `.pill-group` and `.pill` from the set scope rather than inventing a
+   second segmented control: the page already spells "pick one of these" that
+   way. Smaller here, because this pair sits on a label line rather than being
+   the control itself - it says how to pick, not what was picked. */
+.scene-select-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.scene-modes .pill {
+  padding: 0.15rem 0.5rem;
+  font-size: 0.75rem;
+}
+
+/* ---------------------------------------------------------------
+   The picker's mini map (components/SceneMiniMap.tsx)
+   --------------------------------------------------------------- */
+
+/* Width is stated rather than inherited. `.ranking-filters` is an inline-flex
+   row that hugs its contents, so a percentage here would be circular - the map
+   would size the row that is sizing the map. `min()` against the viewport is
+   what keeps a 390px phone free of horizontal scroll: the row's own padding
+   (2rem) plus the page gutters (2rem) come off the viewport, and the map takes
+   what is left up to 22rem. */
+.scene-mini {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  width: min(22rem, calc(100vw - 4rem));
+}
+
+.scene-mini-canvas {
+  position: relative;
+}
+
+/* Shorter than the page's map, and with its own chrome scale. A filter control
+   is not a page: this is big enough to recognise a city in and small enough
+   that the ladder it scopes is still on screen under it. */
+.scene-map.is-mini {
+  height: 200px;
+  min-height: 0;
+  max-height: none;
+  margin-bottom: 0;
+}
+
+.scene-map.is-mini .leaflet-control-attribution,
+.scene-map.is-mini.leaflet-container .leaflet-control-attribution {
+  font-size: 0.6rem;
+}
+
+/* Reserves the canvas's height while the chunk and the catalogue load, so the
+   filter row does not jump when they arrive. */
+.scene-mini-placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 200px;
+  margin: 0;
+  font-size: var(--t-meta);
+  background-color: var(--color-bg-tertiary);
+  border: 1px solid var(--color-border);
+  border-radius: 0.5rem;
+}
+
+/* The expand control, over the map's top-right corner - the one corner
+   Leaflet's own chrome leaves free (zoom top-left, attribution bottom-right).
+
+   36px of visible box, because 44 would take a fifth of a 200px canvas and sit
+   half again as large as the zoom buttons beside it. The target is still 44px:
+   `::after` inflates the hit area by 4px on every side without moving the
+   drawn edge. z-index clears Leaflet's controls (800) as well as its panes. */
+.scene-mini-expand {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  z-index: 900;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  font-size: 1rem;
+  line-height: 1;
+  color: var(--color-cyan);
+  text-decoration: none;
+  background-color: var(--color-bg-tertiary);
+  border: 1px solid var(--color-border);
+  border-radius: 0.3rem;
+}
+
+.scene-mini-expand::after {
+  content: '';
+  position: absolute;
+  inset: -4px;
+}
+
+.scene-mini-expand:hover {
+  background-color: var(--color-bg-secondary);
+}
+
+.scene-mini-expand:focus-visible {
+  outline: 2px solid var(--color-cyan);
+  outline-offset: 1px;
+}
+
+/* What the map is claiming, in words: the selected scene, or - for one of the
+   21 dispersed scenes - why it has no pin and what the venue dots are. */
+.scene-mini-note {
+  margin: 0;
+  font-size: var(--t-meta);
+  line-height: 1.45;
+  color: var(--color-text-muted);
+}
+
+.scene-mini-note strong {
+  color: var(--color-text);
+}
+
+/* The scenes a map cannot honestly place, as the control's own list.
+   Measured on production: 21 of 1,307 scenes, holding 41% of recorded players,
+   so this is not an edge case to tuck away - it is the four biggest scenes in
+   the corpus. Scrolls at two rows rather than pushing the ladder down a screen
+   and a half. */
+.scene-mini-offmap-note {
+  margin: 0 0 0.3rem;
+  font-size: var(--t-meta);
+  line-height: 1.45;
+  color: var(--color-text-muted);
+}
+
+.scene-mini-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  max-height: 5.5rem;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.scene-mini-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  min-height: 2.25rem;
+  padding: 0.25rem 0.55rem;
+  background-color: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: 0.35rem;
+  color: var(--color-text-muted);   /* 5.15:1 on --color-bg */
+  font: inherit;
+  font-size: 0.75rem;
+  line-height: 1.3;
+  text-align: left;
+  cursor: pointer;
+}
+
+.scene-mini-chip:hover {
+  color: var(--color-text);
+}
+
+/* Four signals, like `.pill.is-active`, so the state does not rest on a 1.7:1
+   difference between two dark surfaces. */
+.scene-mini-chip.is-active {
+  background-color: var(--color-bg-secondary);
+  border-color: var(--color-primary);
+  color: var(--color-text);
+  font-weight: 600;
+}
+
+.scene-mini-chip:focus-visible {
+  outline: 2px solid var(--color-cyan);
+  outline-offset: 1px;
+}
+
+.scene-mini-chip-count {
+  color: var(--color-text-muted);
+  font-size: var(--t-label);
+  font-variant-numeric: tabular-nums;
+}
+
+.scene-mini-chip.is-active .scene-mini-chip-count {
   color: var(--color-text-muted-lifted);
 }
 
@@ -3935,22 +4133,22 @@ td.is-unsettled .rating-value,
   max-width: 96ch;
 }
 
-/* The way in, from the ladder's filter row. Reads as a link beside the
-   controls, not as a fifth control. */
-/* Ladder / Scene map: a pair of views, above the filters that scope them.
-   Borrows `.pill` from the set scope on purpose - the page already spells
-   "pick one of these" that way - and only adds the row and the link reset,
-   since `.pill` is written for a <button>. */
-.ranking-views {
-  display: flex;
-  gap: 0.375rem;
-  margin: 0 0 1rem;
+/* The way back to the ladder, above the heading. This page is reached from the
+   ladder's scene picker, so a reader arrives mid-task and leaves the same way;
+   `.scene-foot` repeats it under 1,300 scenes' worth of list. */
+.scene-back {
+  margin: 0 0 0.5rem;
+  font-size: var(--t-body);
 }
 
-.ranking-views .pill {
+.scene-back a {
+  color: var(--color-cyan);
   text-decoration: none;
-  display: inline-flex;
-  align-items: center;
+}
+
+.scene-back a:hover,
+.scene-back a:focus-visible {
+  text-decoration: underline;
 }
 
 /* The caveat, above the thing it qualifies. */

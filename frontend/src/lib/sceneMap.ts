@@ -179,9 +179,10 @@ export function sceneScope(componentId: string): string {
  * `lib/ranking.ts` instead of here, even though this is the page that reads
  * them most. They are links into the Rankings section, and the event page -
  * which is in the **eager** bundle - needs two of them for its scene line.
- * This module is otherwise reached only from `/rankings/map`, the one lazy
- * route, and Rollup hoists a module shared between an eager and a lazy chunk
- * into the eager one *whole*: importing one path builder from here put all of
+ * This module is otherwise reached only from lazily-imported code - the
+ * `/rankings/map` route and the scene picker's mini map - and Rollup hoists a
+ * module shared between an eager and a lazy chunk into the eager one *whole*:
+ * importing one path builder from here put all of
  * this file (its copy, its geometry, its coverage sentences) into the bundle
  * every calendar visitor downloads. The link builders are scope plumbing and
  * `lib/ranking.ts` already owns scopes, so that is where they went - which
@@ -298,4 +299,113 @@ export function sceneCoverageSentence(coverage: {
     `${formatCount(coverage.locatedScenes)} of ${formatCount(coverage.totalScenes)} scenes on the map, ` +
     `holding ${playerShare}% of recorded players.${dispersed}`
   );
+}
+
+/**
+ * The box the map should show when a reader asks about **one** scene.
+ *
+ * `sceneBounds` above answers "where is the whole corpus"; this answers "where
+ * is this one", which is the question the scene picker's mini map opens on. A
+ * world fit is the right first frame for a page about 1,286 scenes and the
+ * wrong one for a control whose job is to confirm the scene already chosen.
+ *
+ * Two cases, and they take their geometry from different fields on purpose:
+ *
+ * - a **dispersed** scene has no centroid worth flying to - its own is
+ *   150-2,300km from its nearest venue - so the box is drawn around the venues
+ *   it actually plays at, the same pins `SceneMap` draws for it. Those are the
+ *   only honest coordinates such a scene has.
+ * - a **located** scene is framed on its pin, padded by its own `spreadKm`, so
+ *   a 133km corridor opens showing the corridor rather than a street corner.
+ *
+ * Null when there is nothing to frame - no pin and no located venue - and the
+ * caller then leaves the reader's view alone rather than flying to `0, 0`.
+ *
+ * The padding converts km to degrees crudely: one degree of latitude is ~111km
+ * and one of longitude is that times the cosine of the latitude. That is
+ * accurate enough for a camera and for nothing else - nothing is measured from
+ * it, and `fitBounds` rounds to a zoom level anyway. The cosine is floored so a
+ * scene near a pole cannot divide the longitude padding by zero.
+ */
+const KM_PER_DEGREE = 111;
+/** Smallest half-width of the frame, so a single-venue scene opens on a city. */
+const MIN_FRAME_KM = 6;
+
+export function sceneFocusBounds(
+  scene: SceneMapEntry
+): [[number, number], [number, number]] | null {
+  if (scene.latitude === null || scene.longitude === null) {
+    // Dispersed, or simply ungeocoded: frame the venues if there are any.
+    const venues = scene.topVenues;
+    if (venues.length === 0) return null;
+    let south = venues[0].latitude;
+    let north = venues[0].latitude;
+    let west = venues[0].longitude;
+    let east = venues[0].longitude;
+    for (const venue of venues) {
+      if (venue.latitude < south) south = venue.latitude;
+      if (venue.latitude > north) north = venue.latitude;
+      if (venue.longitude < west) west = venue.longitude;
+      if (venue.longitude > east) east = venue.longitude;
+    }
+    return padBounds(south, west, north, east, MIN_FRAME_KM);
+  }
+
+  const reach = Math.max(MIN_FRAME_KM, scene.spreadKm ?? 0);
+  return padBounds(scene.latitude, scene.longitude, scene.latitude, scene.longitude, reach);
+}
+
+function padBounds(
+  south: number,
+  west: number,
+  north: number,
+  east: number,
+  padKm: number
+): [[number, number], [number, number]] {
+  const latPad = padKm / KM_PER_DEGREE;
+  const shrink = Math.max(0.1, Math.cos((((south + north) / 2) * Math.PI) / 180));
+  const lngPad = padKm / (KM_PER_DEGREE * shrink);
+  return [
+    [south - latPad, west - lngPad],
+    [north + latPad, east + lngPad],
+  ];
+}
+
+/**
+ * The sentence that keeps the unpinned scenes reachable, or null when every
+ * scene has a pin.
+ *
+ * This is where the map mode of the scene picker has to be honest about what a
+ * map cannot do here. Measured on production 2026-10-27: **21 of 1,307 scenes
+ * are `dispersed`, and they hold 41% of recorded players** - Singapore (5,405),
+ * Toronto (2,213), New York (1,688) and Paris (1,306) among them. A picker that
+ * offered only pins would silently lose the four largest scenes in the corpus,
+ * which is a worse failure than a picker that says so and lists them.
+ *
+ * The share quoted is of *players*, not of scenes, because the scene count
+ * understates it by a factor of twenty: "21 of 1,307" reads as a rounding error
+ * where "41% of recorded players" is the same fact told straight.
+ *
+ * The two reasons are counted separately where both occur, for the reason the
+ * scene list flags them separately: "no geocoded venue" is a gap in our data
+ * and "plays in too many places" is a true fact about the scene.
+ */
+export function offMapSentence(unlocated: SceneMapEntry[], totalPlayers: number): string | null {
+  if (unlocated.length === 0) return null;
+
+  const dispersed = unlocated.filter((scene) => scene.dispersed).length;
+  const ungeocoded = unlocated.length - dispersed;
+  const players = unlocated.reduce((total, scene) => total + scene.playerCount, 0);
+  const share = totalPlayers > 0 && players > 0 ? Math.round((players / totalPlayers) * 100) : 0;
+
+  const clauses: string[] = [];
+  if (dispersed > 0) {
+    clauses.push(`${formatCount(dispersed)} play across venues too far apart to pin`);
+  }
+  if (ungeocoded > 0) {
+    clauses.push(`${formatCount(ungeocoded)} ${ungeocoded === 1 ? 'has' : 'have'} no geocoded venue`);
+  }
+
+  const held = share > 0 ? `, holding ${share}% of recorded players` : '';
+  return `Not on the map${held}: ${clauses.join(', ')}. Pick one here:`;
 }

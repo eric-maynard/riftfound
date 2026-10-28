@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useLocation, useSearchParams } from 'react-router-dom';
 import { getSceneMap } from '../services/api';
-import RankingViewSwitch from '../components/RankingViewSwitch';
 import SceneMap from '../components/SceneMap';
 import type { SceneMapCoverage, SceneMapEntry } from '../types/ranking';
 import {
@@ -148,6 +147,18 @@ function ScenesPage() {
 
   return (
     <div className="ranking-page scenes-page">
+      {/* The way back, above the heading.
+          This page is a drill-down now: it is reached from the expand control
+          inside the ladder's scene picker, so the reader was mid-task on the
+          ladder and the return trip is the likeliest next thing they want. It
+          is repeated at the foot, because the page is a 60-row list and a reader
+          who has walked down it should not have to walk back up to leave.
+          `carryPreview` on both - Rankings is unlisted and a link without the
+          flag strands the reader (lib/preview.ts). */}
+      <p className="scene-back">
+        <Link to={carryPreview('/rankings', location.search)}>&larr; Back to the ladder</Link>
+      </p>
+
       <div className="ranking-head">
         <h1>Scenes</h1>
         <p className="ranking-head-sub">
@@ -156,8 +167,6 @@ function ScenesPage() {
           </abbr>
         </p>
       </div>
-
-      <RankingViewSwitch active="map" search={location.search} />
 
       {error && <div className="error-banner">{error}</div>}
 
@@ -235,6 +244,9 @@ function ScenesPage() {
             </p>
           )}
 
+          <p className="scene-foot">
+            <Link to={carryPreview('/rankings', location.search)}>Back to the ladder</Link>
+          </p>
         </>
       )}
     </div>

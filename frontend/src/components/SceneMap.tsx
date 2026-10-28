@@ -5,6 +5,7 @@ import type { SceneMapEntry } from '../types/ranking';
 import {
   sceneBounds,
   sceneDotRadius,
+  sceneFocusBounds,
   sceneLabel,
   sceneSpreadRadiusMeters,
   WORLD_VIEW,
@@ -110,15 +111,46 @@ interface SceneMapProps {
   selected: SceneMapEntry | null;
   selectedId: string | null;
   onSelect: (componentId: string | null) => void;
+  /**
+   * Which surface this canvas is drawn on. Three behaviours hang off it, and
+   * all three are about the difference between a page about every scene and a
+   * ~190px canvas inside a filter control (`SceneMiniMap`):
+   *
+   * - **the first frame.** `page` fits the whole corpus once, because its
+   *   question is "where are the scenes". `mini` frames the *selected* scene
+   *   when there is one, because its question is "is this the one I meant" -
+   *   and a 1,286-pin world view in a thumbnail answers neither.
+   * - **the wheel.** `mini` starts with `scrollWheelZoom` off and turns it on
+   *   when the reader clicks into the map, off again when focus leaves. A short
+   *   map in the middle of a scrolling page must not swallow the page's scroll;
+   *   a reader who has clicked into it is asking to zoom.
+   * - **the chrome.** `.scene-map.is-mini` is shorter and sets its own type
+   *   scale for Leaflet's attribution.
+   *
+   * Everything else - the two radii, the colours, the venue layer, the
+   * tooltips, the click-to-clear - is identical by construction, because one
+   * map drawn two sizes is the point and a second copy of this file would
+   * drift from it within a release.
+   */
+  variant?: 'page' | 'mini';
 }
 
-function SceneMap({ scenes, selected, selectedId, onSelect }: SceneMapProps) {
+function SceneMap({ scenes, selected, selectedId, onSelect, variant = 'page' }: SceneMapProps) {
   const container = useRef<HTMLDivElement | null>(null);
   const map = useRef<L.Map | null>(null);
   const sceneLayer = useRef<L.LayerGroup | null>(null);
   const venueLayer = useRef<L.LayerGroup | null>(null);
   /** Whether the view has already been fitted, so a selection does not refit. */
   const fitted = useRef(false);
+  /**
+   * Set when a click *on this map* made the current selection, so the framing
+   * effect below can tell "the reader clicked that pin" from "the selection
+   * changed somewhere else". Flying to a dot the reader just clicked moves the
+   * ground under their finger for no information; flying to a scene chosen
+   * elsewhere - a dispersed scene off the chip list, or a `?region=` arriving
+   * in the URL - is the only way the map shows it at all.
+   */
+  const selfSelected = useRef(false);
 
   // One map for the component's lifetime. Rebuilding it on every data change
   // would reset the reader's pan and zoom, which on a world map is the whole
@@ -138,7 +170,19 @@ function SceneMap({ scenes, selected, selectedId, onSelect }: SceneMapProps) {
       // which breaks panning rather than limiting it. Over-dragging past the
       // poles is a cosmetic annoyance; a map that will not pan is not.
       attributionControl: true,
+      // See `variant`: a short map inside a scrolling column must not eat the
+      // page's scroll before the reader has asked it to.
+      scrollWheelZoom: variant !== 'mini',
     });
+
+    // ...and asking is clicking into it. Leaflet fires `focus` on a click or a
+    // tab into the container, so this is its own notion of "engaged" rather
+    // than a hover test, which would arm the wheel for a pointer merely
+    // passing over on the way down the page.
+    if (variant === 'mini') {
+      instance.on('focus', () => instance.scrollWheelZoom.enable());
+      instance.on('blur', () => instance.scrollWheelZoom.disable());
+    }
 
     L.tileLayer(TILE_URL, {
       attribution: TILE_ATTRIBUTION,
@@ -173,7 +217,10 @@ function SceneMap({ scenes, selected, selectedId, onSelect }: SceneMapProps) {
   useEffect(() => {
     const instance = map.current;
     if (!instance) return;
-    const handler = () => onSelect(null);
+    const handler = () => {
+      selfSelected.current = true;
+      onSelect(null);
+    };
     instance.on('click', handler);
     return () => {
       instance.off('click', handler);
@@ -231,6 +278,7 @@ function SceneMap({ scenes, selected, selectedId, onSelect }: SceneMapProps) {
         // Otherwise the map's own click handler clears the selection the dot
         // just made.
         L.DomEvent.stopPropagation(event);
+        selfSelected.current = true;
         onSelect(scene.componentId);
       });
       dot.addTo(layer);
@@ -240,14 +288,19 @@ function SceneMap({ scenes, selected, selectedId, onSelect }: SceneMapProps) {
     // would guess - the largest scene is Singapore - so a fixed default view
     // opens on an empty ocean for most of it. Only once, because refitting on
     // every data change would yank the view out from under a reader mid-pan.
-    if (!fitted.current && scenes.length > 0) {
+    //
+    // Skipped on a mini map that already has a scene to show: the framing
+    // effect below is about to open on that scene, and fitting the world first
+    // would be one wasted camera move the reader watches happen.
+    const framingSelection = variant === 'mini' && selected !== null;
+    if (!fitted.current && !framingSelection && scenes.length > 0) {
       const bounds = sceneBounds(scenes);
       if (bounds) {
         instance.fitBounds(bounds, { padding: [32, 32], maxZoom: 10 });
         fitted.current = true;
       }
     }
-  }, [scenes, selectedId, onSelect]);
+  }, [scenes, selected, selectedId, onSelect, variant]);
 
   // The venue layer: the selected scene's actual stores, and nothing else.
   //
@@ -278,15 +331,48 @@ function SceneMap({ scenes, selected, selectedId, onSelect }: SceneMapProps) {
     }
   }, [selected]);
 
+  // Framing one scene - `mini` only. See `variant`.
+  //
+  // A selection the reader did not make on this map is the case that needs it:
+  // the picker opens with whatever scene the ladder is already scoped to, and a
+  // **dispersed** scene can only be chosen off the chip list, because it has no
+  // pin to click. Both would otherwise leave the canvas showing wherever it
+  // happened to be - which for a dispersed scene would look exactly like the
+  // map having lost it.
+  useEffect(() => {
+    const instance = map.current;
+    if (!instance || variant !== 'mini') return;
+    if (selfSelected.current) {
+      // The reader clicked this pin; they can see it. Reset and leave the view.
+      selfSelected.current = false;
+      return;
+    }
+    if (!selected) return;
+    const bounds = sceneFocusBounds(selected);
+    if (!bounds) return;
+    // `maxZoom` keeps a single-venue scene from opening at street level, where
+    // a basemap of one road is a worse answer than a neighbourhood.
+    instance.fitBounds(bounds, { padding: [16, 16], maxZoom: 11 });
+    fitted.current = true;
+  }, [selected, variant]);
+
   return (
     <div
       ref={container}
-      className="scene-map"
+      className={variant === 'mini' ? 'scene-map is-mini' : 'scene-map'}
       // The map is a graphic; everything it conveys is also in the list beside
       // it, which is the surface a keyboard or screen reader uses. Saying so
       // is better than exposing 1,200 unreachable SVG circles.
+      //
+      // In the picker that surface is the By name mode, which is where the
+      // label points instead - and it is the picker's *default*, so no reader
+      // is sent to a map to find a scene.
       role="application"
-      aria-label="Map of Riftbound scenes. Every scene is also listed below."
+      aria-label={
+        variant === 'mini'
+          ? 'Map of Riftbound scenes. Every scene can also be chosen by name, in this picker’s By name mode.'
+          : 'Map of Riftbound scenes. Every scene is also listed below.'
+      }
     />
   );
 }

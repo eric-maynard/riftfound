@@ -14,7 +14,8 @@ src/
 │   ├── ModeSwitch.tsx    # The mark itself, switching Event View / Rankings
 │   ├── EventFilters.tsx  # Format dropdown, distance dropdown, location search
 │   ├── EventTooltip.tsx  # Hover card for events
-│   ├── SceneSelect.tsx   # Searchable scene (connected-component) picker
+│   ├── SceneSelect.tsx   # Scene picker: By name (default) | Map
+│   ├── SceneMiniMap.tsx  # The picker's Map mode - lazy, so the ladder stays light
 │   ├── SetScope.tsx      # Set scope as a segmented control
 │   ├── TypeSelect.tsx    # Event-type picker with the chip colour dots
 │   ├── RecordBar.tsx     # W-L-D counts with a filled record bar
@@ -22,7 +23,7 @@ src/
 │   ├── DayEventsModal.tsx  # The "+N more" day list on phones
 │   ├── EventTrophyLink.tsx # The trophy on an event chip
 │   ├── RatingMoveNote.tsx  # A day's rating movement, with what it is made of
-│   ├── SceneMap.tsx      # Leaflet canvas for /rankings/map - pins only
+│   ├── SceneMap.tsx      # Leaflet canvas - pins only; page and mini variants
 │   └── RatingChart.tsx   # Inline-SVG rating-over-time chart
 ├── pages/
 │   ├── CalendarPage.tsx  # Main view with FullCalendar
@@ -230,6 +231,45 @@ round trip.
   so it copies the calendar's location autocomplete rather than inventing a
   second idiom. Filtering is a pure function in `lib/ranking.ts`
   (`sceneOptions` / `filterSceneOptions`) so it is tested without a DOM.
+- **The picker has two modes: By name and Map.** Scene names are places, so a
+  reader who knows where they play but not what the engine's modal label calls
+  it cannot type the answer. Map mode embeds the same `SceneMap` canvas at
+  200px (`SceneMiniMap`, `variant="mini"`), and clicking a pin calls the
+  picker's own `onChange` - the same `?region=` scope a dropdown row sets.
+  There is no second mechanism and no second map component.
+  - **By name is the default and the accessible path.** A map is not keyboard-
+    or screen-reader-navigable in any useful way, so Map is an alternative
+    input, never the only route to a scene; the mode pair stays visible in both
+    modes so switching back is one click.
+  - **The ladder does not pay for it.** `SceneMiniMap` is behind `React.lazy`,
+    so Leaflet's chunk and `GET /api/rankings/map` happen on the first switch
+    to Map and never on a ladder load. Measured: main bundle 152.69KB gzipped
+    before, **152.98KB** after (+0.29KB, the lazy stub and the mode pair);
+    Leaflet and `lib/sceneMap.ts` sit in a 46.07KB chunk now shared by the map
+    page and the picker. Nothing in `SceneSelect` imports `lib/sceneMap.ts`,
+    for the Rollup hoisting reason below.
+  - **The 21 scenes with no pin are chips under the map**, biggest first, and
+    choosing one is the same selection a pin makes. They hold 41% of recorded
+    players (Singapore, Toronto, New York, Paris), so a pins-only mode would
+    silently lose the four largest scenes in the corpus. `offMapSentence` is
+    the line that says so; `sceneFocusBounds` frames whatever is selected,
+    including a dispersed scene's venues, so the map never looks like it has
+    lost the scene the ladder is scoped to.
+  - **The note under the map names no scene**, deliberately: `/api/rankings`
+    and `/api/rankings/map` disagree about 16 of the 41 pickable scenes'
+    names (one is `Simi Valley, CA` on the ladder and `New York, New York` on
+    the map), so either name would contradict something on screen. The
+    selection shows as a ringed pin and a pressed chip; the page heading
+    carries the name. That disagreement is a real bug, in the API, out of
+    scope here.
+  - `SceneSelect` takes `selectedLabel` for the closed field's caption, because
+    `/api/rankings` sends **41** scenes in `components` against 1,307 in the
+    catalogue - so a scene picked on the map, or arriving in a shared
+    `?region=` link, is usually not in the list the field reads its caption
+    from, and the field used to go blank for exactly those scenes.
+  - There is no `Ladder | Scene map` tab pair. One shipped above the filters on
+    both pages and was removed: the map is reached *through* the picker and its
+    expand control, not as a peer view of the ladder.
 - Positions are suppressed entirely only when the **scene** is too small to
   order anyone - with a banner saying why. Mixing scenes no longer suppresses
   them; see "Global has positions" above.
@@ -354,8 +394,11 @@ round trip.
 ### The scene map (`/rankings/map`)
 
 Where the competitive scenes are, and the way into each one's ladder. Reached
-from a `Scene map` link in the ladder's own filter row, beside the picker that
-names one scene.
+from the **expand control on the scene picker's mini map** - the page is the
+mini map at full size, with the same selection carried in `?scene=`. Because it
+is a drill-down rather than a tab, it carries "Back to the ladder" twice: above
+the heading, where a reader who has just arrived looks, and at the foot under
+60 rows of list.
 
 - **A pin is derived, never inferred.** A scene is a connected component of the
   co-play graph and has no coordinates of its own; its pin is the
@@ -410,7 +453,10 @@ names one scene.
   flag - eager, it would put a map library in the bundle every *calendar*
   visitor downloads. Measured: the main bundle stays at 148.9KB gzipped and the
   map is a 47KB chunk fetched only when the page opens. (Re-measured
-  2026-10-27 after the merges since: 151.88KB main, 47.23KB map.)
+  2026-10-27 after the merges since: 151.88KB main, 47.23KB map.) The picker's
+  Map mode is lazy for the same reason and shares that chunk, so there are two
+  lazy importers of Leaflet and still none eager: 152.69KB main before it,
+  152.98KB after, with the map chunk at 46.07KB.
 - **Rollup hoists a shared module into the eager chunk whole**, which is the
   trap this route sets for anything outside it. The event page's scene line
   needed one path builder from `lib/sceneMap.ts`, and importing it put *all* of

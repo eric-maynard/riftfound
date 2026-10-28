@@ -19,7 +19,9 @@ import {
   sceneComparableHint,
   sceneBounds,
   sceneCoverageSentence,
+  sceneFocusBounds,
   sceneScope,
+  offMapSentence,
   filterScenes,
   formatSpread,
   UNNAMED_SCENE_LABEL,
@@ -346,5 +348,131 @@ describe('a dispersed scene', () => {
     );
     expect(dispersed).not.toBe(ungeocoded);
     expect(ungeocoded).toContain('geocoded');
+  });
+});
+
+/**
+ * The frame for one scene, which is what the picker's mini map opens on.
+ *
+ * The case that carries the whole feature is the **dispersed** one: such a
+ * scene has no centroid to fly to, and framing nothing would look exactly like
+ * the map having lost the scene the ladder is scoped to.
+ */
+describe('sceneFocusBounds', () => {
+  it('frames a located scene on its pin, padded by its own spread', () => {
+    const bounds = sceneFocusBounds(
+      scene({ componentId: 'a', latitude: 0, longitude: 0, spreadKm: 111 })
+    );
+    // On the equator a degree is ~111km each way, so a 111km spread is ~1deg.
+    expect(bounds).not.toBeNull();
+    const [[south, west], [north, east]] = bounds!;
+    expect(south).toBeCloseTo(-1, 2);
+    expect(north).toBeCloseTo(1, 2);
+    expect(west).toBeCloseTo(-1, 2);
+    expect(east).toBeCloseTo(1, 2);
+  });
+
+  it('opens on a neighbourhood for a single-venue scene, not a street', () => {
+    // No extent at all: the floor is what stops `fitBounds` zooming to a
+    // basemap of one road, where a single building is less use than a city.
+    const bounds = sceneFocusBounds(
+      scene({ componentId: 'a', latitude: 10, longitude: 20, spreadKm: null })
+    );
+    const [[south, west], [north, east]] = bounds!;
+    expect(north - south).toBeGreaterThan(0.05);
+    expect(east - west).toBeGreaterThan(0.05);
+  });
+
+  it('frames a dispersed scene on its venues, which are its only real places', () => {
+    // Toronto, roughly: a centroid 2,328km from its nearest venue is withheld
+    // by the API, so the venues are all there is - and they are what the map
+    // draws for such a scene.
+    const bounds = sceneFocusBounds(
+      scene({
+        componentId: 'c-tor',
+        dispersed: true,
+        latitude: null,
+        longitude: null,
+        spreadKm: 1858,
+        topVenues: [
+          { shopExternalId: 1, latitude: 43.65, longitude: -79.38, matchCount: 400 },
+          { shopExternalId: 2, latitude: 43.7, longitude: -79.2, matchCount: 120 },
+        ],
+      })
+    );
+    const [[south, west], [north, east]] = bounds!;
+    expect(south).toBeLessThan(43.65);
+    expect(north).toBeGreaterThan(43.7);
+    expect(west).toBeLessThan(-79.38);
+    expect(east).toBeGreaterThan(-79.2);
+    // And emphatically *not* the 1,858km spread: that figure is the reason the
+    // scene has no pin, not a radius to open the camera at.
+    expect(north - south).toBeLessThan(1);
+  });
+
+  it('has nothing to frame for a scene with neither pin nor venue', () => {
+    expect(
+      sceneFocusBounds(
+        scene({ componentId: 'a', latitude: null, longitude: null, topVenues: [] })
+      )
+    ).toBeNull();
+  });
+
+  it('pads longitude by more degrees at high latitude, since degrees shrink', () => {
+    const equator = sceneFocusBounds(
+      scene({ componentId: 'a', latitude: 0, longitude: 0, spreadKm: 50 })
+    )!;
+    const arctic = sceneFocusBounds(
+      scene({ componentId: 'b', latitude: 70, longitude: 0, spreadKm: 50 })
+    )!;
+    expect(arctic[1][1] - arctic[0][1]).toBeGreaterThan(equator[1][1] - equator[0][1]);
+  });
+});
+
+/**
+ * The line that keeps the unpinned scenes reachable in Map mode.
+ *
+ * It exists because of a measurement, not a hypothetical: 21 of 1,307
+ * production scenes are dispersed and they hold 41% of recorded players,
+ * including the four largest. A map mode that said nothing would lose them.
+ */
+describe('offMapSentence', () => {
+  it('says nothing when every scene has a pin', () => {
+    expect(offMapSentence([], 32959)).toBeNull();
+  });
+
+  it('leads with the share of players, not the share of scenes', () => {
+    // "21 of 1,307" reads as a rounding error; the player share is the same
+    // fact told straight, and it is the one a reader can act on.
+    const sentence = offMapSentence(
+      [
+        scene({ componentId: 'a', dispersed: true, latitude: null, longitude: null, playerCount: 5405 }),
+        scene({ componentId: 'b', dispersed: true, latitude: null, longitude: null, playerCount: 2213 }),
+      ],
+      10000
+    );
+    expect(sentence).toContain('76% of recorded players');
+    expect(sentence).toContain('2 play across venues too far apart to pin');
+  });
+
+  it('counts the two reasons apart, because they are different claims', () => {
+    const sentence = offMapSentence(
+      [
+        scene({ componentId: 'a', dispersed: true, latitude: null, longitude: null, playerCount: 40 }),
+        scene({ componentId: 'b', dispersed: false, latitude: null, longitude: null, playerCount: 10 }),
+      ],
+      1000
+    )!;
+    expect(sentence).toContain('1 play across venues too far apart to pin');
+    expect(sentence).toContain('1 has no geocoded venue');
+  });
+
+  it('drops the share rather than printing a percentage of nothing', () => {
+    const sentence = offMapSentence(
+      [scene({ componentId: 'a', dispersed: true, latitude: null, longitude: null, playerCount: 7 })],
+      0
+    )!;
+    expect(sentence).not.toContain('%');
+    expect(sentence).toContain('too far apart to pin');
   });
 });
