@@ -371,16 +371,30 @@ function EventScene({
     );
   }
 
+  // The scene is named from the event's **store**; the links are scoped to the
+  // rating pool those players share, because a ladder is only meaningful over
+  // one scale and a scene does not define one (see `sceneLine`). When the
+  // engine has placed nobody who played here there is no pool to link at, so
+  // the name is plain text rather than a link to nowhere - the scene is still
+  // a fact about the store and is still worth printing.
+  const componentId = line.componentId;
+
   return (
     <p className="event-scene">
       <span className="event-scene-label">Scene</span>
-      <Link
-        className="event-scene-name"
-        to={carryPreview(scenePath(line.componentId), search)}
-        title={line.hint}
-      >
-        {line.name}
-      </Link>
+      {componentId === null ? (
+        <span className="event-scene-name" title={line.hint}>
+          {line.name}
+        </span>
+      ) : (
+        <Link
+          className="event-scene-name"
+          to={carryPreview(scenePath(componentId), search)}
+          title={line.hint}
+        >
+          {line.name}
+        </Link>
+      )}
       {line.summary && <span className="event-scene-summary">{line.summary}</span>}
       {/* The caveat is a word, not a colour, and it carries its own reason -
           the same rule the result pips and the map's flags follow. */}
@@ -389,9 +403,11 @@ function EventScene({
           mostly
         </span>
       )}
-      <Link className="event-scene-map" to={carryPreview(sceneMapPath(line.componentId), search)}>
-        Map
-      </Link>
+      {componentId !== null && (
+        <Link className="event-scene-map" to={carryPreview(sceneMapPath(componentId), search)}>
+          Map
+        </Link>
+      )}
     </p>
   );
 }

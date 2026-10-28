@@ -435,22 +435,60 @@ field - never a GetItem per player.
 
 ### An event's scene
 
-`detail.scene` answers "which scene is this event in", and it is answerable at
-all because of one property of the data: **a scene is a connected component of
-the co-play graph, and an event's own matches are edges in that graph.** Every
-player a chain of this event's pairings links is therefore in the same
-component by construction. No voting, no geography, no heuristic.
+`detail.scene` answers "which scene is this event in", and it is read off **the
+venue the event was held at**. The engine assigns a scene to a *store* (see
+scraper/CLAUDE.md, "Geographic scenes"), and an event carries a
+`shopExternalId`, so `resolveScene` in `services/tournamentService.ts` is a
+`GetItem` on `VENUE#<shopExternalId>` plus, when that store has a scene, one
+more on `SCENE#<sceneId>` for the scene's own size. ~2 read units, on a route
+already edge-cached for 15 minutes, and the second is skipped whenever the
+store has no scene.
 
-The derivation (`resolveScene` in `services/tournamentService.ts`) is a count
-over data the response already holds: the players with a recorded pairing here
-are looked up in the profiles the field BatchGet fetched, their `componentId`s
-are tallied, and the dominant one is published with the counts it rests on.
+**It used to tally the components of the players who attended, and that was
+wrong in a way a reader could see.** A component is a connected component of
+the co-play graph, reachability is a transitive closure, and so one travelling
+player welds two cities into one component *permanently* - no amount of
+coverage separates them again. Measured on production, `ce3da9bead6` held 1,688
+players across 110 venues with a 1,514km spread, carried the label `New York,
+New York`, and had all five of its busiest venues in California. So a shop in
+Redwood City, CA displayed **"Scene: New York, New York"** on its own event
+page. The venue's scene is bounded to 30km by construction and cannot do that.
 
-**The roster is deliberately not counted.** A player who signed up and never
-sat down contributed no edge, so this event is no evidence about which scene
-they are in - they may be in another, or in none, never having been replayed.
-On one live upcoming event 15 of 22 of the field were `known: false`; on
-another, 5 of 5. `matchPlayers` publishes the set the answer was taken over.
+**`componentId` still means a connected component, and still travels.** That is
+deliberate, not leftover: `crossComponentUncertainty` is only correct for a
+connected component, because the floating rating offset it corrects for is a
+property of reachability and nothing else, so `comparable` has to stay a
+statement about the component. The tally is also free - the profiles were
+fetched for the field anyway, and `componentSize` is denormalised onto every
+one. Two facts therefore travel side by side: *this event was held in the
+Peninsula scene*, and *these players' ratings are on one scale with these
+others'*. The ladder the page links to is still scoped to the component,
+because a scene does not define a rating scale.
+
+**Four statuses, and only one of them prints a line.** `no-matches` (nothing
+was paired here), `no-venue` (games, but no resolved store - a Riot organiser
+`shopMatch.ts` never tied to a shop row), `unassigned` (the store is known and
+has no scene **yet** - the normal value, since no venue has one until an
+operator accepts a re-clustering, and a store whose cluster fails the
+rankability gate keeps none afterwards), and `scene`. `getVenue` and `getScene`
+are optional on `RankingStore` on the same terms as `getComponent`, and a
+missing method or a failed read reports `unassigned` rather than a 500 - a
+whole event page is not worth losing for one line on it. Note the direction:
+a reader that cannot answer for a store reports "no scene known", never
+`no-venue`, which would claim the event has no store when it names one.
+
+One consequence worth knowing, because it is an improvement rather than a
+regression: the scene no longer depends on the replay. An event whose players
+the engine has not placed yet still names its scene, and only the ladder link
+is withheld.
+
+**The roster is deliberately not counted** in the *component* half. A player
+who signed up and never sat down contributed no edge, so this event is no
+evidence about which component they are in - they may be in another, or in
+none, never having been replayed. On one live upcoming event 15 of 22 of the
+field were `known: false`; on another, 5 of 5. `matchPlayers` publishes the set
+the answer was taken over. (The scene half is immune to all of this: it is a
+property of the store.)
 
 **The pairings are the witness, and the standings are the fallback.** A bye is
 already out of `matches` (it is the absence of a match and contributes no
@@ -473,20 +511,25 @@ consistent with 0 of 56,257 recorded games crossing a scene. So the dominant
 component is named, ties break on the id, and `playersInScene /
 placedPlayers` is what lets a page qualify the claim instead of asserting it.
 
-**The label comes off the component, never off a player.** This is the one
-thing the field profiles cannot supply, and it is the reason for the single
-extra read. `PlayerRecord.regionLabel` is the *player's* home region: on the
-live board, component `c2e62a47563` holds players labelled `Central Singapore
-Community Development Council, 01`, `North West …, 03`, `South West …, 05` and
-`South East …, 04` - four names for one scene, two to four of them turning up
-on any one event. The engine's `COMPONENT#<id>` item carries the component's
-own `regionLabel`, a modal city over **all** its members, so that is what is
-read, through the new optional `RankingStore.getComponent` - a GetItem,
-**~1 read unit** against the ~46 `listSceneCatalogue` costs, skipped entirely
-when there is no scene (every upcoming event, and the ~29% with no pairings).
-`null` is the normal value for a scene whose stores are not geocoded, and a
-store without the method, or a failed read, reports the scene with no name
-rather than a 500.
+**The scene's name comes off the scene, never off a player and no longer off
+the component.** `PlayerRecord.regionLabel` is the *player's* home region: on
+the live board, component `c2e62a47563` holds players labelled `Central
+Singapore Community Development Council, 01`, `North West …, 03`,
+`South West …, 05` and `South East …, 04` - four names for one scene, two to
+four of them turning up on any one event. So naming a scene from whoever
+attended would give it a different name on every event page. The component's
+own label is no better for this purpose, because a component spans several
+scenes and its modal city is therefore a name for none of them in particular -
+which is how `New York, New York` ended up on a Californian shop.
+
+The name is read off `SCENE#<sceneId>`, falling back to the copy the engine
+denormalises onto the `VENUE#` item - they are written from one assignment so
+they agree, and preferring the scene's means one scene cannot be named two ways
+across two event pages. `null` is normal for a scene whose stores are not
+reverse-geocoded, and `getScene` missing or failing reports the scene with no
+size rather than a 500. `getComponent` is still read, at ~1 read unit, for the
+**component's** own label - it answers "what is this rating pool called",
+which is a different and still-useful question.
 
 **Known drift, not introduced here:** `/api/rankings`'s `component.regionLabel`
 and `components[]` come from `listComponents()`, which reads whichever

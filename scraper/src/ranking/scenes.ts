@@ -113,7 +113,38 @@ export interface SceneRecord {
   sceneId: string;
   /** Modal venue label (a city, from the shop row), or null when none is geocoded. */
   label: string | null;
+  /**
+   * Great-circle distance between this scene's two farthest venues, km - its
+   * **diameter**, not a radius or a mean spread.
+   *
+   * Geographic mode only, and it is the number that mode exists to bound: a
+   * scene is meant to be a metro or a district of one, and an unbounded extent
+   * is the defect that made single-linkage unusable (a 1,514km "New York"
+   * whose busiest stores were all in California). Absent on a Louvain
+   * assignment, which does not constrain geography at all.
+   */
+  extentKm?: number;
+  /**
+   * Share of this scene's players' matches that are against other players in
+   * the same scene.
+   *
+   * This is the *purpose* of a scene stated as a number - "players in the area
+   * play each other enough to be accurately ranked" - rather than the
+   * stores-per-scene proxy the Louvain path had to use on a sparse graph.
+   * Absent on an assignment written before it was measured.
+   */
+  intraShare?: number;
+  /**
+   * Whether this scene clears `minIntraShare`: enough mutual play to support a
+   * ladder. A scene below the bar is **not stored** in geographic mode (its
+   * venues come back with no scene at all), so a stored `false` can only come
+   * from a run that deliberately kept them.
+   */
+  rankable?: boolean;
 }
+
+/** Which clustering produced an assignment. */
+export type SceneMethod = 'louvain' | 'geo';
 
 /**
  * The persisted assignment: the only cross-refit state the rating pass has.
@@ -128,10 +159,27 @@ export interface SceneAssignment {
   version: number;
   /** ISO timestamp of the re-clustering that produced this assignment. */
   generatedAt: string;
-  /** Louvain resolution used, so a diff can say whether the knob moved. */
-  resolution: number;
-  /** Jaccard threshold ids were carried at. */
+  /**
+   * Which clustering produced this assignment.
+   *
+   * Absent on an assignment written before geographic mode existed, and such
+   * an assignment was always Louvain - so a missing value reads as `louvain`
+   * rather than as unknown.
+   */
+  method?: SceneMethod;
+  /**
+   * Louvain resolution used, so a diff can say whether the knob moved.
+   *
+   * **Null in geographic mode**, which has no resolution. Deliberately null
+   * rather than a placeholder number: writing the Louvain default here would
+   * say a knob was used when it was not, and the one thing a diff must not do
+   * is invent provenance.
+   */
+  resolution: number | null;
+  /** Jaccard threshold ids were carried at. Both methods carry ids this way. */
   carryJaccard: number;
+  /** Geographic mode's knobs, for the same reason `resolution` is stored. */
+  geo?: GeoSceneKnobs;
   venues: SceneVenueAssignment[];
   scenes: SceneRecord[];
   /** Counts at the time of clustering, for the runbook's sanity checks. */
@@ -140,25 +188,143 @@ export interface SceneAssignment {
   previous?: Omit<SceneAssignment, 'previous'> | null;
 }
 
+/**
+ * Geographic mode's knobs. See `geoScenes.ts` for how each was measured.
+ */
+export interface GeoSceneKnobs {
+  /**
+   * Hard cap on a scene's **diameter** - its maximum pairwise venue distance.
+   * Every member is within this of every other member, which is what stops a
+   * scene chaining through a hub. 30km.
+   */
+  maxDiameterKm: number;
+  /**
+   * The loose single-link radius that buckets venues before the real
+   * clustering. A performance partition only; it cannot change the answer as
+   * long as it comfortably exceeds `maxDiameterKm`.
+   */
+  bucketKm: number;
+  /** Minimum intra-scene share of play for a scene to be published. */
+  minIntraShare: number;
+}
+
 export interface SceneAssignmentStats {
   venues: number;
   scenes: number;
   players: number;
   matches: number;
-  /** Modularity of the player partition the assignment came from. */
-  modularity: number;
+  /**
+   * Modularity of the player partition the assignment came from.
+   *
+   * **Null in geographic mode**, which does not maximise modularity and whose
+   * clusters have no modularity to report. The stop condition that reads this
+   * is skipped rather than evaluated against a stand-in, because a stand-in
+   * would be a gate passing on a number nothing computed.
+   */
+  modularity: number | null;
   /** Communities Louvain found, which is >= the number of scenes with a venue. */
-  communities: number;
+  communities: number | null;
   /** Median venue purity. The 99.3% figure, recomputed. */
   medianPurity: number;
   /** Venues whose dominant community holds under 60% of their play. */
   splitVenues: number;
+  /** Geographic mode only: the extent distribution and the play-share gate. */
+  geo?: GeoSceneAssignmentStats;
+}
+
+/**
+ * What geographic mode measured about its own output.
+ *
+ * The two halves are the scene's two defining properties: `maxExtentKm` /
+ * `medianExtentKm` say it is metro-scale, and the intra-share figures say its
+ * players actually play each other. Both are reported, because a proposal that
+ * is compact and has no internal play is as useless as a rankable corridor.
+ */
+export interface GeoSceneAssignmentStats {
+  /** Clusters the geometry produced, before the play-share gate. */
+  clusters: number;
+  /** Widest published scene, km. Must be <= `maxDiameterKm` by construction. */
+  maxExtentKm: number;
+  medianExtentKm: number;
+  /** Player-weighted median of the published scenes' intra-scene play share. */
+  medianIntraShare: number;
+  /** Scenes the play-share gate rejected, and the players in them. */
+  unrankableScenes: number;
+  unrankablePlayers: number;
+  /** Venues in those rejected scenes: they are published with no scene. */
+  unrankableVenues: number;
+  /** Players in published scenes, the denominator the shares above are over. */
+  rankablePlayers: number;
 }
 
 /** A scene id derived from its venue membership. Only used for a brand-new scene. */
 function freshSceneId(venues: string[]): string {
   const sorted = [...venues].sort();
   return `s${createHash('sha256').update(sorted.join('|')).digest('hex').slice(0, 10)}`;
+}
+
+/**
+ * Give each proposed cluster an id, carrying the previous assignment's ids
+ * forward by venue-set Jaccard overlap.
+ *
+ * Shared by both clustering methods on purpose. The carry-over is not a
+ * property of Louvain - it is the mechanism that makes *any* re-clustering
+ * shippable, because an id derived from membership is renamed whenever the
+ * membership moves (see the module note). Switching method is already enough
+ * churn for one run; switching the naming mechanism at the same time would
+ * make the diff unreadable, and the diff is the gate.
+ *
+ * Clusters are matched **largest first**, so when two proposals overlap the
+ * same previous scene the bigger one is the heir. Returns one id per input
+ * cluster, in input order.
+ */
+export function carrySceneIds(
+  clusters: string[][],
+  previous: SceneAssignment | null | undefined,
+  carryJaccard: number
+): string[] {
+  const previousVenues = new Map<string, Set<string>>();
+  for (const assignment of previous?.venues ?? []) {
+    let bucket = previousVenues.get(assignment.sceneId);
+    if (!bucket) previousVenues.set(assignment.sceneId, (bucket = new Set()));
+    bucket.add(assignment.venue);
+  }
+
+  // Largest first, ties on the smallest venue key, so the heir of a contested
+  // id cannot depend on Map iteration order.
+  const order = clusters
+    .map((venues, index) => ({ index, venues }))
+    .sort(
+      (a, b) => b.venues.length - a.venues.length || (a.venues[0] < b.venues[0] ? -1 : 1)
+    );
+
+  const claimed = new Set<string>();
+  const ids: string[] = new Array(clusters.length);
+
+  for (const { index, venues } of order) {
+    const proposed = new Set(venues);
+    let carried: string | null = null;
+    let bestOverlap = 0;
+    for (const [sceneId, before] of previousVenues) {
+      if (claimed.has(sceneId)) continue;
+      let intersection = 0;
+      for (const venue of proposed) if (before.has(venue)) intersection++;
+      if (intersection === 0) continue;
+      const jaccard = intersection / (proposed.size + before.size - intersection);
+      if (jaccard > bestOverlap || (jaccard === bestOverlap && carried !== null && sceneId < carried)) {
+        bestOverlap = jaccard;
+        carried = sceneId;
+      }
+    }
+    if (carried !== null && bestOverlap >= carryJaccard) {
+      claimed.add(carried);
+      ids[index] = carried;
+    } else {
+      ids[index] = freshSceneId(venues);
+    }
+  }
+
+  return ids;
 }
 
 function median(values: number[]): number {
@@ -254,41 +420,24 @@ export function proposeScenes(
     shopByVenue.set(venue, row.shopExternalId);
   }
 
-  // Carry ids forward. Largest proposed scene first, so when two proposals
-  // overlap the same previous scene the bigger one is the heir.
-  const previousVenues = new Map<string, Set<string>>();
-  for (const assignment of options.previous?.venues ?? []) {
-    let bucket = previousVenues.get(assignment.sceneId);
-    if (!bucket) previousVenues.set(assignment.sceneId, (bucket = new Set()));
-    bucket.add(assignment.venue);
-  }
   const previousLabels = new Map((options.previous?.scenes ?? []).map(scene => [scene.sceneId, scene.label]));
 
   const proposals = [...venuesByCommunity.entries()]
     .map(([community, venues]) => ({ community, venues: [...venues].sort() }))
     .sort((a, b) => b.venues.length - a.venues.length || (a.venues[0] < b.venues[0] ? -1 : 1));
 
-  const claimed = new Set<string>();
+  const sceneIds = carrySceneIds(
+    proposals.map(proposal => proposal.venues),
+    options.previous,
+    carryJaccard
+  );
+
   const venues: SceneVenueAssignment[] = [];
   const scenes: SceneRecord[] = [];
 
-  for (const proposal of proposals) {
-    const proposed = new Set(proposal.venues);
-    let carried: string | null = null;
-    let bestOverlap = 0;
-    for (const [sceneId, before] of previousVenues) {
-      if (claimed.has(sceneId)) continue;
-      let intersection = 0;
-      for (const venue of proposed) if (before.has(venue)) intersection++;
-      if (intersection === 0) continue;
-      const jaccard = intersection / (proposed.size + before.size - intersection);
-      if (jaccard > bestOverlap || (jaccard === bestOverlap && carried !== null && sceneId < carried)) {
-        bestOverlap = jaccard;
-        carried = sceneId;
-      }
-    }
-    const sceneId = carried !== null && bestOverlap >= carryJaccard ? carried : freshSceneId(proposal.venues);
-    if (carried !== null && bestOverlap >= carryJaccard) claimed.add(carried);
+  for (let i = 0; i < proposals.length; i++) {
+    const proposal = proposals[i];
+    const sceneId = sceneIds[i];
 
     // Name it from geography, which is cheap and reliable precisely because
     // venue -> scene is nearly a function. A carried id keeps its old label

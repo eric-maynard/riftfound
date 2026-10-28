@@ -126,12 +126,36 @@ was actually built from. Design notes and the current measured values are in
 ./scene-recluster.sh --remote --resolution 1.5     # sweep the knob (1 is the measured optimum)
 ./scene-recluster.sh --remote --max-moves 60       # list more of the stores that would move
 ./scene-recluster.sh --remote --json               # machine-readable, for an agent driving it
+
+./scene-recluster.sh --remote --method geo --show-scenes 25   # cluster the stores instead
 ```
 
-A **scene** is a Louvain community of the co-play graph, projected onto stores: a
-store belongs to one scene, a scene has a ranking, an event happens at a store.
-The assignment is **persisted**, read by every rating refit, and rewritten only
-by this script.
+A **scene** pools several stores: a store belongs to one scene, a scene has a
+ranking, an event happens at a store. The assignment is **persisted**, read by
+every rating refit, and rewritten only by this script.
+
+#### Two methods, and which one to run today
+
+| | `--method louvain` (default) | `--method geo` |
+|---|---|---|
+| clusters | the **co-play graph** - who plays whom | **venue coordinates** |
+| a scene is | a Louvain community, projected onto stores | a set of stores all within 30km of each other |
+| needs | cross-venue edges the results backfill has not captured yet | coordinates, which **2,574 of 2,574 venues have** |
+| gate | stores per scene (a proxy) | the intra-scene **share of play** (the thing itself) |
+| state today | **refused by its own gate**: 2.3 stores/scene against a STOP at 3 | proposes 1,123 scenes, 94.3% median internal play |
+
+**Louvain is the better definition and stays the default.** A scene is really
+about who plays whom, and geography is a proxy for that - see
+[scraper/CLAUDE.md](../../scraper/CLAUDE.md), "Is a scene a connected
+component?", for the measurements that chose it. It is also, today,
+unpublishable: the backfill has not filled in enough of the cross-venue play to
+join stores into communities, so it proposes about two stores per scene and the
+CLI correctly refuses it.
+
+`--method geo` exists because the *other* input is already complete. Run it
+while the graph fills in, and re-run the Louvain dry run as it does; the
+intention is to switch back when Louvain clears its own gate, which is a
+re-clustering like any other and goes through the same diff.
 
 **This is not a cron job and must not become one.** A partition refitted on 90%
 of the same matches moves 12-18% of its labels, so a scene recomputed every
@@ -214,6 +238,30 @@ is gone.
 
 If an assignment is ever unreadable, the refit logs it and publishes null scenes
 rather than failing: the ladder is unaffected and the fix is to re-cluster.
+
+#### What to look at in geographic mode
+
+The gates are **different**, and reading the Louvain table above against a geo
+proposal rejects a good one for the wrong reasons: there is no modularity, and
+stores-per-scene is *supposed* to be low. The CLI's verdict says so too.
+
+| what | where | accept when |
+|---|---|---|
+| **max extent** | the "geometry" line | at or under `--max-diameter`. Complete linkage cannot exceed it, so a violation is a bug in the clustering rather than a judgement about the data |
+| **median extent** | the same line | small. 0km today, because most scenes are a single store at this coverage |
+| **intra-scene play share** | the "geometry" line, player-weighted median | **0.65 or better.** The CLI cautions under 0.65 and says STOP under 0.5. This is the gate: a scene exists so the players in it can be ranked against each other, and below half its play being internal there is not enough mutual evidence to order anybody |
+| **not rankable** | the "not rankable" line | a small share of players. 172 of 39,390 (0.4%) on the first production run. Those venues are published with **no scene**, which is honest; if most players land there, the diameter cap is cutting through scenes rather than between them |
+| **the scene list** | `--show-scenes 25` | the names and the cities in each row agree. This is the one check no number makes: a 14-store scene spanning Garden Grove, Anaheim and Brea is Orange County, and the default rule calls it "Garden Grove, CA" |
+| **stores per scene** | the "stores per scene" row | **ignore it.** A 30km diameter cap produces single-store scenes by design; it is not fragmentation here |
+
+**Naming is half the work.** The default rule is the match-weighted modal of a
+scene's venues' city labels, which is right about half the time at this scale
+and wrong in one direction: it names a region after whichever town holds the
+busiest store. The corrections live in a checked-in table,
+`scraper/src/ranking/sceneNames.ts`, keyed on that store's `shopExternalId` -
+the only identifier durable enough to survive the scene being re-clustered.
+`--show-scenes` prints that id in the `busiestShop` column precisely so a
+reader who disagrees with a name has the one number they need to fix it.
 
 #### Driving this from an agent
 

@@ -9,6 +9,8 @@ import {
   PLAYER_MATCH_SK_PREFIX,
   COMPONENT_CATALOGUE_PARTITION,
   componentProfileKeys,
+  venueProfileKeys,
+  sceneProfileKeys,
   GetCommand,
   QueryCommand,
   BatchGetCommand,
@@ -24,8 +26,10 @@ import type {
   RankingStore,
   SceneCatalogueEntry,
   SceneCatalogueVenue,
+  SceneDirectoryEntry,
   SetCatalogueEntry,
   SetRatingRecord,
+  VenueCatalogueEntry,
 } from './rankingStore.js';
 
 /**
@@ -575,6 +579,71 @@ export const dynamoRankingStore: RankingStore = {
       // are not geocoded). A 500 here would take down a whole event page for
       // the sake of one line on it.
       console.warn('[ranking] component profile read failed:', error);
+      return null;
+    }
+  },
+
+  async getVenue(shopExternalId: number): Promise<VenueCatalogueEntry | null> {
+    // One GetItem, ~1 read unit, on a route already edge-cached for 15
+    // minutes. This is the whole cost of an event page knowing its scene, and
+    // it is cheaper than the component tally it replaced was *correct*.
+    try {
+      const client = getDynamoClient();
+      const result = await client.send(
+        new GetCommand({ TableName: getTableName(), Key: venueProfileKeys(shopExternalId) })
+      );
+      if (!result.Item) return null;
+      const item = result.Item as Item;
+      const latitude = readNumber(item, ['latitude', 'lat']);
+      const longitude = readNumber(item, ['longitude', 'lng', 'lon']);
+      // A coordinate is only ever read as a pair, for the reason the scene
+      // map's reader gives: half of one lands a pin in the Gulf of Guinea.
+      const located = latitude !== null && longitude !== null;
+      return {
+        shopExternalId,
+        name: readString(item, ['name']),
+        latitude: located ? latitude : null,
+        longitude: located ? longitude : null,
+        players: readNumber(item, ['players', 'playerCount']),
+        ratedPlayers: readNumber(item, ['ratedPlayers', 'ratedCount']),
+        matches: readNumber(item, ['matches', 'matchCount']),
+        events: readNumber(item, ['events', 'eventCount']),
+        sceneId: readString(item, ['sceneId']),
+        sceneLabel: readString(item, ['sceneLabel']),
+        scenePurity: readNumber(item, ['scenePurity']),
+        generatedAt: readString(item, ['generatedAt', 'updatedAt']),
+      };
+    } catch (error) {
+      // Same posture as `getComponent`: the caller reads null as "we do not
+      // know this store's scene", which is a state the page already has to
+      // render, because `sceneId` is null on every venue until an operator
+      // accepts a re-clustering. A 500 here would take down a whole event
+      // page for the sake of one line on it.
+      console.warn('[ranking] venue profile read failed:', error);
+      return null;
+    }
+  },
+
+  async getScene(sceneId: string): Promise<SceneDirectoryEntry | null> {
+    try {
+      const client = getDynamoClient();
+      const result = await client.send(
+        new GetCommand({ TableName: getTableName(), Key: sceneProfileKeys(sceneId) })
+      );
+      if (!result.Item) return null;
+      const item = result.Item as Item;
+      return {
+        sceneId,
+        label: readString(item, ['label', 'sceneLabel']),
+        venueCount: readNumber(item, ['venueCount', 'venues']),
+        playerCount: readNumber(item, ['playerCount', 'players']),
+        ratedCount: readNumber(item, ['ratedCount', 'ratedPlayers']),
+        matchCount: readNumber(item, ['matchCount', 'matches']),
+        medianPurity: readNumber(item, ['medianPurity']),
+        assignedAt: readString(item, ['assignedAt']),
+      };
+    } catch (error) {
+      console.warn('[ranking] scene profile read failed:', error);
       return null;
     }
   },

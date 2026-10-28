@@ -374,62 +374,134 @@ export interface TournamentField {
  *   replayed, so this is the normal state of an event captured since the last
  *   refit.
  */
-export type TournamentSceneStatus = 'scene' | 'no-matches' | 'unplaced';
+/**
+ * Why there is, or is not, a scene on this event.
+ *
+ * - `scene` - the event's store belongs to a scene, and it is named.
+ * - `no-matches` - nothing was played here, so there is nothing to say. An
+ *   upcoming event, or one of the ~29% of finished ones whose organiser never
+ *   ran pairings.
+ * - `no-venue` - matches were played, but the event has no resolved store. A
+ *   Riot organiser that `shopMatch.ts` has not tied to a shop row has no
+ *   venue item and therefore no scene, and that is a real state rather than a
+ *   failure.
+ * - `unassigned` - the store is known and has no scene **yet**. This is the
+ *   normal value, not an edge: `sceneId` is null on every venue until an
+ *   operator accepts a re-clustering, and a store whose cluster cannot support
+ *   a ladder keeps it null afterwards. "This venue is not in a rankable scene
+ *   yet" is the honest sentence, and it is a different claim from "this event
+ *   has no scene".
+ */
+export type TournamentSceneStatus = 'scene' | 'no-matches' | 'no-venue' | 'unassigned';
 
 /**
  * Which scene this event belongs to.
  *
- * **A scene is a connected component of the co-play graph** (see
- * `scraper/src/ranking/graph.ts`), and an event's own matches are edges in
- * that graph - so the players who played here are joined to each other *by
- * this event*, and the scene is read off them rather than voted on.
+ * ## It is read off the **venue**, not off the players
  *
- * Two things that sounds like but is not:
+ * A scene is a set of stores near enough to each other that their players
+ * genuinely play each other, assigned to each store by the engine and stored
+ * on its `VENUE#<shopExternalId>` item. An event carries a `shopExternalId`,
+ * so this is **one GetItem** on the store the event was held at.
  *
- * 1. **It is not "every player at the event".** A roster entry who never
- *    played is no edge at all: they may be placed in another component
- *    entirely, or have no rating item to be placed in. Only players with a
- *    recorded pairing here are counted, which is why `matchPlayers` is
- *    published beside the scene rather than `field.totalPlayers` being reused.
- * 2. **It is not guaranteed unanimous, and the reasoning that says it is has a
- *    hole worth knowing.** The event's matches connect the players they pair,
- *    not all of them: one round of eight players is four disjoint edges, so
- *    the event's own pairing graph need not be connected, and two halves of a
- *    short event can sit in different components unless play elsewhere joins
- *    them. There is a second, more common route to the same state: the engine
- *    places a player from the history it last replayed, so until it refits
- *    with this event's capture in hand, two players here can still carry the
- *    components they had before it. So `componentCount` is published and the
- *    dominant component is named. Measured against production this is rare -
- *    components are large (1,235 of them over 27,318 players) and 0 of 56,257
- *    recorded games cross one - but "rare" is not "impossible", and a payload
- *    that could not say so would make the page assert something it does not
- *    know.
+ * It used to be derived instead by tallying the `componentId`s of the players
+ * who attended, and that was wrong in a way a reader could see. A component is
+ * a connected component of the co-play graph: reachability is a transitive
+ * closure, so one travelling player welds two cities into one component
+ * permanently and no amount of coverage ever separates them again. Measured on
+ * production, component `ce3da9bead6` held 1,688 players across 110 venues
+ * with a 1,514km spread, was labelled `New York, New York`, and its five
+ * busiest venues were all in California - so a shop in Redwood City, CA
+ * displayed "Scene: New York, New York" on its own event page. The venue's own
+ * scene cannot do that, because it is bounded geographically by construction.
+ *
+ * ## `componentId` still means a connected component
+ *
+ * The component fields below are **unchanged and still computed the old way**,
+ * and that is deliberate rather than leftover. `componentId` has a statistical
+ * job no other field can do - `crossComponentUncertainty` is only correct for
+ * a connected component, because the floating rating offset it corrects for is
+ * a property of reachability and nothing else - so `comparable` is still a
+ * statement about the component. Scenes are **additive**; redefining the
+ * component to mean a scene would silently corrupt that number.
+ *
+ * What changed is which of them the page *names*. Two facts travel side by
+ * side: "this event was held in the South Bay scene" and "these players'
+ * ratings are on one scale with these other players'".
+ *
+ * ## Three honest absences
+ *
+ * `status` carries the reason rather than leaving a reader to branch on a
+ * null - see `TournamentSceneStatus`. Only one of the three prints a line.
  */
 export interface TournamentScene {
   status: TournamentSceneStatus;
+
+  // --- the scene, off the event's own venue --------------------------------
+
+  /** The store this event was held at, or null when none is resolved. */
+  shopExternalId: number | null;
+  /** The venue's scene, or null unless `status === 'scene'`. */
+  sceneId: string | null;
+  /**
+   * The **scene's own** name, off the engine's `SCENE#` item, falling back to
+   * the copy denormalised onto the venue.
+   *
+   * Deliberately not any player's `regionLabel`, which is that player's home
+   * city and differs between members of one scene - on the live board one
+   * component held players labelled `Central Singapore …, 01`, `North West …,
+   * 03`, `South West …, 05` and `South East …, 04`. Null when the scene's
+   * stores are not reverse-geocoded yet, which is normal.
+   */
+  sceneLabel: string | null;
+  /**
+   * How true "this store belongs to one scene" is, as a share of the store's
+   * own play. A low number is a genuinely split store - worth showing rather
+   * than hiding - not an error.
+   */
+  scenePurity: number | null;
+  /** Stores in the whole scene, not at this event. */
+  sceneVenues: number | null;
+  /** Players whose home venue is in the scene. Not this event's field. */
+  scenePlayers: number | null;
+  /** Of those, how many clear the publishing bar. */
+  sceneRatedPlayers: number | null;
+
+  // --- the component, unchanged, for scale honesty -------------------------
+
   /** Distinct players who played at least one recorded pairing at this event. */
   matchPlayers: number;
   /** Of those, how many the engine has placed in a component. */
   placedPlayers: number;
-  /** Distinct components among the placed players. 1 is the normal case. */
+  /**
+   * Distinct components among the placed players. 1 is the normal case.
+   *
+   * Not guaranteed to be 1, and the hole is worth knowing: an event's matches
+   * connect the players they *pair*, not all of them - one round of eight
+   * players is four disjoint edges - and the engine places a player from the
+   * history it last replayed, so a capture newer than the last refit can leave
+   * two players here carrying the components they had before it.
+   */
   componentCount: number;
-  /** The dominant component's id, or null unless `status === 'scene'`. */
+  /** The dominant component's id. Still a connected component, never a scene. */
   componentId: string | null;
   /**
-   * The **component's own** region label - a modal city name off the engine's
-   * `COMPONENT#` item, e.g. `Rockhampton, Australia`. Deliberately not any
-   * player's `regionLabel`, which is that player's home city and differs
-   * between members of one scene. Null when the catalogue has no item, no
-   * label, or could not be read: a scene whose stores are not geocoded has no
-   * name, and that is normal.
+   * The **component's own** region label, off the engine's `COMPONENT#` item.
+   *
+   * Kept, and no longer what the page calls the scene: a component spans
+   * several scenes, so this label answers a different question. Null when the
+   * catalogue has no item, no label, or could not be read.
    */
   regionLabel: string | null;
-  /** Players in the whole scene, not at this event. */
+  /** Players in the whole component, not at this event. */
   componentSize: number | null;
-  /** Rated players in the whole scene, when the catalogue knows. */
+  /** Rated players in the whole component, when the catalogue knows. */
   ratedPlayers: number | null;
-  /** The scene is big enough (`CONFIDENCE.minComponentSize`) to be ordered. */
+  /**
+   * The **component** is big enough (`CONFIDENCE.minComponentSize`) for its
+   * order to be a placement. A statement about the rating scale, not about the
+   * scene.
+   */
   comparable: boolean;
   /** Of `placedPlayers`, how many are in `componentId`. */
   playersInScene: number;

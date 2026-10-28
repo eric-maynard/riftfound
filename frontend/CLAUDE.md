@@ -530,35 +530,60 @@ the heading, where a reader who has just arrived looks, and at the foot under
   `scenePath`) plus a `Map` link into `/rankings/map` with that scene already
   selected (`sceneMapPath`, which shares `ScenesPage`'s own `scene` parameter
   so one spelling cannot drift from the other).
-  - **It is a fact, not a guess, and the reason is structural.** A scene is a
-    connected component of the co-play graph and an event's own matches are
-    edges in it, so every player a chain of this event's pairings links is in
-    the same component by construction. The API does the counting and sends
-    `scene` on `/api/events/:id/tournament`, so the page adds **no** request
-    and derives nothing.
-  - **The roster is not counted**, by the API and therefore here: a player who
-    signed up and never sat down contributed no edge, so this event says
-    nothing about their scene.
+  - **It is the venue's scene, which is a lookup rather than a guess.** The
+    engine groups stores that are close enough together for their players to
+    really play each other and assigns one scene to each store; this event was
+    held at a store. The API reads it off that store and sends `scene` on
+    `/api/events/:id/tournament`, so the page adds **no** request and derives
+    nothing.
+  - **This is a fix, not a refactor.** The line used to name the connected
+    component of the players who played here, and reachability is a transitive
+    closure - one travelling player merges two cities permanently. A measured
+    production component held 1,688 players over 110 venues across 1,514km,
+    was labelled `New York, New York`, and had all five of its busiest stores
+    in California, so a shop in Redwood City read **"Scene: New York, New
+    York"**. It now reads `Peninsula`.
+  - **The name is the scene's and the link is the component's**, and the hint
+    says both. A ladder is scoped to a `componentId` because that is what makes
+    two ratings comparable; a scene does not define a rating scale, so there is
+    no scene-scoped ladder to link at. Two facts, stated as two, rather than a
+    link quietly asserting they are one. When the engine has placed nobody who
+    played here there is no pool to link at, so the name renders as plain text
+    and the `Map` link is withheld - the scene is still a fact about the store.
+  - **The roster is not counted** in the component half, by the API and
+    therefore here: a player who signed up and never sat down contributed no
+    edge. The scene half is immune to it, being a property of the store.
   - **Three honest absences, and only one of them prints.** No recorded
     matches - an upcoming event, or one of the ~29% whose organiser never ran
     pairings - prints **nothing**: the page already says the event has no
     standings, and a line reading "no scene" where no game was played is the
-    same absence twice. Pairings whose players the engine has not placed yet
-    print one muted `Not placed yet` with the reason on hover, because "this
-    event has no scene" and "the ladder has not caught up with it" are
-    different claims and only the second is true. A scene prints its name.
-  - **A split event is flagged, not smoothed over.** `componentCount > 1` adds
-    a `mostly` chip - a word in the scene list's own flag idiom, never colour
-    alone - whose hint says how many other scenes and why. It is reachable:
-    an event's pairings connect the players they pair rather than all of them,
-    and the engine places a player from the history it last replayed. Checked
-    against production, it is rare - 7 played events of 5 to 53 players, all
-    unanimous.
-  - **The name is the component's, never a player's.** The API reads it off
-    the engine's `COMPONENT#` item; a member's own `regionLabel` is their home
-    region, and one 5,405-player scene's players carry four different ones. An
-    unnamed scene falls back to `Scene <id>`, the way the ladder's picker
-    does, rather than borrowing a city from whoever turned up.
+    same absence twice. An event with no resolved store prints nothing either,
+    for want of anything to attach the line to. A store that is **not in a
+    scene yet** prints one muted `Not placed yet` with the reason on hover,
+    because "this event has no scene" and "this store is not in a rankable
+    scene yet" are different claims and only the second is true. That is also
+    the common case today, and the hint says *why* rather than promising it
+    will change: a scene is only drawn where the stores in it play each other
+    enough to rank anybody, so some stores will never be in one - and it says
+    the games here still count towards every ladder they belong to, because
+    they do.
+  - **A split rating pool is flagged, not smoothed over.** `componentCount > 1`
+    adds a `mostly` chip - a word in the scene list's own flag idiom, never
+    colour alone - whose hint says how many pools and why. It is reachable: an
+    event's pairings connect the players they pair rather than all of them, and
+    the engine places a player from the history it last replayed. Note it is a
+    fact about the *pools*, not about the scene, which cannot be split: the
+    store belongs to one scene by construction.
+  - **The name is the scene's, never a player's and no longer the
+    component's.** The API reads it off the engine's `SCENE#` item; a member's
+    own `regionLabel` is their home region, and one 5,405-player scene's
+    players carry four different ones, while a component's modal city is a
+    name for several scenes and therefore for none of them. An unnamed scene
+    falls back to `Scene <id>`, the way the ladder's picker does, rather than
+    borrowing a city from whoever turned up or a label from the wider pool.
+  - **The size is the scene's too.** `49 players · 4 rated · 3 stores`, from
+    the scene - not this event's field, and not the component's, which spans
+    several scenes and would overstate a scene by an order of magnitude.
   - **The roster table's `Scene` column is now `Region`**, with a hint saying
     so. Its cells were always `player.regionLabel` - that player's home region
     - so a column of them under the header "Scene" asserted several scenes

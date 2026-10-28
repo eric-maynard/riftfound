@@ -23,6 +23,7 @@ import {
   type TournamentRoster,
   type TournamentRound,
   type TournamentScene,
+  type TournamentSceneStatus,
   type TournamentSidePlayer,
   type TournamentStanding,
 } from '../models/tournament.js';
@@ -270,18 +271,20 @@ function matchPlayerIds(results: TournamentResults | null): Set<string> {
   return ids;
 }
 
-/** The three no-scene answers share every field but the reason. */
-function noScene(
-  status: 'no-matches' | 'unplaced',
-  matchPlayers: number,
-  placedPlayers: number,
-  componentCount: number
-): TournamentScene {
+/** Every field of a scene answer, so each branch below sets only what it knows. */
+function emptyScene(status: TournamentSceneStatus): TournamentScene {
   return {
     status,
-    matchPlayers,
-    placedPlayers,
-    componentCount,
+    shopExternalId: null,
+    sceneId: null,
+    sceneLabel: null,
+    scenePurity: null,
+    sceneVenues: null,
+    scenePlayers: null,
+    sceneRatedPlayers: null,
+    matchPlayers: 0,
+    placedPlayers: 0,
+    componentCount: 0,
     componentId: null,
     regionLabel: null,
     componentSize: null,
@@ -292,33 +295,60 @@ function noScene(
 }
 
 /**
- * The scene this event belongs to, read off the players who played in it.
+ * The scene this event belongs to, read off **the venue it was held at**.
  *
- * The derivation is a count, not an inference: every player with a recorded
- * pairing here is looked up in the profiles this response already fetched, and
- * their `componentId`s are tallied. Normally there is exactly one, because the
- * event's own matches are edges joining those players - see `TournamentScene`
- * in `models/tournament.ts` for the two ways that can still come out split,
- * and why the count is published rather than smoothed over.
+ * ## The scene half: one GetItem on the store
  *
- * **The dominant component wins, with its share published beside it.** Ties
- * break on the component id so the answer cannot depend on map iteration
- * order; `playersInScene` against `placedPlayers` is what lets the page say
- * how settled the answer is instead of asserting it.
+ * The engine assigns a scene to a venue, not to a player
+ * (`scraper/src/ranking/scenes.ts`, "a scene belongs to the venue"), and the
+ * event context already carries the `shopExternalId`. So the answer is a
+ * `GET VENUE#<shopExternalId>` and nothing else - no tally, no inference, no
+ * dependence on which players happened to turn up or on whether the ladder has
+ * replayed them yet. A second GetItem on `SCENE#<sceneId>` supplies the
+ * scene's own size, and it is skipped when the venue has no scene.
  *
- * The one thing this cannot get from the profiles is the component's **own**
- * name, so there is a single extra read for it - a GetItem on
- * `COMPONENT#<id>`, ~1 read unit against the ~46 the whole catalogue costs,
- * and on a route that is already edge-cached for 15 minutes. It is skipped
- * entirely when there is no scene, which is every upcoming event and the ~29%
- * of finished ones with no pairings, so the common case pays nothing.
+ * That replaced tallying the attending players' components, which produced a
+ * visibly wrong answer: a component is a transitive closure over co-play, so
+ * one travelling player permanently merges two cities, and the measured result
+ * was a Redwood City shop reading "Scene: New York, New York". See
+ * `TournamentScene`.
+ *
+ * ## The component half: unchanged, and still about the rating scale
+ *
+ * The component tally still runs, because `componentId` answers a question
+ * nothing else can - are these two ratings on one scale - and it is free: the
+ * profiles were already fetched for the field, and `componentSize` is
+ * denormalised onto every one of them. `comparable` therefore keeps meaning
+ * what it meant. The one extra read it used to justify, `COMPONENT#<id>` for
+ * the component's own label, is kept for the same ~1 read unit, because the
+ * label still answers "what is this *component* called" and a page that wants
+ * to explain the scale can print it.
+ *
+ * ## What each absence means
+ *
+ * - no recorded pairings -> `no-matches`, and nothing else is read.
+ * - pairings but no resolved store -> `no-venue`.
+ * - a store with no scene assigned -> `unassigned`. **The normal state today**:
+ *   every venue's `sceneId` is null until an operator accepts a re-clustering.
+ *
+ * None of the three is an error, and a failed read of either item degrades to
+ * the same answer rather than a 500: a whole event page is not worth losing
+ * for one line on it.
  */
 async function resolveScene(
+  event: TournamentEventContext,
   results: TournamentResults | null,
   byPlayerId: Map<string, TournamentPlayer>
 ): Promise<TournamentScene> {
   const played = matchPlayerIds(results);
+  // The store is still reported: the event names it whether or not anything
+  // was played there, and a null here means "no store resolved", which would
+  // be a different and false claim.
+  if (played.size === 0) {
+    return { ...emptyScene('no-matches'), shopExternalId: event.shopExternalId };
+  }
 
+  // --- the component, from profiles already in hand ------------------------
   const tally = new Map<string, number>();
   // The size the *profiles* report for each component, as the fallback for a
   // deploy whose store has no component catalogue: the engine denormalises
@@ -326,7 +356,6 @@ async function resolveScene(
   // name does not.
   const sizeFromProfiles = new Map<string, number | null>();
   let placedPlayers = 0;
-
   for (const playerId of played) {
     const componentId = byPlayerId.get(playerId)?.componentId ?? null;
     if (!componentId) continue;
@@ -337,30 +366,62 @@ async function resolveScene(
     }
   }
 
-  if (played.size === 0) return noScene('no-matches', 0, 0, 0);
-  if (tally.size === 0) return noScene('unplaced', played.size, 0, 0);
-
-  const [componentId, playersInScene] = [...tally.entries()].sort(
-    (a, b) => b[1] - a[1] || a[0].localeCompare(b[0])
-  )[0];
-
   const store = getRankingStore();
-  const catalogue = store.getComponent ? await store.getComponent(componentId) : null;
-  const componentSize = catalogue?.componentSize ?? sizeFromProfiles.get(componentId) ?? null;
+  const component = { ...emptyScene('no-matches') };
+  if (tally.size > 0) {
+    // Ties break on the component id so the answer cannot depend on map
+    // iteration order.
+    const [componentId, playersInScene] = [...tally.entries()].sort(
+      (a, b) => b[1] - a[1] || a[0].localeCompare(b[0])
+    )[0];
+    const catalogue = store.getComponent ? await store.getComponent(componentId) : null;
+    const componentSize = catalogue?.componentSize ?? sizeFromProfiles.get(componentId) ?? null;
+    component.componentId = componentId;
+    component.regionLabel = catalogue?.regionLabel ?? null;
+    component.componentSize = componentSize;
+    component.ratedPlayers = catalogue?.ratedCount ?? null;
+    // The same gate every other surface reads, so a set of ratings the ladder
+    // refuses to order is not described as orderable here.
+    component.comparable = isComparable(componentSize);
+    component.playersInScene = playersInScene;
+  }
 
-  return {
-    status: 'scene',
+  const base: TournamentScene = {
+    ...component,
+    status: 'no-venue',
+    shopExternalId: event.shopExternalId,
     matchPlayers: played.size,
     placedPlayers,
     componentCount: tally.size,
-    componentId,
-    regionLabel: catalogue?.regionLabel ?? null,
-    componentSize,
-    ratedPlayers: catalogue?.ratedCount ?? null,
-    // The same gate every other surface reads, so a scene the ladder refuses
-    // to order is not described as orderable here.
-    comparable: isComparable(componentSize),
-    playersInScene,
+  };
+
+  // --- the scene, from the venue -------------------------------------------
+  // No resolved store is the only route to `no-venue`: there is nothing for a
+  // scene to be attached to. A store the *reader* cannot answer for - an older
+  // deploy with no `getVenue`, or a failed GetItem - is `unassigned` instead,
+  // because the store exists and what is missing is our answer about it.
+  if (event.shopExternalId === null) return base;
+  if (!store.getVenue) return { ...base, status: 'unassigned' };
+
+  const venue = await store.getVenue(event.shopExternalId);
+  // No venue item is `unassigned` rather than `no-venue`: the store is known -
+  // the event names it - and what is missing is the engine's assignment, which
+  // is a statement about our data and not about the event.
+  if (!venue?.sceneId) return { ...base, status: 'unassigned' };
+
+  const scene = store.getScene ? await store.getScene(venue.sceneId) : null;
+  return {
+    ...base,
+    status: 'scene',
+    sceneId: venue.sceneId,
+    // The scene's own label wins over the copy denormalised onto the venue:
+    // they are written from one assignment so they agree, and preferring the
+    // scene's means one scene cannot be named two ways across two event pages.
+    sceneLabel: scene?.label ?? venue.sceneLabel ?? null,
+    scenePurity: venue.scenePurity,
+    sceneVenues: scene?.venueCount ?? null,
+    scenePlayers: scene?.playerCount ?? null,
+    sceneRatedPlayers: scene?.ratedCount ?? null,
   };
 }
 
@@ -441,15 +502,20 @@ export async function getTournament(externalId: string): Promise<TournamentDetai
   // this layer is about to drop.
   const publishedResults = results ? toResults(results, byTeamId) : null;
 
+  const eventContext = toEventContext(externalId, roster ?? (results as EventResultsRecord));
+
   const detail: TournamentDetail = {
-    event: toEventContext(externalId, roster ?? (results as EventResultsRecord)),
+    event: eventContext,
     results: publishedResults,
     roster: roster ? toRoster(roster, byPlayerId) : null,
     // Standings order when we have it, otherwise registration order: both are
     // orders a page can render straight down without sorting anything.
     players: orderPlayers([...byPlayerId.values()], results, roster),
     field: summariseField([...byPlayerId.values()]),
-    scene: await resolveScene(publishedResults, byPlayerId),
+    // The event context is passed in because the scene is read off the
+    // event's **venue** - one GetItem on `VENUE#<shopExternalId>` - rather
+    // than inferred from the components of whoever attended.
+    scene: await resolveScene(eventContext, publishedResults, byPlayerId),
   };
 
   return detail;
