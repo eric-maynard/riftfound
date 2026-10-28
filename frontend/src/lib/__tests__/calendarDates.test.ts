@@ -4,7 +4,7 @@
 process.env.TZ = 'America/Los_Angeles';
 
 import { describe, expect, it } from 'vitest';
-import { dateMarkerToLocalDate, localDateKey } from '../calendarDates';
+import { dateMarkerToLocalDate, dayStringToLocalDate, localDateKey } from '../calendarDates';
 
 /** The marker FullCalendar hands a callback for a given cell. */
 function marker(year: number, monthIndex: number, day: number): Date {
@@ -80,5 +80,46 @@ describe('localDateKey', () => {
     const lateOnThe7th = new Date('2025-11-08T02:00:00Z'); // Nov 7, 18:00 PST
     const earlyOnThe8th = new Date('2025-11-08T18:00:00Z'); // Nov 8, 10:00 PST
     expect(localDateKey(lateOnThe7th)).not.toBe(localDateKey(earlyOnThe8th));
+  });
+});
+
+describe('dayStringToLocalDate', () => {
+  it('reads a cell back as the day it was drawn for', () => {
+    const date = dayStringToLocalDate('2025-11-07');
+    expect(date).not.toBeNull();
+    expect([date!.getFullYear(), date!.getMonth(), date!.getDate()]).toEqual([2025, 10, 7]);
+    expect(date!.getHours()).toBe(0);
+  });
+
+  it('does not land on the previous day', () => {
+    // `new Date('2025-11-07')` is UTC midnight by spec, which reads back as the
+    // 6th here - the marker bug arriving by a different route.
+    expect(new Date('2025-11-07').getDate()).toBe(6);
+    expect(dayStringToLocalDate('2025-11-07')!.getDate()).toBe(7);
+  });
+
+  it('round-trips the key the day counts are built on', () => {
+    expect(localDateKey(dayStringToLocalDate('2026-03-08')!)).toBe('2026-2-8');
+    // Both sides of a DST boundary, where an offset-based parse lands an hour
+    // out and can tip the whole day.
+    for (const day of ['2025-11-01', '2025-11-02', '2025-11-03', '2026-03-07', '2026-03-08']) {
+      const date = dayStringToLocalDate(day)!;
+      expect(date.getHours()).toBe(0);
+      expect(localDateKey(date)).toBe(
+        `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`
+      );
+    }
+  });
+
+  it('agrees with the marker conversion for the same cell', () => {
+    const fromAttribute = dayStringToLocalDate('2025-11-07')!;
+    const fromMarker = dateMarkerToLocalDate(marker(2025, 10, 7));
+    expect(fromAttribute.getTime()).toBe(fromMarker.getTime());
+  });
+
+  it('refuses anything that is not a day', () => {
+    for (const bad of ['', 'today', '2025-11', '2025-11-7', '2025-11-07T00:00', '2025-02-30']) {
+      expect(dayStringToLocalDate(bad)).toBeNull();
+    }
   });
 });

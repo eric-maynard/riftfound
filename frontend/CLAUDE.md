@@ -19,8 +19,8 @@ src/
 │   ├── TypeSelect.tsx    # Event-type picker with the chip colour dots
 │   ├── RecordBar.tsx     # W-L-D counts with a filled record bar
 │   ├── FormStrip.tsx     # Recent form as lettered result pips
-│   ├── DayEventsModal.tsx  # The "+N more" day list on phones
-│   ├── EventTrophyLink.tsx # The trophy on an event chip
+│   ├── DayEventsModal.tsx  # The day list, as a dialog, on every width
+│   ├── EventTrophyLink.tsx # The trophy on a day-list row
 │   ├── RatingMoveNote.tsx  # A day's rating movement, with what it is made of
 │   ├── SceneMap.tsx      # Leaflet canvas - pins on our own geometry basemap;
 │   │                     #   page and mini variants
@@ -36,6 +36,7 @@ src/
 │   ├── sceneMap.ts       # Pure helpers for the map (radii, bounds, copy, filter)
 │   ├── tournament.ts     # Pure helpers for the event page, incl. its scene line
 │   ├── calendarDates.ts  # FullCalendar date markers -> local dates
+│   ├── calendarGrid.ts   # Day counts, the `+`'s name, hover-card placement
 │   ├── eventColors.ts    # One chip colour per event type, measured
 │   └── geolocation.ts    # "Use my current location" as a pure state machine
 ├── hooks/
@@ -675,32 +676,118 @@ the heading, where a reader who has just arrived looks, and at the foot under
 - Pure logic lives in `lib/tournament.ts` and is tested without a DOM - the
   five contract warnings above each have a test.
 
+### Getting into a day's events
+
+Hovering a chip opens the hover card and that is how the grid is browsed -
+deliberately kept. But a hover card is a bad place for a *link*: reaching it
+means moving the pointer off the thing that opened it, and the card used to
+close on exactly that move. On a day with a "+N more" link there was a way
+round; on every other day the card's contents could not be clicked at all, and
+nowhere could they be reached by keyboard, since a FullCalendar chip is a
+`<div>` with no event `url` and so is not focusable.
+
+Four routes in now, all of them opening the **same dialog**
+(`DayEventsModal`): the `+` on a day cell, the "+N more" link, a tap on a
+cell, a tap on its date. FullCalendar's own "+N more" popover is retired -
+`moreLinkClick` returns `'none'` on every width. It was a second layout
+answering the same question, it existed only on the minority of days that
+overflow, and it was the sole reason the trophy needed a `display: none` on
+the grid plus a carve-out to show it back inside `.fc-popover`. Both are gone,
+and so is `.has-trophy`, which existed to let a chip's title shrink out of the
+glyph's way.
+
+#### The `+` on a day cell
+- A real `<button>` on **every day that has events**, injected by
+  `dayCellDidMount`. Not on empty days: a control that promises a list and
+  opens an empty one is a broken promise, and 42 identical controls are what a
+  screen reader has to read past to find the three that lead anywhere.
+- **Its accessible name carries the count and the date in full** - "Show all 3
+  events on Friday, November 7" (`dayListLabel`). A grid of buttons all named
+  "+" is useless: announced on its own, a cell's numeral has nothing around it
+  to say which day it means.
+- **Built by hand, not through `dayCellContent`.** That hook's content is
+  injected *inside* the `<a class="fc-daygrid-day-number">` FullCalendar wraps
+  around it, and interactive content inside an anchor is invalid markup that
+  announces as one confused control - the same reason `DayEventsModal` puts
+  its trophy beside its row button rather than in it.
+- **Absolutely positioned in `.fc-daygrid-day-frame`**, not a flex item in
+  `.fc-daygrid-day-top`. Two reasons, both load-bearing: the day-top is where
+  the cell is narrowest (at 390px a cell is ~51px and the numeral already owns
+  2rem of it), and `.fc-day-other .fc-daygrid-day-top` is `opacity: .3`, which
+  a child cannot climb out of. Out of flow it costs the grid nothing at any
+  width; it sits in the day-top's band, above the first chip, so it steals no
+  hover.
+- **The day comes off the cell's `data-date`, never a closure.** FullCalendar
+  re-renders the grid in place and may keep the same `<td>`s, in which case the
+  mount hook does not fire again and a captured date would open the wrong day's
+  list. `dayStringToLocalDate` parses it - with the `Date(y, m, d)`
+  constructor, because `new Date('2025-11-07')` is UTC midnight by spec and
+  reads back as the 6th west of UTC.
+- The click `stopPropagation`s natively, because FullCalendar's `dateClick` is
+  one delegated native listener and on touch it would open the list twice.
+- **Hidden under 600px**, and the reason is width rather than input. There is
+  no hover trap on a phone (`isMobile` withholds the card entirely) and the
+  whole cell plus its date already open the list, so a third tap target in a
+  51px cell buys nothing. The reader this leaves out is a desktop window
+  narrowed under 600px, who keeps the mouse and is covered by the card's own
+  footer instead.
+- Cyan, matching the "+N more" link in the same cell because they open the same
+  dialog. Measured on every ground a cell can have: 11.40:1 normal, 10.78:1
+  other-month, 8.70:1 on today's composited lavender wash, 7.95:1 on its own
+  hover tint.
+- The "+N more" link **stays** on an overflowing day rather than yielding to
+  the `+`. They are not rival doors - same dialog - and the link says what the
+  `+` cannot: that this cell is hiding events, and how many. What absorbed what
+  is that both of them absorbed the popover.
+
+#### The hover card's footer
+- The card keeps `pointer-events: none`. It is drawn over the pointer's own
+  cell and its neighbours, so a card that swallowed the mouse would turn every
+  chip behind it into a dead spot while it was open - and sweeping the pointer
+  across the grid is the thing this calendar is for.
+- **Only `.event-tooltip-actions` opts back in**: full card width, flush with
+  the card's bottom edge (negative margins cancelling the 1rem padding), ~24px
+  tall, about a dozen pixels above the cursor. The shortest reachable journey
+  there is, and the smallest bite out of the grid. The honest cost: while a
+  card is open, the one chip directly above the hovered one cannot be hovered
+  without leaving the footer first. A fully interactive card would have taken
+  a 300x150px bite instead.
+- **Leaving a chip schedules the close, it does not perform it**
+  (`HOVER_CARD_CLOSE_DELAY_MS`, 220ms). Entering another chip cancels and
+  replaces; the footer holds it open.
+- **The footer is read as a flag at schedule time, not as a cancel**, and that
+  is not an accident: React synthesises `onMouseEnter` from the `mouseout` of
+  the element being *left* when the thing being entered is also React-managed,
+  while FullCalendar's `eventMouseLeave` rides the real `mouseleave` that the
+  spec fires afterwards. The cancel therefore lands first, on a timer that does
+  not exist yet, and the schedule after it wins. Asking "is the pointer on the
+  footer" is immune to the ordering. This was observed, not reasoned about
+  after the fact - the first version closed the card under a stationary
+  pointer.
+- `clampCardX` keeps the card inside the viewport beside the last column, and
+  cannot slide it off the cursor: the clamp moves the centre by at most the
+  overhang, and inside `margin` pixels of an edge the margin gives way instead.
+  Both properties are tested.
+- Leaving the Events section closes the card: this page is hidden, not
+  unmounted, so a card left up by a pointer that never got a `mouseleave` would
+  be waiting at last week's coordinates on the way back.
+
+#### The day list (`DayEventsModal`)
+- A real dialog: `role="dialog"`, `aria-modal`, labelled by its date header,
+  focus in on open and back to the opener on close, Escape to dismiss (through
+  the same `isCloseDisabled` guard the backdrop uses, so a mobile card on top
+  of it closes first), and a visible close button.
+- It is **the keyboard route to everything the hover card holds**, which is why
+  the dialog treatment matters: every row and trophy in it is a real control in
+  the tab order, reached from a real button in the grid.
+- Each row renders the trophy as a *sibling* of the event button inside a
+  coloured band - a link inside a button is invalid markup. The band is 44px
+  tall; sized for touch, kept for the mouse.
+- Clicking a row opens the event's visit URL on desktop, exactly as a grid chip
+  does; on a phone it still raises the card on top of the list.
+
 ### The trophy affordance
-- `EventTrophyLink` renders inside FullCalendar's `eventContent`, because the
-  desktop "+N more" popover is drawn by FullCalendar and that is the only way
-  into it. One renderer therefore covers the grid chip and the popover.
-- **It rides the grid chip, not only a day list.** It used to be confined by
-  CSS to `.fc-popover`, which made it unreachable for almost everyone: with
-  `dayMaxEventRows` 3 a day needs **four** events before there is a "+N more"
-  link at all, and most days have one or two. The reason for the confinement
-  was real - availability was fetched one day list at a time, so a grid trophy
-  would have lit up only after someone had opened that day - so the *premise*
-  was removed rather than the symptom worked around. See the availability sweep
-  under CalendarPage.
-- Not on phones, where `renderEventContent` withholds it: the grid chip there
-  carries the bare time in a ~50px cell, and tapping the cell already opens the
-  day list, which carries the trophy at 44px. A `@media (max-width: 600px)`
-  rule hides it on the grid for a narrow *desktop* window too, sparing the
-  popover, which is not inside `.fc-daygrid-day-events`.
-- A chip that carries one gets `.has-trophy`, which lets the title shrink and
-  ellipsise. Without it the title is `white-space: nowrap` with `min-width:
-  auto`, so as a flex item its min-content is the whole string: it refuses to
-  shrink and shoves the trophy past the chip's `overflow: hidden`. Measured at
-  1280px: one line, the 15px glyph inside the chip's right edge, and the label
-  losing 16px it was already ellipsising away.
-- `DayEventsModal` is the phone path and renders it as a *sibling* of the event
-  button inside a coloured band - a link inside a button is invalid markup. The
-  band is 44px tall so the trophy is a real touch target.
+- `EventTrophyLink` renders in a day-list row and nowhere else on the calendar.
 - FullCalendar's `eventClick` is one delegated **native** listener on the view
   element, so a React `stopPropagation` is far too late. The anchor stops the
   native event itself and routes by hand; modified clicks fall through to the
@@ -754,10 +841,12 @@ the heading, where a reader who has just arrived looks, and at the foot under
   on each of `moreLinkClick`'s `allSegs`; `moreLinkClick`'s own `date` does
   **not**. Read with local getters, a Nov 7 cell headed its day list "Fri,
   Nov 6" everywhere west of UTC. `lib/calendarDates.ts` holds the conversion
-  (`dateMarkerToLocalDate`) and the local-day key `getEventsForDate` compares
-  on, both pure and both tested - including across a DST boundary, where a
-  blind offset lands an hour out. Only the `moreLinkClick` path converts; the
-  other two must be left alone.
+  (`dateMarkerToLocalDate`), the local-day key `getEventsForDate` compares on,
+  and `dayStringToLocalDate` for a cell's `data-date` - all pure and all
+  tested, including across a DST boundary, where a blind offset lands an hour
+  out. Only the `moreLinkClick` path converts a marker; the other two must be
+  left alone. All four routes funnel into one `openDayList`, so there is one
+  source of truth for what a day contains.
 - **Availability is swept over the whole visible range**, not one day list at a
   time. `CalendarPage` already loads every event for the range in one
   `calendarMode` request, so `loadAvailability` asks about all of them up
@@ -765,7 +854,10 @@ the heading, where a reader who has just arrived looks, and at the foot under
   25-mile month, four for 132 events, none per event, and never twice for the
   same id in a session. `displayEvents` is memoised so the sweep has a stable
   trigger. A failed batch puts its ids back, and opening a day list asks again
-  as the retry path.
+  as the retry path. **Both callers are gated on `isRankingsPreview`.** The
+  retry used not to be, which meant an unflagged reader opening a day list sent
+  requests about trophies they could never be shown - a trace of an unlisted
+  section, which is exactly what the flag exists to prevent.
 
 ### EventFilters
 - Format: dropdown (All, Constructed, Sealed, Draft, Multiplayer)
@@ -873,7 +965,8 @@ call it.
   background, and check the real ratio - an eyeball is not a measurement.
 - FullCalendar heavily customized via CSS variables
 - Fixed cell height (110px) for uniform grid
-- Tooltip z-index 10000 (above FullCalendar popover)
+- Tooltip z-index 10000, above the day list's backdrop at the same level and
+  the mobile card's at 10001
 
 ## API Integration
 

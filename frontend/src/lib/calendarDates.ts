@@ -47,3 +47,34 @@ export function dateMarkerToLocalDate(marker: Date): Date {
 export function localDateKey(date: Date): string {
   return `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`;
 }
+
+/**
+ * The day a grid cell was drawn for, read back off its `data-date`.
+ *
+ * FullCalendar stamps every day cell with `data-date="YYYY-MM-DD"`, formatted
+ * from the cell's own marker - so the string carries the cell's wall-clock day
+ * and nothing about any timezone. It is the only handle on a cell's identity
+ * available to code that walks the rendered grid rather than being handed a
+ * callback argument, which is how the day-cell control gets re-labelled when
+ * the events change.
+ *
+ * Parsed with the `Date(y, m, d)` constructor rather than `new Date(string)`.
+ * `new Date('2025-11-07')` is defined to be **UTC** midnight, so west of UTC
+ * it reads back as the 6th - the same off-by-one-day as the marker bug above,
+ * arriving by a different route.
+ *
+ * Returns `null` rather than an Invalid Date for anything that is not that
+ * shape, so a caller cannot accidentally key a map on `NaN`.
+ */
+export function dayStringToLocalDate(dayString: string): Date | null {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dayString);
+  if (!match) return null;
+  const [, year, month, day] = match;
+  const date = new Date(Number(year), Number(month) - 1, Number(day));
+  // A rolled-over date means the string named a day that does not exist, e.g.
+  // "2025-02-30": the constructor takes it and silently lands in March.
+  if (date.getMonth() !== Number(month) - 1 || date.getDate() !== Number(day)) {
+    return null;
+  }
+  return date;
+}
