@@ -4,6 +4,7 @@ import FullCalendar from '@fullcalendar/react';
 import dayGridPlugin from '@fullcalendar/daygrid';
 import interactionPlugin from '@fullcalendar/interaction';
 import type {
+  DayCellMountArg,
   EventClickArg,
   EventContentArg,
   EventHoveringArg,
@@ -13,7 +14,8 @@ import type {
 import type { DateClickArg } from '@fullcalendar/interaction';
 import { MAX_AVAILABILITY_IDS, getEvents, getTournamentAvailability } from '../services/api';
 import type { Event } from '../types/event';
-import { dateMarkerToLocalDate, localDateKey } from '../lib/calendarDates';
+import { dateMarkerToLocalDate, dayStringToLocalDate, localDateKey } from '../lib/calendarDates';
+import { clampCardX, dayEventCounts, dayListLabel } from '../lib/calendarGrid';
 import { eventColor } from '../lib/eventColors';
 import EventFilters, { type EventFilters as Filters } from '../components/EventFilters';
 import EventTooltip from '../components/EventTooltip';
@@ -21,7 +23,6 @@ import { isRankingsPreview } from '../lib/preview';
 import { locationControl, sameSpot, shouldAutoLocate } from '../lib/geolocation';
 import { useCurrentLocation } from '../hooks/useCurrentLocation';
 import DayEventsModal from '../components/DayEventsModal';
-import EventTrophyLink from '../components/EventTrophyLink';
 
 // Miles to km conversion
 const MILES_TO_KM = 1.60934;
@@ -35,6 +36,32 @@ const DEFAULT_LOCATION = {
 };
 
 const DEFAULT_DISTANCE_MILES = 25;
+
+/**
+ * How long the hover card outlives the pointer leaving a chip.
+ *
+ * The card has links in it and the pointer has to get there, which means
+ * crossing ten pixels of nothing - and on the way the chip's `mouseleave`
+ * fires. Closing on that event, which is what this page used to do, is what
+ * made the card's contents unreachable by mouse on any day without a
+ * "+N more" link to escape through.
+ *
+ * 220ms is long enough for a deliberate move onto the card's footer and short
+ * enough that a card left behind by a pointer heading somewhere else is gone
+ * before anyone reads it as stuck. Any chip entered inside the window cancels
+ * the close and swaps the content, so sweeping along a row of chips still
+ * shows one card, not a trail of them.
+ */
+const HOVER_CARD_CLOSE_DELAY_MS = 220;
+
+/** `.event-tooltip`'s own `max-width` in index.css, which `clampCardX` needs. */
+const HOVER_CARD_MAX_WIDTH = 300;
+
+/** The gap the clamp keeps between a clamped card and the viewport edge. */
+const HOVER_CARD_VIEWPORT_MARGIN = 8;
+
+/** Marks the `+` this page injects into every day cell that has events. */
+const DAY_LIST_BUTTON_CLASS = 'day-list-button';
 
 // Filter out full events if the setting is off.
 const isEventFull = (event: Event): boolean =>
@@ -337,10 +364,75 @@ function CalendarPage({ active = true }: CalendarPageProps) {
   // Track when tooltip just closed to prevent touch event from also closing the modal
   // Use ref so we can check it at click time, not render time
   const modalDisabledUntilRef = useRef(0);
+  // The pending hover-card close. See HOVER_CARD_CLOSE_DELAY_MS.
+  const tooltipCloseTimerRef = useRef<number | null>(null);
+  // Whether the pointer is on the hover card's footer. See below.
+  const pointerOnCardRef = useRef(false);
+
   const calendarRef = useRef<FullCalendar>(null);
+  // The rendered grid, for the one job that needs the real DOM: keeping the
+  // injected day-cell buttons labelled. `getApi()` returns a `CalendarApi`,
+  // which does not publish its root element.
+  const calendarWrapperRef = useRef<HTMLDivElement>(null);
   const [searchTrigger, setSearchTrigger] = useState(0);
   const isUserSearchRef = useRef(false); // Track if search was user-initiated
   const isMobile = useIsMobile();
+
+  /*
+   * The hover card's lifetime.
+   *
+   * It used to be exactly the pointer's time on the chip, which made the links
+   * inside it unreachable: moving towards the card is moving off the chip. So
+   * leaving a chip only *schedules* the close, and two things stop it -
+   * entering another chip, which replaces the card, and the pointer being on
+   * the card's footer, the one part of it that takes pointer events at all.
+   *
+   * **The footer is a flag, not a cancel, and that is not an accident.** The
+   * obvious shape - cancel the pending close on the footer's `mouseenter` -
+   * does not work, because the two events arrive in the wrong order. React
+   * synthesises `onMouseEnter` from the *`mouseout` of the element being
+   * left*, when the thing being entered is also React-managed; FullCalendar's
+   * `eventMouseLeave` rides a real `mouseleave` on the chip, which the spec
+   * fires after that `mouseout`. So the cancel lands first, on a timer that
+   * does not exist yet, and the schedule that follows it wins. This was
+   * watched happening in a browser, not guessed at afterwards: the first
+   * version closed the card under a stationary pointer. Asking "is the pointer
+   * on the footer" at schedule time is immune to the ordering entirely.
+   *
+   * Nothing here makes the card sticky. There is no path that holds it open
+   * without the pointer being on a chip or on that footer, the flag is cleared
+   * on every route that puts a card up or takes one down, and the body of the
+   * card stays transparent to the mouse, so a pointer crossing it is hovering
+   * the grid underneath exactly as before.
+   */
+  const cancelTooltipClose = useCallback(() => {
+    if (tooltipCloseTimerRef.current !== null) {
+      window.clearTimeout(tooltipCloseTimerRef.current);
+      tooltipCloseTimerRef.current = null;
+    }
+  }, []);
+
+  const scheduleTooltipClose = useCallback(() => {
+    cancelTooltipClose();
+    if (pointerOnCardRef.current) return;
+    tooltipCloseTimerRef.current = window.setTimeout(() => {
+      tooltipCloseTimerRef.current = null;
+      setTooltipEvent(null);
+    }, HOVER_CARD_CLOSE_DELAY_MS);
+  }, [cancelTooltipClose]);
+
+  const handleFooterEnter = useCallback(() => {
+    pointerOnCardRef.current = true;
+    cancelTooltipClose();
+  }, [cancelTooltipClose]);
+
+  const handleFooterLeave = useCallback(() => {
+    pointerOnCardRef.current = false;
+    scheduleTooltipClose();
+  }, [scheduleTooltipClose]);
+
+  // A timer that fires into an unmounted page is a React warning and a leak.
+  useEffect(() => cancelTooltipClose, [cancelTooltipClose]);
 
   // "Use my current location" - one owner for the page-load default and the
   // button in the filters, which used to be two separate implementations.
@@ -716,8 +808,10 @@ function CalendarPage({ active = true }: CalendarPageProps) {
   };
 
   const handleTooltipClose = useCallback(() => {
+    cancelTooltipClose();
+    pointerOnCardRef.current = false;
     setTooltipEvent(null);
-  }, []);
+  }, [cancelTooltipClose]);
 
   // Get events for a specific date, sorted by start time then ID.
   // Compare on local date components — FullCalendar buckets events by local
@@ -745,8 +839,15 @@ function CalendarPage({ active = true }: CalendarPageProps) {
    * an affordance arriving after the fact. But `CalendarPage` already loads
    * every event for the range in one `calendarMode` request, so there is
    * nothing to be gained by asking late - and most days never produce a
-   * "+N more" link at all (six or fewer events need no popover), so the
-   * affordance was effectively unreachable on desktop.
+   * "+N more" link at all, which was the only day list desktop had, so the
+   * affordance was effectively unreachable there. The `+` on every day with
+   * events has since removed that second problem; this sweep is what lets the
+   * trophies be in place before anybody opens anything.
+   *
+   * Both callers - the range sweep and the day-list retry - are behind the
+   * Rankings preview flag. The retry was not, and that was a leak: Rankings is
+   * unlisted, and an unflagged reader opening a day list was sending requests
+   * about trophies they could never be shown.
    *
    * Still batched at the endpoint's documented 50 ids a call, so a 25-mile
    * month (~50 events) is one request and a 200km one (~200) is four, once per
@@ -801,99 +902,251 @@ function CalendarPage({ active = true }: CalendarPageProps) {
     loadAvailability(displayEvents);
   }, [rankingsPreview, displayEvents, loadAvailability]);
 
+  /**
+   * Open a day's list. The one way in, whichever affordance was used.
+   *
+   * There are four: the `+` on the day cell, the "+N more" link, a tap on a
+   * cell and a tap on its date number. All four used to build the list
+   * themselves - three from `getEventsForDate`, "+N more" from FullCalendar's
+   * own `allSegs` - and two of them were gated on `isMobile`. One opener means
+   * one source of truth for what a day contains and one place the availability
+   * retry lives.
+   *
+   * `date` must already be a real local `Date`: see lib/calendarDates.ts for
+   * which of FullCalendar's callbacks hand over a marker instead.
+   */
+  const openDayList = useCallback((date: Date) => {
+    const dayEvents = getEventsForDate(date);
+    if (dayEvents.length === 0) return;
+    setDayEventsModal({ date, events: dayEvents });
+    // The range sweep has normally answered for these already; this is the
+    // retry path for a batch whose request failed. Gated on the flag, like the
+    // sweep itself: without it there is no trophy to light, so an unflagged
+    // reader should not be sending Rankings requests either.
+    if (rankingsPreview) loadAvailability(dayEvents);
+  }, [getEventsForDate, loadAvailability, rankingsPreview]);
+
+  /*
+   * Held in a ref as well, for the two callers that cannot re-subscribe.
+   *
+   * `dayCellDidMount` is handed to FullCalendar as an option, and a new
+   * function identity there makes it re-render every cell in the month - which
+   * would mean re-creating all 42 buttons on every keystroke in the filters.
+   * The injected button's own native listener has the same problem from the
+   * other side: it is attached once, at mount, and must still call the current
+   * opener a month later.
+   */
+  const openDayListRef = useRef(openDayList);
+  openDayListRef.current = openDayList;
+
   // Handle date click (on mobile, show day events modal)
   const handleDateClick = useCallback((info: DateClickArg) => {
     if (!isMobile) return;
-    const dayEvents = getEventsForDate(info.date);
-    if (dayEvents.length > 0) {
-      setDayEventsModal({ date: info.date, events: dayEvents });
-      loadAvailability(dayEvents);
-    }
-  }, [isMobile, getEventsForDate, loadAvailability]);
+    openDayList(info.date);
+  }, [isMobile, openDayList]);
 
   // Handle nav link day click (clicking the date number)
   const handleNavLinkDayClick = useCallback((date: Date) => {
     if (!isMobile) return;
-    const dayEvents = getEventsForDate(date);
-    if (dayEvents.length > 0) {
-      setDayEventsModal({ date, events: dayEvents });
-      loadAvailability(dayEvents);
-    }
-  }, [isMobile, getEventsForDate, loadAvailability]);
-
-  // Handle "+more" link click - use our custom modal instead of FullCalendar's popover
-  const handleMoreLinkClick = useCallback((info: MoreLinkArg): string => {
-    // Extract our Event objects from FullCalendar's event segments
-    const dayEvents = info.allSegs.map(seg => seg.event.extendedProps.event as Event);
-    // The range sweep has normally answered for these already; this is the
-    // retry path for a batch whose request failed.
-    if (dayEvents.length > 0) loadAvailability(dayEvents);
-
-    if (!isMobile) return 'popover'; // On desktop, use FullCalendar's default popover
-    if (dayEvents.length > 0) {
-      // `info.date` is a FullCalendar *date marker* - a Date whose UTC fields
-      // carry the cell's wall-clock values - and this is the one callback that
-      // hands one over unconverted. Rendered with local getters, a Nov 7 cell
-      // headed its list "Fri, Nov 6" everywhere west of UTC. `dateClick` and
-      // `navLinkDayClick` come from the interaction plugin already converted,
-      // so they must be left exactly as they are. See lib/calendarDates.ts.
-      setDayEventsModal({ date: dateMarkerToLocalDate(info.date), events: dayEvents });
-    }
-    // Return 'none' to prevent FullCalendar's default popover on mobile
-    return 'none';
-  }, [isMobile, loadAvailability]);
+    openDayList(date);
+  }, [isMobile, openDayList]);
 
   /**
-   * An event chip's contents, in the grid cell and in the desktop "+N more"
-   * popover alike - FullCalendar draws that popover itself, and `eventContent`
-   * is the only way into it, so one renderer covers both.
+   * "+N more" opens the day list, on every width.
    *
-   * The trophy now rides the grid chip as well. It used to be confined by CSS
-   * to `.fc-popover`, which made it unreachable: a day needs seven events
-   * before FullCalendar draws a "+N more" link at all, and almost no day has
-   * that many. The reason for the confinement - availability being fetched one
-   * day list at a time - has been removed rather than worked around; the sweep
-   * now covers the whole visible range up front.
+   * It used to return `'popover'` on desktop and let FullCalendar draw its own
+   * day list. That popover is gone, and deliberately: it was a second layout
+   * for the same question, it only ever existed on the days that overflow, and
+   * it was the sole reason the trophy had a `display: none` on the grid and a
+   * carve-out to show it back again inside `.fc-popover`. One day list now,
+   * from all four routes, which is also the only one with dialog semantics.
    *
-   * Not on phones, though. There the grid chip carries the time alone in a
-   * ~50px cell and the whole cell already opens the day list on a tap, where
-   * the trophy is a real 44px target.
+   * The `+` on the cell stays where it is on an overflowing day rather than
+   * yielding to this link. They are not rival doors - they open the same
+   * dialog - and the link says something the `+` cannot, which is that this
+   * cell is not showing everything it holds and how much it is hiding. What
+   * absorbed what here is that both of them absorbed the popover.
+   */
+  const handleMoreLinkClick = useCallback((info: MoreLinkArg): string => {
+    // `info.date` is a FullCalendar *date marker* - a Date whose UTC fields
+    // carry the cell's wall-clock values - and this is the one callback that
+    // hands one over unconverted. Rendered with local getters, a Nov 7 cell
+    // headed its list "Fri, Nov 6" everywhere west of UTC. `dateClick` and
+    // `navLinkDayClick` come from the interaction plugin already converted,
+    // so they must be left exactly as they are. See lib/calendarDates.ts.
+    openDayListRef.current(dateMarkerToLocalDate(info.date));
+    // Never FullCalendar's own popover.
+    return 'none';
+  }, []);
+
+  /**
+   * An event chip's contents.
+   *
+   * Just the title. The trophy used to ride this too, because `eventContent`
+   * was the only way into FullCalendar's "+N more" popover - that popover is
+   * retired, and with it the `display: none` plus `.fc-popover` carve-out that
+   * dance needed. The routes to an event's standings are the hover card's
+   * footer and the day list's own trophies, both of which can actually be
+   * clicked.
    */
   const renderEventContent = useCallback((arg: EventContentArg) => {
-    const eventData = arg.event.extendedProps.event as Event | undefined;
-    const hasTournament =
-      rankingsPreview && !isMobile && eventData ? tournamentIds.has(eventData.externalId) : false;
     return (
-      // `has-trophy` lets the title shrink and ellipsise rather than shoving
-      // the trophy out past the chip's clip - see index.css.
-      <div className={`fc-event-row${hasTournament ? ' has-trophy' : ''}`}>
+      <div className="fc-event-row">
         <div className="fc-event-title fc-sticky">{arg.event.title}</div>
-        {hasTournament && eventData && (
-          <EventTrophyLink
-            externalId={eventData.externalId}
-            label={eventData.name || eventData.organizer || 'this event'}
-          />
-        )}
       </div>
     );
-  }, [tournamentIds, isMobile, rankingsPreview]);
+  }, []);
+
+  /**
+   * How many events each day holds, so the `+` on a cell can say so.
+   *
+   * Counted once per set of displayed events rather than per cell: a label
+   * change touches all 42 cells of a month, and 42 passes over the event list
+   * to count them is work for nothing. Keyed the way `getEventsForDate`
+   * buckets, so the button's count and the list it opens cannot disagree.
+   */
+  const dayCounts = useMemo(() => dayEventCounts(displayEvents), [displayEvents]);
+
+  /**
+   * Put the current state on one day-cell button: hidden, or named.
+   *
+   * **The day comes off the cell's `data-date`, never out of a closure.**
+   * FullCalendar re-renders the grid in place on a month change and may keep
+   * the same `<td>` elements, in which case the mount hook does not fire
+   * again - a captured `arg.date` would then open November's list from a
+   * December cell. The attribute is whatever the cell is currently drawn for.
+   *
+   * **A day with no events gets no button.** A control that promises a list
+   * and opens an empty one is a broken promise, and the alternative is 42
+   * identical controls a screen reader has to read past to find the three that
+   * lead anywhere. `hidden` rather than a class, so it leaves the tab order
+   * and the accessibility tree together.
+   */
+  const applyDayListButton = useCallback(
+    (button: HTMLButtonElement, dayString: string | null) => {
+      const date = dayString ? dayStringToLocalDate(dayString) : null;
+      const count = date ? dayCounts.get(localDateKey(date)) ?? 0 : 0;
+      if (!date || count === 0) {
+        button.hidden = true;
+        button.removeAttribute('aria-label');
+        button.removeAttribute('title');
+        return;
+      }
+      // The whole name, not a bare "+": announced on its own in a screen
+      // reader's list of controls, a cell's numeral has nothing around it to
+      // say which day it means. See lib/calendarGrid.ts.
+      const label = dayListLabel(date, count);
+      button.hidden = false;
+      button.setAttribute('aria-label', label);
+      button.title = label;
+    },
+    [dayCounts]
+  );
+
+  const applyDayListButtonRef = useRef(applyDayListButton);
+  applyDayListButtonRef.current = applyDayListButton;
+
+  /**
+   * The `+` on a day cell: a guaranteed click into that day's events.
+   *
+   * Hovering a chip is how this grid is browsed and the hover card is the
+   * right thing for it, but a card you have to chase with the pointer is the
+   * wrong place for a *link*. Only the days that overflow had a second way in,
+   * through "+N more", so on every other day the card's contents could not be
+   * reached by mouse at all - and could never be reached by keyboard anywhere,
+   * since a FullCalendar chip is a `<div>` with no `url` and so is not
+   * focusable. One plain button per day with events fixes both at once.
+   *
+   * **Built by hand rather than through `dayCellContent`.** That hook's
+   * content is injected *inside* the `<a class="fc-daygrid-day-number">`
+   * FullCalendar wraps around it, and interactive content inside an anchor is
+   * invalid markup that announces as one confused control - the same reason
+   * `DayEventsModal` puts its trophy beside its row button instead of in it.
+   * So the button is appended to `.fc-daygrid-day-frame` and positioned
+   * absolutely in its top-left corner, which also keeps it out of two things:
+   * the day-top's flex row, where it would have competed with the date for a
+   * ~51px cell, and `.fc-day-other`'s `opacity: .3`, which a child cannot
+   * climb back out of.
+   *
+   * Stable identity, deliberately: handed to FullCalendar as an option, a new
+   * function here re-renders every cell in the month, so the pieces that do
+   * change ride refs instead.
+   */
+  const handleDayCellDidMount = useCallback((arg: DayCellMountArg) => {
+    const cell = arg.el;
+    const frame = cell.querySelector('.fc-daygrid-day-frame');
+    if (!frame || frame.querySelector(`.${DAY_LIST_BUTTON_CLASS}`)) return;
+
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = DAY_LIST_BUTTON_CLASS;
+    const glyph = document.createElement('span');
+    // The name is on the button; a "+" announced after it is noise.
+    glyph.setAttribute('aria-hidden', 'true');
+    glyph.textContent = '+';
+    button.appendChild(glyph);
+
+    button.addEventListener('click', (event) => {
+      // FullCalendar's `dateClick` is one delegated *native* listener on the
+      // view element, so a React `stopPropagation` would be far too late - the
+      // same reason EventTrophyLink handles its own clicks. It matters on
+      // touch, where `dateClick` would otherwise open this list a second time.
+      event.stopPropagation();
+      event.preventDefault();
+      const date = dayStringToLocalDate(cell.getAttribute('data-date') ?? '');
+      if (date) openDayListRef.current(date);
+    });
+
+    frame.appendChild(button);
+    applyDayListButtonRef.current(button, cell.getAttribute('data-date'));
+  }, []);
+
+  /**
+   * Re-label the buttons already in the grid.
+   *
+   * The mount hook covers a cell that has just been created; this covers the
+   * ones that were already there when the answer changed - a search landing, a
+   * type filter, "show full events", or a month navigation that reused the
+   * same cells with new dates. `applyDayListButton` changes identity with the
+   * counts, so this effect is keyed on exactly that, plus the visible range
+   * for the case where the events are cached and only the dates moved.
+   */
+  useEffect(() => {
+    const root = calendarWrapperRef.current;
+    if (!root) return;
+    root.querySelectorAll<HTMLElement>('.fc-daygrid-day').forEach((cell) => {
+      const button = cell.querySelector<HTMLButtonElement>(`.${DAY_LIST_BUTTON_CLASS}`);
+      if (button) applyDayListButton(button, cell.getAttribute('data-date'));
+    });
+  }, [applyDayListButton, visibleDateRange, active]);
 
   const handleDayEventsClose = useCallback(() => {
     setDayEventsModal(null);
   }, []);
 
   const handleDayEventClick = useCallback((event: Event) => {
+    if (!isMobile) {
+      // The same thing a grid chip does with a click on desktop: the day list
+      // is now a desktop surface too, and a row in it that opened a *hover*
+      // card - positioned at wherever the pointer last was, over the dialog
+      // the reader is looking at - would be answering a click with the one
+      // affordance they had just worked around.
+      window.open(`/api/events/${event.id}/visit`, '_blank');
+      return;
+    }
     // Keep day events modal open, just show tooltip on top
     setTooltipEvent(event);
-  }, []);
+  }, [isMobile]);
 
   // When closing tooltip, if day events modal is open, just close tooltip (go back to modal)
   // Set a brief disabled period to prevent touch events from also closing the modal
   const handleTooltipCloseWithModal = useCallback(() => {
+    cancelTooltipClose();
+    pointerOnCardRef.current = false;
     setTooltipEvent(null);
     // Disable modal backdrop clicks for 300ms to prevent touch event double-firing
     modalDisabledUntilRef.current = Date.now() + 300;
-  }, []);
+  }, [cancelTooltipClose]);
 
   // Callback to check if modal close should be disabled (checked at click time, not render time)
   const isModalCloseDisabled = useCallback(() => {
@@ -903,15 +1156,31 @@ function CalendarPage({ active = true }: CalendarPageProps) {
   const handleEventMouseEnter = (info: EventHoveringArg) => {
     // Disable hover tooltip on mobile (tap-to-view handles it)
     if (isMobile) return;
+    cancelTooltipClose();
+    // A new chip means the pointer is on the grid, whatever the last card's
+    // footer thought - and a card that was torn down with the pointer still
+    // over it never got a `mouseleave` to say so.
+    pointerOnCardRef.current = false;
     const eventData = info.event.extendedProps.event as Event;
     setTooltipEvent(eventData);
-    setTooltipPosition({ x: info.jsEvent.clientX, y: info.jsEvent.clientY });
+    setTooltipPosition({
+      // Clamped so a chip in the last column does not put half the card - and
+      // half its footer - over the side of the viewport. The cursor always
+      // stays under the card; see clampCardX.
+      x: clampCardX(
+        info.jsEvent.clientX,
+        HOVER_CARD_MAX_WIDTH,
+        window.innerWidth,
+        HOVER_CARD_VIEWPORT_MARGIN
+      ),
+      y: info.jsEvent.clientY,
+    });
   };
 
   const handleEventMouseLeave = () => {
     // Disable hover tooltip on mobile (tap-to-view handles it)
     if (isMobile) return;
-    setTooltipEvent(null);
+    scheduleTooltipClose();
   };
 
   // A hidden container has no measurable size, so FullCalendar needs to
@@ -921,6 +1190,14 @@ function CalendarPage({ active = true }: CalendarPageProps) {
       calendarRef.current?.getApi().updateSize();
     }
   }, [active]);
+
+  // Leaving the section takes the hover card with it. This page is hidden
+  // rather than unmounted on the way to Rankings, so a card left up by a
+  // pointer that never got a `mouseleave` would be waiting, at last week's
+  // coordinates, when the reader came back.
+  useEffect(() => {
+    if (!active) handleTooltipClose();
+  }, [active, handleTooltipClose]);
 
   // Track visible date range for incremental fetching
   // Called on initial load and when navigating months
@@ -971,7 +1248,7 @@ function CalendarPage({ active = true }: CalendarPageProps) {
         </div>
       )}
 
-      <div className="fc-wrapper">
+      <div className="fc-wrapper" ref={calendarWrapperRef}>
         {loading && (
           <div className="loading-overlay">
             <div>Loading events...</div>
@@ -1032,6 +1309,7 @@ function CalendarPage({ active = true }: CalendarPageProps) {
           eventClick={handleEventClick}
           eventMouseEnter={handleEventMouseEnter}
           eventMouseLeave={handleEventMouseLeave}
+          dayCellDidMount={handleDayCellDidMount}
           dateClick={handleDateClick}
           datesSet={handleDatesSet}
           validRange={{
@@ -1092,6 +1370,8 @@ function CalendarPage({ active = true }: CalendarPageProps) {
           position={tooltipPosition}
           isMobile={isMobile}
           onClose={dayEventsModal ? handleTooltipCloseWithModal : handleTooltipClose}
+          onFooterEnter={handleFooterEnter}
+          onFooterLeave={handleFooterLeave}
         />
       )}
 

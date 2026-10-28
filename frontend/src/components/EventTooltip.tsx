@@ -1,6 +1,7 @@
 import { Link } from 'react-router-dom';
 import type { Event } from '../types/event';
 import { eventColor } from '../lib/eventColors';
+import { carryPreview } from '../lib/preview';
 
 interface EventTooltipProps {
   event: Event;
@@ -9,9 +10,13 @@ interface EventTooltipProps {
   onClose?: () => void;
   /**
    * Whether this event has standings or a roster worth linking to. The hover
-   * card is where the link lives now: the trophy was taken off the grid, and
-   * FullCalendar only draws its "+N more" popover from four events up, so
-   * events on quieter days had no route to their page at all.
+   * card is one of the two places the link lives, the day list being the
+   * other; the grid chip carries no trophy.
+   *
+   * It was the *only* place for a while, and unreachable there: the card
+   * closed the moment the pointer left the chip, so on any day without a
+   * "+N more" link to escape through, nobody could click it. The footer below
+   * is the fix.
    *
    * Already gated on the Rankings preview flag by the caller - the set is
    * empty without it - so an unflagged reader never sees this.
@@ -19,6 +24,27 @@ interface EventTooltipProps {
   hasTournament?: boolean;
   /** Carried through so the link keeps the preview flag alive. */
   linkSearch?: string;
+  /**
+   * The pointer arrived on, or left, the card's footer - the one strip of it
+   * that takes pointer events at all.
+   *
+   * The card is `pointer-events: none` everywhere else and stays that way: it
+   * is drawn over the pointer's own cell and its neighbours, so a card that
+   * swallowed the mouse would turn every chip behind it into a dead spot for
+   * as long as it was open, and hover-browsing is the thing this grid is for.
+   * The footer is the exception because it is the only part anyone needs to
+   * *click*, and it is 24px tall and flush with the card's bottom edge, a
+   * pixel or two above the cursor - the shortest reachable journey there is.
+   *
+   * The caller runs a close timer rather than closing on the chip's
+   * `mouseleave`; these two tell it when to hold off and when to let go. It
+   * reads them as a *state* rather than as a cancel, because React synthesises
+   * `onMouseEnter` from the `mouseout` of the element being left and so
+   * delivers this one before FullCalendar's own `eventMouseLeave`; the
+   * reasoning is written out where the timer lives.
+   */
+  onFooterEnter?: () => void;
+  onFooterLeave?: () => void;
 }
 
 function formatDate(dateString: string): string {
@@ -71,10 +97,32 @@ function formatLocation(event: Event): string | null {
   return null;
 }
 
-function EventTooltip({ event, position, isMobile, onClose, hasTournament, linkSearch }: EventTooltipProps) {
+function EventTooltip({
+  event,
+  position,
+  isMobile,
+  onClose,
+  hasTournament,
+  linkSearch,
+  onFooterEnter,
+  onFooterLeave,
+}: EventTooltipProps) {
   const location = formatLocation(event);
   const time = formatTime(new Date(event.startDate));
   const visitUrl = `/api/events/${event.id}/visit`;
+  /*
+   * Wrapped in `carryPreview` even though `linkSearch` is the query the reader
+   * is already on and so already holds the flag. That is the deal lib/preview.ts
+   * asks for - every internal link generated inside the preview goes through
+   * the one carrier - and it costs nothing: with the flag present on the target
+   * the target comes back character for character. What it buys is that this
+   * link cannot be the surface that drops it if the caller ever narrows what it
+   * passes down.
+   */
+  const standingsTo = carryPreview(
+    `/events/${encodeURIComponent(event.externalId)}${linkSearch ? `?${linkSearch}` : ''}`,
+    linkSearch ?? ''
+  );
 
   const handleBackdropClick = (e: React.MouseEvent) => {
     if (e.target === e.currentTarget && onClose) {
@@ -147,15 +195,21 @@ function EventTooltip({ event, position, isMobile, onClose, hasTournament, linkS
           )}
         </div>
 
-        {hasTournament && (
-          <Link
-            to={{ pathname: `/events/${event.externalId}`, search: linkSearch ?? '' }}
-            className="event-tooltip-standings"
-          >
+      </div>
+
+      {hasTournament && (
+        // The card's footer: full width, flush with its bottom edge, and the
+        // only part of the card that takes pointer events. See onFooterEnter.
+        <div
+          className="event-tooltip-actions"
+          onMouseEnter={onFooterEnter}
+          onMouseLeave={onFooterLeave}
+        >
+          <Link to={standingsTo} className="event-tooltip-standings">
             Standings and roster &rsaquo;
           </Link>
-        )}
-      </div>
+        </div>
+      )}
     </div>
   );
 

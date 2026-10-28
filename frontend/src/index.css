@@ -928,21 +928,18 @@ select:disabled {
 }
 
 /* ---------------------------------------------------------------
-   The trophy on an event chip
+   The trophy on an event row
    ---------------------------------------------------------------
-   It rides the chip itself - in the grid cell, in the desktop "+N more"
-   popover, and in DayEventsModal on phones. FullCalendar draws that popover
-   itself and `eventContent` is the only way inside it, so one renderer covers
-   the grid and the popover; the modal renders the same component as a sibling
-   of the event button.
+   It lives in `DayEventsModal`'s day list, on every width, and nowhere else on
+   the calendar. It used to ride the grid chip too, hidden by the rule below
+   and shown back inside `.fc-popover`, because FullCalendar draws its own
+   "+N more" popover and `eventContent` was the only way into it. That popover
+   is retired - all four routes into a day's events open the modal now - so
+   both halves of the contortion are gone with it, and so is `.has-trophy`,
+   which existed only to let a chip's title shrink out of the glyph's way.
 
-   It used to be confined here to `.fc-popover`, which meant almost nobody
-   could reach it: with dayMaxEventRows 3 a day needs four events before there
-   is a "+N more" link at all, and most days have one or two. The reason for
-   the confinement - availability being fetched one day list at a time, so a
-   grid trophy would have lit up only after the fact - has been removed in
-   CalendarPage instead: the sweep now covers the whole visible range up front,
-   batched 50 ids a call.
+   The grid's own routes to an event's standings are the hover card's footer
+   (`.event-tooltip-actions`) and this list, reached from the `+` on the cell.
 
    The ink is #21222c, the app's own darkest surface, read here as dark grey
    ink. Measured against each chip colour it actually sits on - not against the
@@ -989,46 +986,72 @@ select:disabled {
   text-decoration: none;
 }
 
-/* In the grid cell the chip is 0.7rem on one clipped line, so the trophy takes
-   the glyph's own 13px and no more; the cell is ~160px wide at desktop widths
-   and the title already ellipsises, so it loses 16px of label rather than
-   wrapping. In the popover the chips are a list with room to spare, so the
-   target grows to 24px. */
-/* Not on the calendar grid. One `eventContent` renders both the grid chip and
-   the "+N more" popover, so the popover - the only way into FullCalendar's own
-   day list - is reached by hiding it everywhere and showing it back there. The
-   cost is real and worth knowing: a day with three or fewer events has no
-   "+N more" link, so those events have no trophy on desktop at all. */
-.fc .event-trophy {
+/* ---------------------------------------------------------------
+   The `+` on a day cell
+   ---------------------------------------------------------------
+   A day with events gets a plain button in its top-left corner that opens that
+   day's list. It is the deterministic click path the hover card is not: the
+   card's own links are reachable now (see `.event-tooltip-actions`), but
+   reaching them is still a short, aimed pointer move, and this is a target
+   that sits still.
+
+   `position: absolute` in `.fc-daygrid-day-frame`, which FullCalendar already
+   makes `position: relative`, rather than a flex item in `.fc-daygrid-day-top`
+   beside the date. Two reasons, both load-bearing:
+     - the day-top is where the cell is narrowest. At 390px a cell measures 51px and
+       the date numeral already claims 2rem of it with its padding; a second
+       item in that row is what makes a `<td>` wider than its column and drags
+       the whole page sideways. Out of flow, this costs the grid nothing at any
+       width.
+     - `.fc .fc-day-other .fc-daygrid-day-top` is `opacity: .3`, and opacity
+       applies to the subtree - a child cannot climb back out of it. Inside the
+       day-top, the button on a trailing-month day would have been a third as
+       visible as the one next to it.
+   It sits in the day-top's own band (~31px tall here, from the day number's
+   0.5rem padding), above where the first chip starts, so it overlaps no chip
+   and steals no hover.
+
+   Cyan, the colour the "+N more" link in the same cell already uses, because
+   they open the same dialog. Measured on every ground a day cell can have:
+     #21222c normal cell        11.40:1
+     #2a2b36 other-month cell   10.78:1
+     #38334b today (the 15%
+       lavender wash composited)  8.70:1
+     #303d49 its own hover tint   7.95:1
+   Text needs 4.5:1 and a graphic 3:1; the glyph clears both everywhere. */
+.fc .day-list-button {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: none;
+  border-radius: 3px;
+  background: none;
+  color: var(--color-cyan);
+  font-size: 0.95rem;
+  font-weight: 600;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.fc .day-list-button[hidden] {
+  /* `display: flex` above would otherwise beat the `hidden` attribute. */
   display: none;
 }
 
-.fc .fc-popover .event-trophy {
-  display: inline-flex;
-  min-width: 24px;
-  min-height: 24px;
+.fc .day-list-button:hover {
+  background-color: rgba(139, 233, 253, 0.14);
 }
 
-.fc .fc-popover .fc-event {
-  padding: 2px 3px;
-}
-
-/* In the popover the chips are a list, so the title takes the room it has and
-   ellipsises; in the grid a chip with no trophy keeps the hard clip it has
-   always had.
-
-   A chip that *does* carry a trophy has to yield, though. The grid title is
-   `white-space: nowrap` with `min-width: auto`, so as a flex item its
-   min-content is the whole string: left alone it refuses to shrink and pushes
-   the trophy past the chip's `overflow: hidden`, where it is invisible. So the
-   trophy's own chips - and only those - get the shrink-and-ellipsise
-   treatment. */
-.fc .fc-popover .fc-event-row .fc-event-title,
-.fc .fc-event-row.has-trophy .fc-event-title {
-  flex: 1 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
+.fc .day-list-button:focus-visible {
+  outline: 2px solid var(--color-cyan);
+  outline-offset: 1px;
 }
 
 .fc .fc-more-link,
@@ -1036,24 +1059,6 @@ select:disabled {
   color: var(--color-cyan);
   font-size: 0.75rem;
   font-weight: 500;
-}
-
-/* Popover for +N more */
-.fc .fc-popover {
-  background-color: var(--color-bg-secondary);
-  border-color: var(--color-border);
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
-  z-index: 100;
-}
-
-.fc .fc-popover-header {
-  background-color: var(--color-bg-tertiary);
-  color: var(--color-text);
-  padding: 0.5rem;
-}
-
-.fc .fc-popover-body {
-  background-color: var(--color-bg-secondary);
 }
 
 .fc th {
@@ -1078,7 +1083,18 @@ select:disabled {
   cursor: not-allowed;
 }
 
-/* Event tooltip - must be above popover */
+/* ---------------------------------------------------------------
+   The hover card
+   ---------------------------------------------------------------
+   `pointer-events: none` on the card itself, and it stays that way. The card
+   is drawn over the cell the pointer is in and its neighbours - 300px wide and
+   anchored above the cursor - so a card that took the mouse would turn every
+   chip behind it into a dead spot for as long as it was open, and sweeping the
+   pointer across the grid is what this calendar is for. Only
+   `.event-tooltip-actions` opts back in; nothing else in here is clickable.
+
+   `max-width` is read by `clampCardX` in lib/calendarGrid.ts, which keeps the
+   card on screen beside the last column. Change one and change the other. */
 .event-tooltip {
   position: fixed;
   z-index: 10000;
@@ -1161,7 +1177,19 @@ select:disabled {
   color: var(--color-pink);
 }
 
-/* Day events modal (mobile) - styled like FullCalendar popover */
+/* ---------------------------------------------------------------
+   The day list
+   ---------------------------------------------------------------
+   No longer the phone path: it is the one day list on every width, opened by
+   the `+` on a cell, by "+N more", and by a tap on a cell or its date. It
+   replaced FullCalendar's own "+N more" popover rather than sitting beside it,
+   because two layouts answering the same question is one too many - and the
+   popover only ever existed on the minority of days that overflow, which is
+   why the hover card's links were unreachable on all the others.
+
+   It is a real dialog now (role, label, focus in and back out, Escape), since
+   it is also the only keyboard route to an event's standings: a FullCalendar
+   chip is a `<div>` with no `url` and has never been focusable. */
 .day-events-backdrop {
   position: fixed;
   top: 0;
@@ -1188,13 +1216,52 @@ select:disabled {
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
 }
 
+.day-events-modal:focus-visible {
+  /* It takes focus on open, so it must be able to show it. */
+  outline: 2px solid var(--color-cyan);
+  outline-offset: 2px;
+}
+
 .day-events-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
   background-color: var(--color-bg-tertiary);
   color: var(--color-text);
-  padding: 0.5rem 0.75rem;
+  padding: 0.5rem 0.5rem 0.5rem 0.75rem;
   font-size: 0.875rem;
   font-weight: 500;
   border-radius: 0.5rem 0.5rem 0 0;
+}
+
+/* The backdrop closes it and so does Escape, but neither is visible. On
+   desktop this dialog arrives from a click the reader aimed at a 20px `+`, so
+   the way back out has to be as obvious as the way in. Muted ink, 7.22:1 on
+   the header's `--color-bg-tertiary`, lifting to full text colour on hover. */
+.day-events-close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: none;
+  border-radius: 3px;
+  background: none;
+  color: var(--color-text-muted);
+  cursor: pointer;
+}
+
+.day-events-close:hover {
+  color: var(--color-text);
+  background-color: rgba(248, 248, 242, 0.08);
+}
+
+.day-events-close:focus-visible {
+  outline: 2px solid var(--color-cyan);
+  outline-offset: 1px;
 }
 
 .day-events-list {
@@ -1210,8 +1277,10 @@ select:disabled {
    button is invalid markup and announces as one confused control, so the band
    carries the colour and the two sit as siblings.
 
-   This list is only ever rendered on touch devices, so the band is 44px tall:
-   the row used to be about 20px, which was never a real target. */
+   The band is 44px tall. It was sized for touch, when this list only ever
+   opened on a tap, and it is kept now that it opens on desktop too: a row
+   carrying two side-by-side targets wants the room on a mouse as well, and
+   nothing on the page is hurt by a six-event day being 264px of dialog. */
 .day-event-row {
   display: flex;
   align-items: stretch;
@@ -1446,11 +1515,20 @@ select:disabled {
     padding: 1px 2px;
   }
 
-  /* No trophy on the grid chip at this width: the cell is ~50px wide and the
-     chip is 0.6rem, so the glyph would crowd the time out and would not be a
-     real target anyway. Tapping the cell opens the day list, which carries it
-     at 44px. The popover's copy stays. */
-  .fc .fc-daygrid-day-events .event-trophy {
+  /* No `+` on a day cell at this width, and the reason is the width rather
+     than the input: a cell measures 51px here, the date numeral already owns 2rem
+     of its top row, and a second mark in that corner is clutter in a cell that
+     has no room to spare.
+
+     Nothing is lost by it. There is no hover trap to escape on a phone -
+     `isMobile` withholds the hover card entirely - and tapping anywhere in the
+     cell, or its date, already opens the same day list; the `+` would be a
+     third tap target for a gesture that is already the whole cell. The one
+     reader this leaves out is a *desktop* window narrowed under 600px, who
+     keeps the mouse but loses the button: for them the hover card's own
+     footer is the route, which is the fix this cell control was added
+     alongside rather than instead of. */
+  .fc .day-list-button {
     display: none;
   }
 }
@@ -4101,20 +4179,66 @@ td.is-unsettled .rating-value,
   }
 }
 
-/* The hover card's route to an event page, now that the grid carries no
-   trophy. Reads as a link, not a chip. */
+/* ---------------------------------------------------------------
+   The hover card's footer
+   ---------------------------------------------------------------
+   The card's route to an event page, and the only part of the card the pointer
+   can land on. Three things about its shape are what make it reachable:
+
+   - **Flush with the card's bottom edge**, by negative margins that cancel the
+     card's 1rem padding. The card is anchored `translate(-50%, -100%)` with a
+     10px lift, so its bottom edge sits 10px above the cursor and this strip is
+     the nearest thing to it in any direction. Reaching it is a move of about a
+     dozen pixels, straight up.
+   - **Full card width**, so the cursor - which is at the card's horizontal
+     centre - is under it however wide the card came out. `clampCardX` keeps
+     that true next to the viewport edge.
+   - **Short**, ~24px. It is the one piece of the card that steals hover from
+     what is behind it, and what is behind it is the chip above the one being
+     hovered. The honest cost: while a card is open, that one chip cannot be
+     hovered without leaving the card's footer first. A fully interactive card
+     would have taken a 300x150px bite out of the grid instead.
+
+   The pointer arriving here cancels the card's close timer and leaving it
+   restarts it, so the card lives exactly as long as the pointer is on a chip
+   or on this strip. See CalendarPage's HOVER_CARD_CLOSE_DELAY_MS.
+
+   Ink measured over the real ground, the card's own `--color-bg-secondary`
+   #44475a: cyan 6.67:1, and 5.31:1 on the 10% cyan hover wash (#4b576a). */
+.event-tooltip-actions {
+  display: flex;
+  margin: 0.5rem -1rem -1rem;
+  padding: 0;
+  border-top: 1px solid var(--color-border);
+  border-radius: 0 0 0.5rem 0.5rem;
+  overflow: hidden;
+  pointer-events: auto;
+}
+
 .event-tooltip-standings {
-  display: inline-block;
-  margin-top: 0.5rem;
+  flex: 1 1 auto;
+  padding: 0.3rem 1rem;
   font-size: 0.75rem;
   font-weight: 600;
+  line-height: 1.4;
   color: var(--color-cyan);
   text-decoration: none;
 }
 
 .event-tooltip-standings:hover,
 .event-tooltip-standings:focus-visible {
+  background-color: rgba(139, 233, 253, 0.1);
+  color: var(--color-cyan);
   text-decoration: underline;
+}
+
+/* The strip clips, so the focus ring goes inside rather than being cut off -
+   the same trick `.day-event-row .event-trophy` uses. This is only ever
+   focused on the mobile card, which is a real dialog; the hover card is not
+   keyboard-reachable and the day list is the keyboard route. */
+.event-tooltip-standings:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 2px var(--color-cyan);
 }
 
 /* ===================================================================
@@ -4173,8 +4297,8 @@ td.is-unsettled .rating-value,
   /* The basemap is dark, and this shows through while tiles load rather than
      flashing Leaflet's default grey. */
   background-color: var(--color-bg-tertiary);
-  /* Above the page, below the calendar's tooltip (10000) and FullCalendar's
-     popover - neither is on this page, but the stacking context is global. */
+  /* Above the page, below the calendar's tooltip (10000) and its day list -
+     neither is on this page, but the stacking context is global. */
   z-index: 1;
 }
 
