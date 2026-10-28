@@ -162,7 +162,31 @@ export const RESULTS_RECHECK_AFTER_MS = 24 * 60 * 60 * 1000;
 export const MAX_ATTEMPTS = 2;
 
 /** Consecutive per-event failures before the pass gives up for the run. */
-const MAX_CONSECUTIVE_FAILURES = 5;
+/**
+ * Failures a single run will absorb before it gives up.
+ *
+ * This replaces a `MAX_CONSECUTIVE_FAILURES = 5`, and the reason is a live
+ * outage. The 5xx handler below reasons correctly that a permanently broken
+ * page must be a *per-event* failure - "a permanently broken page would
+ * eventually sit at the head of [the queue] and reduce every subsequent run to
+ * zero progress" - but a consecutive counter only survives poison pills that
+ * arrive **one at a time**. The queue is deterministic and oldest-first, and
+ * nothing is recorded for a failure, so broken events stay due forever and
+ * accumulate at the head. On 2026-10-27 five of them finally sat adjacent:
+ * every run from 12:09 onward fetched all its rosters, hit those five, tripped
+ * the counter and stopped - `resultsWritten: 0` for twelve hours straight,
+ * `failed: 5` exactly, while `notFetched` equalled `resultsDue` to the row.
+ * The guard produced precisely the outcome its own comment was written to
+ * prevent.
+ *
+ * A per-run budget steps over a cluster instead of stopping at it, while a
+ * genuine Riot outage - where *everything* 5xxs - still halts the run after a
+ * bounded 25 wasted requests (~25s of a ~750s pass) rather than burning all
+ * 500. Rate limiting and blocking are unaffected: those arrive as
+ * `ResultsBackoffError` and still stop the run on the first one, because a 429
+ * is Riot talking about us rather than about one event.
+ */
+const MAX_FAILURES_PER_RUN = 25;
 
 /**
  * Soft cap on one event's normalized results. DynamoDB items stop at 400KB and a
@@ -853,8 +877,13 @@ export async function fetchEventFacts(
   // permanently broken page would eventually sit at the head of it and reduce
   // every subsequent run to zero progress. So this is a per-event failure: the
   // event stays due and costs one wasted request per run (1 of 250, negligible),
-  // while MAX_CONSECUTIVE_FAILURES still stops the pass when Riot is genuinely
-  // down and the 5xxs arrive in a row rather than one at a time.
+  // while MAX_FAILURES_PER_RUN still stops the pass when Riot is genuinely down.
+  // That budget is per-run rather than consecutive precisely because the
+  // "eventually sit at the head of it" case above is not hypothetical - five
+  // such pages did, and a consecutive counter stopped every run on them.
+  // Nothing here records the failure, so a broken event is retried forever;
+  // that is the remaining weakness, and the fix for it is attempt-tracking
+  // rather than a bigger budget.
   if (response.status >= 500) {
     throw new ResultsFetchError(`HTTP ${response.status}: ${response.statusText || 'server error'}`);
   }
@@ -1080,7 +1109,6 @@ export async function runPlayriftboundResultsPass(
     return summary;
   }
 
-  let consecutiveFailures = 0;
 
   for (const { candidate, kind } of work) {
     if (options.deadline !== undefined && Date.now() >= options.deadline) {
@@ -1098,12 +1126,10 @@ export async function runPlayriftboundResultsPass(
     let facts: EventFacts;
     try {
       facts = await fetchEventFacts(candidate, { wantResults: kind === 'results', fetchImpl });
-      consecutiveFailures = 0;
     } catch (error) {
       summary.failed++;
-      consecutiveFailures++;
       const message = error instanceof Error ? error.message : String(error);
-      if (error instanceof ResultsBackoffError || consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+      if (error instanceof ResultsBackoffError || summary.failed >= MAX_FAILURES_PER_RUN) {
         console.error(`[prb-results] ${candidate.externalId}: ${message} - backing off, stopping this run`);
         summary.partial = true;
         break;

@@ -775,7 +775,13 @@ describe('runPlayriftboundResultsPass', () => {
     expect(summary.notFetched).toBe(1); // the broken event stays due, nothing recorded
   });
 
-  it('still backs off when 5xx arrives from Riot repeatedly rather than once', async () => {
+  it('steps over a cluster of broken events instead of stopping on them', async () => {
+    // The regression this pins, measured on production 2026-10-27: the queue is
+    // deterministic and oldest-first and a failure records nothing, so broken
+    // events stay due forever and drift together at the head. Five finally sat
+    // adjacent, a consecutive-failure counter tripped on them, and twelve hours
+    // of runs wrote `resultsWritten: 0` while every real candidate behind them
+    // went unfetched. Stepping over them is the whole point.
     const log: string[] = [];
     const ids = ['prb-501', 'prb-502', 'prb-503', 'prb-504', 'prb-505', `prb-${FULL_ID}`];
     db.loadEventFactCandidates.mockResolvedValue(
@@ -789,9 +795,47 @@ describe('runPlayriftboundResultsPass', () => {
         log
       ),
     });
-    expect(summary.partial).toBe(true);
     expect(summary.failed).toBe(5);
-    expect(log).not.toContain(FULL_ID); // stopped before the 6th request
+    expect(log).toContain(FULL_ID); // reached the good event behind them
+    expect(summary.fetched).toBe(1);
+    expect(summary.partial).toBe(false);
+  });
+
+  it('still gives up when Riot is down rather than when one page is broken', async () => {
+    // A real outage 5xxs everything, so the per-run budget is what bounds the
+    // wasted requests. 25 of a ~500-page run, not 500.
+    const log: string[] = [];
+    const ids = Array.from({ length: 40 }, (_, i) => `prb-6${String(i).padStart(2, '0')}`);
+    db.loadEventFactCandidates.mockResolvedValue(
+      ids.map((externalId, i) => candidate({ startOffsetMs: -(45 - i) * DAY, externalId }))
+    );
+    const summary = await runPlayriftboundResultsPass({
+      requestDelayMs: 0,
+      now: NOW,
+      fetchImpl: fakeFetch(
+        Object.fromEntries(ids.map(id => [id.replace('prb-', ''), { status: 503 }])),
+        log
+      ),
+    });
+    expect(summary.partial).toBe(true);
+    expect(summary.failed).toBe(25);
+    expect(log.length).toBe(25); // bounded; it did not burn the whole queue
+  });
+
+  it('stops on the first 429, which is Riot talking about us and not one event', async () => {
+    const log: string[] = [];
+    const ids = ['prb-701', 'prb-702', `prb-${FULL_ID}`];
+    db.loadEventFactCandidates.mockResolvedValue(
+      ids.map((externalId, i) => candidate({ startOffsetMs: -(9 - i) * DAY, externalId }))
+    );
+    const summary = await runPlayriftboundResultsPass({
+      requestDelayMs: 0,
+      now: NOW,
+      fetchImpl: fakeFetch({ '701': { status: 429 } }, log),
+    });
+    expect(summary.partial).toBe(true);
+    expect(summary.failed).toBe(1);
+    expect(log).not.toContain(FULL_ID);
   });
 
   it('records a tournament Riot has taken down as resultless', async () => {
