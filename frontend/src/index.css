@@ -3937,18 +3937,20 @@ td.is-unsettled .rating-value,
 
 /* The way in, from the ladder's filter row. Reads as a link beside the
    controls, not as a fifth control. */
-.scene-map-link {
-  align-self: center;
-  font-size: var(--t-body);
-  font-weight: 600;
-  color: var(--color-cyan);
-  text-decoration: none;
-  white-space: nowrap;
+/* Ladder / Scene map: a pair of views, above the filters that scope them.
+   Borrows `.pill` from the set scope on purpose - the page already spells
+   "pick one of these" that way - and only adds the row and the link reset,
+   since `.pill` is written for a <button>. */
+.ranking-views {
+  display: flex;
+  gap: 0.375rem;
+  margin: 0 0 1rem;
 }
 
-.scene-map-link:hover,
-.scene-map-link:focus-visible {
-  text-decoration: underline;
+.ranking-views .pill {
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
 }
 
 /* The caveat, above the thing it qualifies. */

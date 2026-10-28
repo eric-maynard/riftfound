@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useLocation, useSearchParams } from 'react-router-dom';
 import { getSceneMap } from '../services/api';
+import RankingViewSwitch from '../components/RankingViewSwitch';
 import SceneMap from '../components/SceneMap';
 import type { SceneMapCoverage, SceneMapEntry } from '../types/ranking';
 import {
@@ -156,6 +157,8 @@ function ScenesPage() {
         </p>
       </div>
 
+      <RankingViewSwitch active="map" search={location.search} />
+
       {error && <div className="error-banner">{error}</div>}
 
       {loading && all.length === 0 ? (
@@ -232,9 +235,6 @@ function ScenesPage() {
             </p>
           )}
 
-          <p className="scene-foot">
-            <Link to={carryPreview('/rankings', location.search)}>Back to the ladder</Link>
-          </p>
         </>
       )}
     </div>

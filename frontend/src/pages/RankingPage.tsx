@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useLocation, useSearchParams } from 'react-router-dom';
 import { getRankings, getSets, searchPlayers } from '../services/api';
 import SceneSelect from '../components/SceneSelect';
+import RankingViewSwitch from '../components/RankingViewSwitch';
 import SetScope from '../components/SetScope';
 import type {
   ComponentSummary,
@@ -209,6 +210,8 @@ function RankingPage() {
         </p>
       </div>
 
+      <RankingViewSwitch active="ladder" search={search} />
+
       {/* One filter row, above everything it scopes. */}
       <div className="ranking-filters">
         <SetScope
@@ -226,13 +229,6 @@ function RankingPage() {
         />
 
         <PlayerSearch />
-
-        {/* The way to the map of scenes, beside the picker that names one.
-            `carryPreview` because the section is unlisted and a link without
-            the flag unmounts the mode switch under the reader. */}
-        <Link className="scene-map-link" to={carryPreview('/rankings/map', search)}>
-          Scene map
-        </Link>
       </div>
 
       {error && <div className="error-banner">{error}</div>}
