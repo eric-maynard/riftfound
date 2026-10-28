@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import type { ComponentSummary, PlayerMatch, RatingPoint, SetInfo } from '../../types/ranking';
+import type { SceneCatalogueRow } from '../ranking';
 import {
   ALL_SETS,
   ALL_SETS_LABEL,
@@ -46,6 +47,9 @@ import {
   shouldUseSetPills,
   SET_PILL_LIMIT,
   sceneOptions,
+  sceneCatalogueOptions,
+  sceneCountSummary,
+  scenePinAbsence,
   selectableSets,
   provisionalShortReason,
   ratingDisplay,
@@ -350,6 +354,136 @@ describe('the searchable scene picker', () => {
     expect(findSceneOption(options, 'b')?.label).toBe('Bay Area');
     expect(findSceneOption(options, null)?.label).toBe('Global');
     expect(findSceneOption(options, 'missing')).toBeNull();
+  });
+});
+
+/**
+ * The picker's rows, built from the scene catalogue.
+ *
+ * The thing being tested is a correction: the picker used to offer the 41
+ * scenes `/api/rankings` happened to send, which is 3% of the corpus, and the
+ * map beside it drew all 1,307. One source, or the two halves of one control
+ * disagree about which scenes exist.
+ */
+describe('sceneCatalogueOptions', () => {
+  const row = (
+    id: string,
+    label: string | null,
+    players: number,
+    extra: Partial<SceneCatalogueRow> = {}
+  ): SceneCatalogueRow => ({
+    componentId: id,
+    regionLabel: label,
+    playerCount: players,
+    comparable: true,
+    latitude: 1,
+    longitude: 2,
+    venueCount: 4,
+    nearestVenueKm: 3,
+    dispersed: false,
+    ...extra,
+  });
+
+  it('leads with Global and orders the rest by size', () => {
+    // Global first because it is the scope the page opens on and the row that
+    // takes a reader back out of a scene - and biggest-first because a list of
+    // 1,307 is read from the top.
+    const options = sceneCatalogueOptions([
+      row('a', 'Puget Sound', 40),
+      row('b', 'Central Singapore', 5405),
+      row('c', 'Lille, France', 120),
+    ]);
+    expect(options.map((option) => option.label)).toEqual([
+      'Global',
+      'Central Singapore',
+      'Lille, France',
+      'Puget Sound',
+    ]);
+    expect(options[0].id).toBeNull();
+  });
+
+  it('names an unlabelled scene after its id rather than borrowing a city', () => {
+    const [, scene] = sceneCatalogueOptions([row('d4f', null, 9)]);
+    expect(scene.label).toBe('Scene d4f');
+    const [, blank] = sceneCatalogueOptions([row('e5g', '   ', 9)]);
+    expect(blank.label).toBe('Scene e5g');
+  });
+
+  it('counts players, which is what the map sizes its dots by', () => {
+    const [, big] = sceneCatalogueOptions([row('a', 'Toronto', 2213)]);
+    expect(big.meta).toBe('2,213 players');
+    const [, one] = sceneCatalogueOptions([row('b', 'Tiny', 1)]);
+    expect(one.meta).toBe('1 player');
+  });
+
+  it('marks the rows with no pin, and says nothing about the rest', () => {
+    const [, pinned, dispersed] = sceneCatalogueOptions([
+      row('a', 'Mainz', 300),
+      row('b', 'Toronto', 200, {
+        latitude: null,
+        longitude: null,
+        dispersed: true,
+        venueCount: 113,
+        nearestVenueKm: 2328,
+      }),
+    ]);
+    expect(pinned.located).toBe(true);
+    expect(pinned.pinHint).toBeNull();
+    expect(dispersed.located).toBe(false);
+    expect(dispersed.pinHint).toContain('2,328 km');
+  });
+});
+
+/**
+ * Why a scene has no pin - the one piece of honesty the picker cannot drop.
+ *
+ * 21 of 1,307 production scenes have no pin and they hold 41% of recorded
+ * players (Singapore, Toronto, New York, Paris). A reader who picks one and
+ * watches nothing light up on the map has been told the map lost it.
+ */
+describe('scenePinAbsence', () => {
+  const base = { dispersed: false, venueCount: 5, nearestVenueKm: 10 };
+
+  it('says nothing about a scene that has a pin', () => {
+    expect(scenePinAbsence({ ...base, latitude: 37.8, longitude: -122.2 })).toBeNull();
+  });
+
+  it('tells a gap in our geocoding from a scene that is genuinely not one place', () => {
+    const ungeocoded = scenePinAbsence({ ...base, latitude: null, longitude: null });
+    const dispersed = scenePinAbsence({
+      ...base,
+      latitude: null,
+      longitude: null,
+      dispersed: true,
+      venueCount: 113,
+      nearestVenueKm: 2328,
+    });
+    expect(ungeocoded).toContain('geocoded');
+    expect(dispersed).not.toContain('geocoded');
+    expect(dispersed).toContain('113 venues');
+    expect(dispersed).toContain('2,328 km');
+    expect(dispersed).toContain('busiest venues');
+  });
+
+  it('still explains itself when the distance is missing', () => {
+    const hint = scenePinAbsence({
+      latitude: null,
+      longitude: null,
+      dispersed: true,
+      venueCount: 7,
+      nearestVenueKm: null,
+    });
+    expect(hint).toContain('too far apart');
+    expect(hint).not.toContain('null');
+  });
+});
+
+describe('sceneCountSummary', () => {
+  it('says how much of the list the query is hiding, and only then', () => {
+    expect(sceneCountSummary(1307, 1307)).toBe('1,307 scenes');
+    expect(sceneCountSummary(12, 1307)).toBe('12 of 1,307 scenes');
+    expect(sceneCountSummary(1, 1)).toBe('1 scene');
+    expect(sceneCountSummary(0, 1307)).toBe('0 of 1,307 scenes');
   });
 });
 

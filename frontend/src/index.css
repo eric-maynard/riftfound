@@ -1716,15 +1716,6 @@ select:disabled {
   position: relative;
 }
 
-/* With the scene picker in Map mode the row is a ~300px column beside two 36px
-   fields, and `flex-end` leaves those two stranded at the bottom of it. They
-   belong beside the control's label instead. `:has` is progressive
-   enhancement here - a browser without it gets the old alignment, which is
-   untidy rather than broken. */
-.ranking-filters:has(.scene-mini) {
-  align-items: flex-start;
-}
-
 .filter-label {
   font-size: var(--t-label);
   font-weight: 600;
@@ -1862,120 +1853,156 @@ select:disabled {
   border-color: var(--color-cyan);
 }
 
-.scene-options {
+/* ---------------------------------------------------------------
+   The scene pane - the list of scenes beside the map of them
+   --------------------------------------------------------------- */
+
+/* One popover, two halves, a footer under both.
+
+   `--pane-shift` is set by `SceneSelect`: the pane is anchored to a 230px
+   field and is three times its width, so on a narrow desktop window its right
+   edge would run off the page and take the horizontal scrollbar with it. CSS
+   cannot express "shift left by however much you overflow" - it needs the
+   element's own x - so the component measures and sets that one property. */
+.scene-pane {
   position: absolute;
   top: calc(100% + 4px);
   left: 0;
-  min-width: 100%;
-  max-height: 280px;
-  overflow-y: auto;
   z-index: 60;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  width: min(23rem, calc(100vw - 3rem));
+  transform: translateX(var(--pane-shift, 0px));
   background-color: var(--panel);
   border: 1px solid var(--color-border);
   border-radius: 0.375rem;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+  overflow: hidden;
+}
+
+/* With room for both halves. The list is given the narrower column on purpose:
+   a scene name is short and a map needs the room to be a map. */
+/* The width is stated rather than left to `auto`: an absolutely positioned
+   element shrink-to-fits against its containing block, which here is the 230px
+   field, so `auto` collapses both halves into one column's worth. */
+.scene-pane.is-split {
+  grid-template-columns: minmax(0, 20rem) minmax(0, 1fr);
+  width: min(42rem, calc(100vw - 3rem));
+}
+
+.scene-pane-list {
+  max-height: 20rem;
+  overflow-y: auto;
 }
 
 .scene-option {
   display: flex;
   align-items: baseline;
-  justify-content: space-between;
-  gap: 0.75rem;
+  gap: 0.5rem;
   padding: 0.4rem 0.75rem;
   font-size: 0.875rem;
   cursor: pointer;
+}
+
+.scene-option-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-/* One highlight for hover and for the arrow keys - the same row either way. */
-.scene-option.is-active {
+/* The scope that is actually in force, visible in the list rather than only in
+   the closed field - including `Global`, which is the row that takes a reader
+   back out of a scene. */
+.scene-option[aria-selected='true'] .scene-option-label {
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+/* One highlight, three ways of arriving at it: the pointer on the row, the
+   arrow keys, and the pointer on that scene's pin in the half beside it. They
+   look the same because they mean the same thing. */
+.scene-option.is-active,
+.scene-option.is-highlighted {
   background-color: var(--color-bg-secondary);
 }
 
-.scene-option-meta {
-  font-size: var(--t-meta);
-  color: var(--color-text-muted);
+/* Two words on one line: wrapped to "NO" over "PIN" it reads as a column
+   header rather than a note on the row. */
+.scene-option .scene-flag {
+  white-space: nowrap;
 }
 
-.scene-option.is-active .scene-option-meta {
+.scene-option-meta {
+  flex: none;
+  font-size: var(--t-meta);
+  color: var(--color-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.scene-option.is-active .scene-option-meta,
+.scene-option.is-highlighted .scene-option-meta {
   color: var(--color-text-muted-lifted);
 }
 
-/* By name / Map, on the picker's label line.
-   Borrows `.pill-group` and `.pill` from the set scope rather than inventing a
-   second segmented control: the page already spells "pick one of these" that
-   way. Smaller here, because this pair sits on a label line rather than being
-   the control itself - it says how to pick, not what was picked. */
-.scene-select-head {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  flex-wrap: wrap;
-}
-
-.scene-modes .pill {
-  padding: 0.15rem 0.5rem;
-  font-size: 0.75rem;
-}
-
-/* ---------------------------------------------------------------
-   The picker's mini map (components/SceneMiniMap.tsx)
-   --------------------------------------------------------------- */
-
-/* Width is stated rather than inherited. `.ranking-filters` is an inline-flex
-   row that hugs its contents, so a percentage here would be circular - the map
-   would size the row that is sizing the map. `min()` against the viewport is
-   what keeps a 390px phone free of horizontal scroll: the row's own padding
-   (2rem) plus the page gutters (2rem) come off the viewport, and the map takes
-   what is left up to 22rem. */
-.scene-mini {
+/* The map half. A column, so the "no pin" note can sit under the canvas
+   rather than over Leaflet's own chrome. */
+.scene-pane-map {
+  position: relative;
   display: flex;
   flex-direction: column;
-  gap: 0.4rem;
-  width: min(22rem, calc(100vw - 4rem));
+  min-height: 16rem;
+  border-left: 1px solid var(--color-border);
 }
 
-.scene-mini-canvas {
-  position: relative;
-}
-
-/* Shorter than the page's map, and with its own chrome scale. A filter control
-   is not a page: this is big enough to recognise a city in and small enough
-   that the ladder it scopes is still on screen under it. */
-.scene-map.is-mini {
-  height: 200px;
+.scene-pane-map .scene-map {
+  flex: 1 1 auto;
+  height: auto;
   min-height: 0;
   max-height: none;
-  margin-bottom: 0;
+  margin: 0;
+  border: 0;
+  border-radius: 0;
 }
 
-.scene-map.is-mini .leaflet-control-attribution,
-.scene-map.is-mini.leaflet-container .leaflet-control-attribution {
+.scene-pane-map .scene-map.is-mini .leaflet-control-attribution,
+.scene-pane-map .scene-map.is-mini.leaflet-container .leaflet-control-attribution {
   font-size: 0.6rem;
 }
 
-/* Reserves the canvas's height while the chunk and the catalogue load, so the
-   filter row does not jump when they arrive. */
-.scene-mini-placeholder {
+/* Loading, or no map to draw. Centred in the half so the pane keeps its shape
+   instead of collapsing to the list's width mid-open. */
+.scene-pane-wait {
   display: flex;
   align-items: center;
   justify-content: center;
-  height: 200px;
+  flex: 1 1 auto;
   margin: 0;
+  padding: 1rem;
   font-size: var(--t-meta);
-  background-color: var(--color-bg-tertiary);
-  border: 1px solid var(--color-border);
-  border-radius: 0.5rem;
+  text-align: center;
 }
 
-/* The expand control, over the map's top-right corner - the one corner
-   Leaflet's own chrome leaves free (zoom top-left, attribution bottom-right).
+/* Why the selected scene has no pin, under the map it is missing from. Shown
+   only for a selected scene that has none - most selections have one. */
+.scene-pane-nopin {
+  margin: 0;
+  padding: 0.4rem 0.6rem;
+  font-size: var(--t-meta);
+  line-height: 1.4;
+  color: var(--color-text-muted);
+  background-color: var(--color-bg-tertiary);
+  border-top: 1px solid var(--color-border);
+}
 
-   36px of visible box, because 44 would take a fifth of a 200px canvas and sit
-   half again as large as the zoom buttons beside it. The target is still 44px:
-   `::after` inflates the hit area by 4px on every side without moving the
-   drawn edge. z-index clears Leaflet's controls (800) as well as its panes. */
-.scene-mini-expand {
+/* The way to the full page, over the map's top-right corner - the one corner
+   Leaflet's chrome leaves free (zoom top-left, attribution bottom-right).
+
+   32px of drawn box, with `::after` inflating the target to 44px: a 44px
+   button would sit half again as large as the zoom buttons beside it.
+   z-index clears Leaflet's controls (800) as well as its panes. */
+.scene-pane-expand {
   position: absolute;
   top: 6px;
   right: 6px;
@@ -1983,9 +2010,9 @@ select:disabled {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 36px;
-  height: 36px;
-  font-size: 1rem;
+  width: 32px;
+  height: 32px;
+  font-size: 0.95rem;
   line-height: 1;
   color: var(--color-cyan);
   text-decoration: none;
@@ -1994,100 +2021,45 @@ select:disabled {
   border-radius: 0.3rem;
 }
 
-.scene-mini-expand::after {
+.scene-pane-expand::after {
   content: '';
   position: absolute;
-  inset: -4px;
+  inset: -6px;
 }
 
-.scene-mini-expand:hover {
+.scene-pane-expand:hover {
   background-color: var(--color-bg-secondary);
 }
 
-.scene-mini-expand:focus-visible {
+.scene-pane-expand:focus-visible {
   outline: 2px solid var(--color-cyan);
   outline-offset: 1px;
 }
 
-/* What the map is claiming, in words: the selected scene, or - for one of the
-   21 dispersed scenes - why it has no pin and what the venue dots are. */
-.scene-mini-note {
-  margin: 0;
-  font-size: var(--t-meta);
-  line-height: 1.45;
-  color: var(--color-text-muted);
-}
-
-.scene-mini-note strong {
-  color: var(--color-text);
-}
-
-/* The scenes a map cannot honestly place, as the control's own list.
-   Measured on production: 21 of 1,307 scenes, holding 41% of recorded players,
-   so this is not an edge case to tuck away - it is the four biggest scenes in
-   the corpus. Scrolls at two rows rather than pushing the ladder down a screen
-   and a half. */
-.scene-mini-offmap-note {
-  margin: 0 0 0.3rem;
-  font-size: var(--t-meta);
-  line-height: 1.45;
-  color: var(--color-text-muted);
-}
-
-.scene-mini-chips {
+/* The count, and on a phone the only way to the map. A figure rather than an
+   instruction: with 1,307 scenes behind a text field, "12 of 1,307" is the
+   difference between "that is all of them" and "keep typing". */
+.scene-pane-foot {
+  grid-column: 1 / -1;
   display: flex;
-  flex-wrap: wrap;
-  gap: 0.25rem;
-  max-height: 5.5rem;
-  margin: 0;
-  padding: 0;
-  overflow-y: auto;
-  list-style: none;
-}
-
-.scene-mini-chip {
-  display: inline-flex;
   align-items: center;
-  gap: 0.3rem;
-  min-height: 2.25rem;
-  padding: 0.25rem 0.55rem;
-  background-color: var(--color-bg);
-  border: 1px solid var(--color-border);
-  border-radius: 0.35rem;
-  color: var(--color-text-muted);   /* 5.15:1 on --color-bg */
-  font: inherit;
-  font-size: 0.75rem;
-  line-height: 1.3;
-  text-align: left;
-  cursor: pointer;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin: 0;
+  padding: 0.35rem 0.75rem;
+  font-size: var(--t-meta);
+  border-top: 1px solid var(--color-border);
 }
 
-.scene-mini-chip:hover {
-  color: var(--color-text);
+.scene-pane-foot-link {
+  color: var(--color-cyan);
+  text-decoration: none;
+  white-space: nowrap;
 }
 
-/* Four signals, like `.pill.is-active`, so the state does not rest on a 1.7:1
-   difference between two dark surfaces. */
-.scene-mini-chip.is-active {
-  background-color: var(--color-bg-secondary);
-  border-color: var(--color-primary);
-  color: var(--color-text);
-  font-weight: 600;
-}
-
-.scene-mini-chip:focus-visible {
-  outline: 2px solid var(--color-cyan);
-  outline-offset: 1px;
-}
-
-.scene-mini-chip-count {
-  color: var(--color-text-muted);
-  font-size: var(--t-label);
-  font-variant-numeric: tabular-nums;
-}
-
-.scene-mini-chip.is-active .scene-mini-chip-count {
-  color: var(--color-text-muted-lifted);
+.scene-pane-foot-link:hover,
+.scene-pane-foot-link:focus-visible {
+  text-decoration: underline;
 }
 
 /* Hints: the explanation where the concept appears, not a paragraph up front */
@@ -4170,27 +4142,46 @@ td.is-unsettled .rating-value,
   border-radius: 0.5rem;
   /* Leaflet draws tiles beyond its container until told otherwise. */
   overflow: hidden;
-  /* The basemap is dark, and this shows through while tiles load rather than
-     flashing Leaflet's default grey. */
-  background-color: var(--color-bg-tertiary);
+  /* The sea. The basemap draws land over this, so the page ground *is* the
+     water rather than something showing through while tiles load.
+     `.leaflet-container` is on this same element and sets its own `#ddd`
+     background from a stylesheet that loads *after* this one (the map chunk is
+     lazy), so the selector has to carry both classes to win. */
+  background-color: var(--color-bg);
   /* Above the page, below the calendar's tooltip (10000) and FullCalendar's
      popover - neither is on this page, but the stacking context is global. */
   z-index: 1;
 }
 
-/* The basemap, darkened.
-   There is no keyless dark OSM raster and this app is dark throughout, so the
-   tiles are inverted and hue-rotated back - roads and labels become light on
-   dark while the greens and blues stay roughly themselves. It costs no
-   request, leaves attribution untouched (the control is not a tile), and
-   tracks whatever VITE_MAP_TILE_URL is set to. A Mapbox *dark* style would
-   want this rule gone; see components/SceneMap.tsx.
+/* City labels, which are the basemap's only text.
 
-   The markers must not be filtered with it, which is why this targets the
-   tile images and not the pane: inverting the Dracula purple would undo every
-   contrast measurement in this file. */
-.scene-map .leaflet-tile {
-  filter: invert(1) hue-rotate(180deg) brightness(0.92) contrast(0.9) saturate(0.7);
+   There used to be a `filter: invert(1) hue-rotate(180deg)` here, forcing a
+   light raster basemap dark. The basemap is our own geometry now (Natural
+   Earth, built by scripts/build-basemap.py), so it is simply *drawn* in the
+   app's colours and there is nothing to fight: the fill and the coastline are
+   set in components/SceneMap.tsx, and this styles the labels.
+
+   `--color-text-muted` is 7.22:1 on the land fill and 4.64:1 on the sea; the
+   shadow is what carries it across the coastline, where a label straddles
+   both. Not a target: pointer events are off on the whole pane, because the
+   only clickable things on this map are scenes. */
+.scene-map-place {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  white-space: nowrap;
+  font-size: 0.625rem;
+  line-height: 1;
+  color: var(--color-text-muted);
+  text-shadow: 0 1px 2px var(--color-bg), 0 0 3px var(--color-bg);
+}
+
+.scene-map-place-dot {
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background-color: var(--color-text-muted);
+  flex: none;
 }
 
 /* Leaflet's own chrome, in the app's palette rather than its default white.
@@ -4228,6 +4219,12 @@ td.is-unsettled .rating-value,
 
 .scene-map .leaflet-tooltip-top::before {
   border-top-color: var(--color-border);
+}
+
+/* See `.scene-map`: Leaflet's own `.leaflet-container` rule would otherwise
+   paint the sea `#ddd`. */
+.scene-map.leaflet-container {
+  background-color: var(--color-bg);
 }
 
 /* ---------------------------------------------------------------

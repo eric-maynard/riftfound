@@ -157,6 +157,18 @@ export interface SceneOption {
   /** Secondary line: rated count, and whether the scene is big enough to order. */
   meta: string;
   comparable: boolean;
+  /**
+   * Whether this scene has a pin on the map beside the list.
+   *
+   * Optional because it is **not knowable** from the ladder's `components`,
+   * which carry no geography: `undefined` means "nobody has said", and the row
+   * then claims nothing, while `false` is a measured fact that gets a flag. The
+   * difference matters for the few hundred milliseconds before the catalogue
+   * arrives, where guessing either way would be a lie about 21 scenes.
+   */
+  located?: boolean;
+  /** Why there is no pin, for the flag's title. Null when there is one. */
+  pinHint?: string | null;
 }
 
 /**
@@ -212,6 +224,122 @@ function normalizeForSearch(value: string): string {
 /** The option matching the current selection, for the closed picker's label. */
 export function findSceneOption(options: SceneOption[], id: string | null): SceneOption | null {
   return options.find((option) => option.id === id) ?? null;
+}
+
+/**
+ * The picker's rows, built from the **scene catalogue** rather than from the
+ * ladder's `components`.
+ *
+ * Two reasons, and the first is not about tidiness:
+ *
+ * 1. **`components` is not the list of scenes.** `/api/rankings` sends whatever
+ *    components the global board's first page happened to touch - measured, 41
+ *    of 1,307 - so the name picker could reach 3% of the corpus and the other
+ *    1,266 scenes were unnameable. The catalogue is every scene the engine has.
+ * 2. **The picker's two halves must agree.** The map half draws the catalogue;
+ *    a list built from a different source would disagree with the pins beside
+ *    it about which scenes exist *and* what they are called (the two sources
+ *    name 16 of those 41 differently - one is `Simi Valley, CA` on the ladder
+ *    and `New York, New York` here). One source inside the control, so a row
+ *    and its pin are always the same scene under the same name.
+ *
+ * Ordered by player count, biggest first: an unfiltered list of 1,307 scenes is
+ * read from the top, and the top is where the scenes someone is most likely to
+ * be looking for are. `GLOBAL_OPTION` stays first of all - it is the scope the
+ * page opens on, and it is the row that takes a reader back out of a scene.
+ *
+ * This lives here rather than in `lib/sceneMap.ts` for the bundling reason
+ * written up beside `scenePath` above: the picker is in the eager chunk and
+ * `lib/sceneMap.ts` must stay out of it.
+ */
+export function sceneCatalogueOptions(scenes: SceneCatalogueRow[]): SceneOption[] {
+  const ordered = [...scenes].sort((a, b) => b.playerCount - a.playerCount);
+  return [
+    GLOBAL_OPTION,
+    ...ordered.map((scene) => ({
+      id: scene.componentId,
+      label: scene.regionLabel?.trim() ? scene.regionLabel : `Scene ${scene.componentId}`,
+      meta: `${scene.playerCount.toLocaleString('en-US')} player${scene.playerCount === 1 ? '' : 's'}`,
+      comparable: scene.comparable,
+      located: scene.latitude !== null && scene.longitude !== null,
+      pinHint: scenePinAbsence(scene),
+    })),
+  ];
+}
+
+/**
+ * The fields the picker reads off a catalogue entry.
+ *
+ * Structural rather than `SceneMapEntry`, so this module does not depend on the
+ * map's types for a list it could build from anything shaped like this - and so
+ * the test for it does not have to construct a whole map entry.
+ */
+export interface SceneCatalogueRow {
+  componentId: string;
+  regionLabel: string | null;
+  playerCount: number;
+  comparable: boolean;
+  latitude: number | null;
+  longitude: number | null;
+  venueCount: number;
+  nearestVenueKm: number | null;
+  dispersed: boolean;
+}
+
+/**
+ * Why a scene has no pin, in one line, or null when it has one.
+ *
+ * A scene that cannot be drawn must not simply be missing from the map - a
+ * reader who picks `Toronto, Canada` and watches nothing light up has been told
+ * the map lost it. This is the sentence that is shown **where that happens**:
+ * on the row, and over the map when such a scene is the selected one. It is
+ * never standing copy on a page nobody has asked it of.
+ *
+ * Two different facts, kept apart, because one is about us and one is about the
+ * scene: a scene nobody has geocoded is a gap in our shops table, while a
+ * `dispersed` scene is mapped perfectly well and genuinely is not in one place
+ * (its centroid is 150-2,300km from its own nearest venue, so the API withholds
+ * it rather than claim the scene plays in the Pacific - backend/CLAUDE.md,
+ * "The scene map").
+ *
+ * `scenePlaceHint` in `lib/sceneMap.ts` says the same two things at a page's
+ * length for the map page's detail panel. The duplication is deliberate and
+ * narrow: that module is lazy and this one is eager (see `scenePath`), and the
+ * registers genuinely differ - a flag on a 24px row cannot be three sentences.
+ */
+export function scenePinAbsence(scene: {
+  latitude: number | null;
+  longitude: number | null;
+  dispersed: boolean;
+  venueCount: number;
+  nearestVenueKm: number | null;
+}): string | null {
+  if (scene.latitude !== null && scene.longitude !== null) return null;
+  if (!scene.dispersed) {
+    return 'No venue of this scene has been geocoded, so it has no place on the map.';
+  }
+  const venues = `${scene.venueCount.toLocaleString('en-US')} venues`;
+  const away =
+    scene.nearestVenueKm === null
+      ? ''
+      : ` - the centre of its play is ${Math.round(scene.nearestVenueKm).toLocaleString('en-US')} km from the nearest of them`;
+  return `Plays across ${venues} too far apart to have one place on the map${away}. Its busiest venues are shown instead.`;
+}
+
+/** The flag printed on a row that has no pin. Two words, because a row is one line. */
+export const NO_PIN_FLAG = 'no pin';
+
+/**
+ * The count under the picker, which is a figure rather than an instruction.
+ *
+ * It earns its line only by saying how much of the list the query is hiding:
+ * with 1,307 scenes behind a text field, "12 of 1,307" is the difference
+ * between "that is all of them" and "keep typing".
+ */
+export function sceneCountSummary(shown: number, total: number): string {
+  const all = total.toLocaleString('en-US');
+  if (shown >= total) return `${all} scene${total === 1 ? '' : 's'}`;
+  return `${shown.toLocaleString('en-US')} of ${all} scenes`;
 }
 
 // ---------------------------------------------------------------------------

@@ -14,8 +14,7 @@ src/
 │   ├── ModeSwitch.tsx    # The mark itself, switching Event View / Rankings
 │   ├── EventFilters.tsx  # Format dropdown, distance dropdown, location search
 │   ├── EventTooltip.tsx  # Hover card for events
-│   ├── SceneSelect.tsx   # Scene picker: By name (default) | Map
-│   ├── SceneMiniMap.tsx  # The picker's Map mode - lazy, so the ladder stays light
+│   ├── SceneSelect.tsx   # Scene picker: a field that opens a list+map split pane
 │   ├── SetScope.tsx      # Set scope as a segmented control
 │   ├── TypeSelect.tsx    # Event-type picker with the chip colour dots
 │   ├── RecordBar.tsx     # W-L-D counts with a filled record bar
@@ -23,7 +22,8 @@ src/
 │   ├── DayEventsModal.tsx  # The "+N more" day list on phones
 │   ├── EventTrophyLink.tsx # The trophy on an event chip
 │   ├── RatingMoveNote.tsx  # A day's rating movement, with what it is made of
-│   ├── SceneMap.tsx      # Leaflet canvas - pins only; page and mini variants
+│   ├── SceneMap.tsx      # Leaflet canvas - pins on our own geometry basemap;
+│   │                     #   page and mini variants
 │   └── RatingChart.tsx   # Inline-SVG rating-over-time chart
 ├── pages/
 │   ├── CalendarPage.tsx  # Main view with FullCalendar
@@ -227,49 +227,76 @@ round trip.
   not a section on the page. Short hints carry the same facts where the
   concepts appear: the scene picker's `?` and the dotted-underlined "Rating"
   and "Margin" column headers.
-- The scene picker is searchable (`SceneSelect`): ~194 components and growing,
-  so it copies the calendar's location autocomplete rather than inventing a
-  second idiom. Filtering is a pure function in `lib/ranking.ts`
-  (`sceneOptions` / `filterSceneOptions`) so it is tested without a DOM.
-- **The picker has two modes: By name and Map.** Scene names are places, so a
-  reader who knows where they play but not what the engine's modal label calls
-  it cannot type the answer. Map mode embeds the same `SceneMap` canvas at
-  200px (`SceneMiniMap`, `variant="mini"`), and clicking a pin calls the
-  picker's own `onChange` - the same `?region=` scope a dropdown row sets.
-  There is no second mechanism and no second map component.
-  - **By name is the default and the accessible path.** A map is not keyboard-
-    or screen-reader-navigable in any useful way, so Map is an alternative
-    input, never the only route to a scene; the mode pair stays visible in both
-    modes so switching back is one click.
-  - **The ladder does not pay for it.** `SceneMiniMap` is behind `React.lazy`,
-    so Leaflet's chunk and `GET /api/rankings/map` happen on the first switch
-    to Map and never on a ladder load. Measured: main bundle 152.69KB gzipped
-    before, **152.98KB** after (+0.29KB, the lazy stub and the mode pair);
-    Leaflet and `lib/sceneMap.ts` sit in a 46.07KB chunk now shared by the map
-    page and the picker. Nothing in `SceneSelect` imports `lib/sceneMap.ts`,
-    for the Rollup hoisting reason below.
-  - **The 21 scenes with no pin are chips under the map**, biggest first, and
-    choosing one is the same selection a pin makes. They hold 41% of recorded
-    players (Singapore, Toronto, New York, Paris), so a pins-only mode would
-    silently lose the four largest scenes in the corpus. `offMapSentence` is
-    the line that says so; `sceneFocusBounds` frames whatever is selected,
-    including a dispersed scene's venues, so the map never looks like it has
-    lost the scene the ladder is scoped to.
-  - **The note under the map names no scene**, deliberately: `/api/rankings`
-    and `/api/rankings/map` disagree about 16 of the 41 pickable scenes'
-    names (one is `Simi Valley, CA` on the ladder and `New York, New York` on
-    the map), so either name would contradict something on screen. The
-    selection shows as a ringed pin and a pressed chip; the page heading
-    carries the name. That disagreement is a real bug, in the API, out of
-    scope here.
-  - `SceneSelect` takes `selectedLabel` for the closed field's caption, because
-    `/api/rankings` sends **41** scenes in `components` against 1,307 in the
-    catalogue - so a scene picked on the map, or arriving in a shared
-    `?region=` link, is usually not in the list the field reads its caption
-    from, and the field used to go blank for exactly those scenes.
-  - There is no `Ladder | Scene map` tab pair. One shipped above the filters on
-    both pages and was removed: the map is reached *through* the picker and its
-    expand control, not as a peer view of the ladder.
+- The scene picker (`SceneSelect`) is a **search field that opens a split
+  pane**: a filterable list of every scene on one side, a map of them on the
+  other, bound to each other. Scene names are places, so a reader who knows
+  where they play but not what the engine's modal label calls it cannot type
+  the answer - and a reader who knows the name should not have to hunt a map
+  for it. Both, at once, driven by one state:
+  - **typing filters both halves** - the pins are derived from the filtered
+    rows, not filtered separately, so they cannot disagree - and the map refits
+    to what is left, so typing `berlin` takes the map to Berlin.
+  - **pointing at one lights the other.** A row hovered or walked onto with the
+    arrow keys lifts its pin (`highlightedId`); a pin hovered lights and scrolls
+    to its row (`onHighlight`). The marker is restyled in place rather than by
+    rebuilding the layer - that is 1,286 markers and this runs on every pointer
+    move.
+  - **choosing in either half is the same choice**: one `onChange`, which is
+    `updateParam(URL_PARAMS.REGION, ...)`. A pin and a row both set the scope
+    and close the pane; focus returns to the field.
+  - dismissal is Escape, a click outside, or a selection, and the field keeps
+    focus through all three. A click on the basemap is **ignored** here (it
+    clears the selection on the map *page*): the pane has a visible `Global`
+    row and clearing by clicking the sea is an affordance nobody can see.
+  - **the list is the control and the map is an aid.** The list keeps the
+    combobox it always was - `role="listbox"`, `aria-activedescendant`,
+    type-ahead, arrows, Enter, Escape - and it holds every scene, including the
+    21 with no pin. Nothing is reachable only through the map.
+  - This replaced a `By name | Map` pair of modes, which made a reader choose
+    which half of one answer they wanted before seeing either. Before that, a
+    `Ladder | Scene map` tab pair, which claimed the map was a second view of
+    the ladder. Neither exists now.
+- **The rows come from the scene catalogue, not from the ladder.**
+  `sceneCatalogueOptions` builds them from `/api/rankings/map`, because
+  `/api/rankings`' `components` is **41 scenes of 1,307** - whatever the global
+  board's first page happened to touch - so the old picker could name 3% of the
+  corpus. It is also the map's own source, which is what makes the two halves
+  agree about which scenes exist *and* what they are called: the two sources
+  name **16 of those 41 differently** (one is `Simi Valley, CA` on the ladder
+  and `New York, New York` in the catalogue). One source inside the control.
+  The ladder's 41 are still used for the few hundred milliseconds before the
+  catalogue lands, so the list works immediately; the swap only adds rows.
+  - The consequence worth knowing: for those 16, the **closed field and the
+    page heading disagree**, because the heading reads `/api/rankings`. That is
+    a real API bug and is out of scope; the fix belongs in `listComponents()`.
+  - `selectedLabel` is the field's caption before the catalogue arrives, so a
+    scene from a shared `?region=` link does not leave it blank.
+- **150 rows are drawn at a time** (`LIST_CAP`), biggest scene first, with
+  "N more, keep typing" in the footer - the same device as the map page's list.
+  1,307 rows cost ~300ms to open and ~120ms a keystroke; 150 cost 150ms and
+  61ms. The map is not capped, so a pin outside the drawn rows has no row to
+  light up; its tooltip still names it and a click still picks it.
+- **A scene with no pin says so on its row** (`no pin`, with the reason in its
+  title), and the selected one says it under the map, where the pin would have
+  been (`scenePinAbsence`). 21 of 1,307 scenes have no pin and they hold 41% of
+  recorded players - Singapore, Toronto, New York, Paris - so a reader who
+  picks one and watches nothing light up has been told the map lost it. It is
+  **contextual, not standing copy**: there is no banner, and the pane explains
+  itself through its structure instead.
+- **The ladder does not pay for the map.** The canvas is `React.lazy`, so
+  Leaflet's chunk, the basemap assets and `GET /api/rankings/map` all happen
+  when the pane first opens and never on a ladder load. Measured: main bundle
+  152.98KB gzipped before this pane, **154.07KB** after; the map chunk is
+  46.82KB and the eager chunk contains no `leaflet` and no basemap geometry.
+  The catalogue *fetch* is deliberately on the eager side - the list must not
+  wait on a map library it does not use - and nothing in `SceneSelect` imports
+  `lib/sceneMap.ts`, for the Rollup hoisting reason below.
+- **Under 760px the pane is the list alone**, with "See these on the map" in
+  the footer. A phone cannot show a list beside a map, and stacking them would
+  push the control that actually picks a scene most of a screen down for a
+  canvas where 1,286 pins sit under a fingertip. It is a render decision, not a
+  CSS one: a `display:none` map still downloads Leaflet, fetches the basemap and
+  measures itself wrong. Verified at 390px - no Leaflet request at all.
 - Positions are suppressed entirely only when the **scene** is too small to
   order anyone - with a banner saying why. Mixing scenes no longer suppresses
   them; see "Global has positions" above.
@@ -394,8 +421,9 @@ round trip.
 ### The scene map (`/rankings/map`)
 
 Where the competitive scenes are, and the way into each one's ladder. Reached
-from the **expand control on the scene picker's mini map** - the page is the
-mini map at full size, with the same selection carried in `?scene=`. Because it
+from the **expand control on the map half of the scene picker's pane** - the
+page is that map at full size, with the same selection carried in `?scene=`
+(and on a phone, where the pane has no map half, from the link in its footer). Because it
 is a drill-down rather than a tab, it carries "Back to the ladder" twice: above
 the heading, where a reader who has just arrived looks, and at the foot under
 60 rows of list.
@@ -453,10 +481,10 @@ the heading, where a reader who has just arrived looks, and at the foot under
   flag - eager, it would put a map library in the bundle every *calendar*
   visitor downloads. Measured: the main bundle stays at 148.9KB gzipped and the
   map is a 47KB chunk fetched only when the page opens. (Re-measured
-  2026-10-27 after the merges since: 151.88KB main, 47.23KB map.) The picker's
-  Map mode is lazy for the same reason and shares that chunk, so there are two
-  lazy importers of Leaflet and still none eager: 152.69KB main before it,
-  152.98KB after, with the map chunk at 46.07KB.
+  2026-10-27 after the merges since: 151.88KB main, 47.23KB map.) The scene
+  picker's pane is lazy for the same reason and shares that chunk, so there are
+  two lazy importers of Leaflet and still none eager: 152.98KB main before the
+  split pane, 154.07KB after, with the map chunk at 46.82KB.
 - **Rollup hoists a shared module into the eager chunk whole**, which is the
   trap this route sets for anything outside it. The event page's scene line
   needed one path builder from `lib/sceneMap.ts`, and importing it put *all* of
@@ -467,23 +495,58 @@ the heading, where a reader who has just arrived looks, and at the foot under
   whole scene line costs **0.71KB** (152.59KB against the 151.88KB base).
   Import a map helper from an eager module and measure, or the lazy route
   quietly stops being one.
-- **The basemap is OpenStreetMap's keyless raster, darkened in CSS.**
-  CARTO's dark basemap was the first choice and was rejected on evidence:
-  `basemaps.cartocdn.com/dark_all` now serves tiles reading "API KEY REQUIRED"
-  across every one of them. There is no keyless *dark* OSM raster, so
-  `.scene-map .leaflet-tile` inverts and hue-rotates the tiles - no extra
-  request, attribution untouched, and the markers are deliberately outside the
-  filter so none of this file's contrast measurements are undone.
-  `VITE_MAP_TILE_URL` is the override and **is the production path**: Mapbox
-  raster tiles, which the project already pays for, one environment variable
-  and no new vendor. It is the thing to change before Rankings stops being
-  unlisted, since OSM's tile policy asks heavy consumers to run their own
-  cache.
-- `VITE_MAP_TILE_URL` / `VITE_MAP_TILE_ATTRIBUTION` are the **first**
-  `import.meta.env` use in the app (`src/vite-env.d.ts`); both are optional,
-  both have a working default, and neither is a secret - a tile URL with a
-  token in it is public in the bundle by construction, which is exactly why the
-  default needs none.
+- **The basemap is geometry we serve ourselves, not tiles.** Coastlines and
+  country outlines as one MultiPolygon, plus city labels: `public/basemap/`,
+  built from Natural Earth (public domain, no key, no attribution required) by
+  `scripts/build-basemap.py`. Rebuild with:
+
+  ```bash
+  cd frontend && python3 scripts/build-basemap.py \
+      ne_110m_admin_0_countries.geojson ne_50m_populated_places_simple.geojson \
+      public/basemap
+  ```
+
+  - **Minimal by construction.** Nobody picks a Riftbound scene by looking at a
+    park. With our own geometry you cannot accidentally ship a road: the only
+    things on the map are the things we drew.
+  - **No quota and no cliff.** It replaced OpenStreetMap's raster tiles - 8-20
+    requests per pan from a third party, on a usage policy that asks heavy
+    consumers to self-host. (CARTO's keyless dark basemap, the first choice
+    here, now serves tiles reading "API KEY REQUIRED" across every one of them;
+    any keyless CDN basemap is one business decision away from the same.) Two
+    static files on our own CloudFront: **land-v1.json 119KB raw / 39.5KB
+    gzipped, places-v1.json 36KB / 16.6KB**, fetched once and cached.
+  - **It themes instead of being fought.** The `filter: invert(1)
+    hue-rotate(180deg)` that forced a light raster dark is gone; the land, the
+    coastline and the labels are drawn in the app's own tokens, and the marker
+    contrast measurements are untouched because nothing filters anything.
+  - **Versioned filenames**, for the reason the Rankings mark is versioned:
+    `deploy.sh frontend` only invalidates `index.html`.
+  - **The geometry never enters a JS bundle.** It is `fetch`ed at runtime, not
+    imported - an `import` of JSON is inlined by Rollup into the importing
+    chunk. Verified: the eager chunk contains no `leaflet` and no coastline.
+  - **Labels are thinned by zoom**, using Natural Earth's own `min_zoom`, with
+    a floor of 2 so the world view is not unlabelled and a cap of 90 drawn at
+    once. They are rebuilt for the visible bounds on `moveend`/`zoomend`.
+  - **Scale choice**: countries at 110m, because at a 400px map a 50m coastline
+    is the same shape at four times the bytes; places at 50m (1,251 cities)
+    because 110m's 243 leave most of the map unlabelled at the zooms where
+    someone is looking for their own scene. Simplified with Douglas-Peucker at
+    0.1 degrees and rounded to 2 decimals - finer than the generalisation
+    Natural Earth has already applied.
+  - **Past zoom 9 there is nothing**: no imagery, and the densest city labels
+    run out. So every fit clamps to `maxZoom: 9`, and the venue pins carry the
+    local context. For picking a scene that is the right trade - the question
+    is which city, not which street. Admin-1 outlines (US states, German
+    Länder) are the cheap next step if the inside of a large country ever needs
+    more.
+- `VITE_MAP_TILE_URL` / `VITE_MAP_TILE_ATTRIBUTION` are still honoured and are
+  now the **escape hatch rather than the plan**: set them and `SceneMap` draws
+  raster tiles instead of the geometry, which is the route to a minimal Mapbox
+  style (the project already pays Mapbox for geocoding) if the geometry ever
+  proves too bare. That reintroduces a key and a per-request bill, so it is a
+  decision to surface rather than take. They are the app's only
+  `import.meta.env` use (`src/vite-env.d.ts`), both optional, neither a secret.
 - Pure logic is in `lib/sceneMap.ts` and tested without a DOM, including that
   the dot scale is area-proportional, that the disc vanishes where there is no
   extent, and that the three coverage sentences are three different answers.

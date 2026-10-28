@@ -21,7 +21,6 @@ import {
   sceneCoverageSentence,
   sceneFocusBounds,
   sceneScope,
-  offMapSentence,
   filterScenes,
   formatSpread,
   UNNAMED_SCENE_LABEL,
@@ -426,53 +425,5 @@ describe('sceneFocusBounds', () => {
       scene({ componentId: 'b', latitude: 70, longitude: 0, spreadKm: 50 })
     )!;
     expect(arctic[1][1] - arctic[0][1]).toBeGreaterThan(equator[1][1] - equator[0][1]);
-  });
-});
-
-/**
- * The line that keeps the unpinned scenes reachable in Map mode.
- *
- * It exists because of a measurement, not a hypothetical: 21 of 1,307
- * production scenes are dispersed and they hold 41% of recorded players,
- * including the four largest. A map mode that said nothing would lose them.
- */
-describe('offMapSentence', () => {
-  it('says nothing when every scene has a pin', () => {
-    expect(offMapSentence([], 32959)).toBeNull();
-  });
-
-  it('leads with the share of players, not the share of scenes', () => {
-    // "21 of 1,307" reads as a rounding error; the player share is the same
-    // fact told straight, and it is the one a reader can act on.
-    const sentence = offMapSentence(
-      [
-        scene({ componentId: 'a', dispersed: true, latitude: null, longitude: null, playerCount: 5405 }),
-        scene({ componentId: 'b', dispersed: true, latitude: null, longitude: null, playerCount: 2213 }),
-      ],
-      10000
-    );
-    expect(sentence).toContain('76% of recorded players');
-    expect(sentence).toContain('2 play across venues too far apart to pin');
-  });
-
-  it('counts the two reasons apart, because they are different claims', () => {
-    const sentence = offMapSentence(
-      [
-        scene({ componentId: 'a', dispersed: true, latitude: null, longitude: null, playerCount: 40 }),
-        scene({ componentId: 'b', dispersed: false, latitude: null, longitude: null, playerCount: 10 }),
-      ],
-      1000
-    )!;
-    expect(sentence).toContain('1 play across venues too far apart to pin');
-    expect(sentence).toContain('1 has no geocoded venue');
-  });
-
-  it('drops the share rather than printing a percentage of nothing', () => {
-    const sentence = offMapSentence(
-      [scene({ componentId: 'a', dispersed: true, latitude: null, longitude: null, playerCount: 7 })],
-      0
-    )!;
-    expect(sentence).not.toContain('%');
-    expect(sentence).toContain('too far apart to pin');
   });
 });
