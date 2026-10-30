@@ -33,6 +33,26 @@ export interface PlayerRecord extends EngineVerdict {
   componentId: string | null;
   componentSize: number | null;
   regionLabel: string | null;
+  /**
+   * The scene their **home venue** belongs to, and its name.
+   *
+   * Not `componentId` under another name, and not `regionLabel` either. A
+   * component is a connected component of the co-play graph - 97.4% of players
+   * sit in one - and `regionLabel` is this player's own home city, which
+   * differs between members of one scene: measured on production, the five
+   * Peninsula players at one Redwood City event carry `Redwood City, CA`,
+   * `San Carlos, California` and `Sunnyvale, California` between them. A scene
+   * is the engine's geographic cluster of stores, so it is the one of the
+   * three that answers "which local scene is this player in".
+   *
+   * Null until a re-clustering has been accepted, and null afterwards for a
+   * player whose home venue is in no rankable scene - measured 196 of 7,411
+   * sampled profiles (2.6%), against 99.9% that carry a `regionLabel`. So
+   * "has a region but no scene" is a normal state, not a failure, and nothing
+   * may fall back from one to the other.
+   */
+  sceneId: string | null;
+  sceneLabel: string | null;
   /** Flattened from the profile's per-set ratings map. */
   setRatings: SetRatingRecord[];
   updatedAt: string | null;

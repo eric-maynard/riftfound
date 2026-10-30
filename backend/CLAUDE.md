@@ -182,6 +182,19 @@ A player at 3-7 games therefore shows a rating with its margin and
 `rank: null`. Below the floor, `rating: null` with `uncertainty` and the counts
 still carried, so the state is still explainable.
 
+**A consumer that collapses the two into one word gets caught by its own
+page.** The event page counted the field in two groups off `field.ratedPlayers`
+and `provisionalPlayers + unknownPlayers`, which on
+`prb-117397899890353177` read "3 Rated, 10 Unranked" over a roster printing
+**six** ratings: three of the ten were between the two thresholds and had their
+number printed beside the word saying they had none. The counts were both
+correct - the pairing was not. That page counts three groups now, off the
+players rather than off `field`, because `provisionalPlayers` is not "has a
+number": a known player with two recorded games is provisional *and* below the
+display floor. `field` publishes `minGamesToPublishRating` beside
+`minGamesForRating` precisely so a page can tell the two apart, and
+`frontend/CLAUDE.md` carries the rest of that repair.
+
 `/api/players/:id/ratings` **serves its points** for a provisional player. It
 used to withhold them because the last point reconstructed the withheld
 headline; the headline is published now, so there is nothing left to
@@ -432,6 +445,25 @@ engine has never seen this player" from "seen, but no position yet".
 
 Profiles are fetched with one `RankingStore.getPlayers()` BatchGet for the whole
 field - never a GetItem per player.
+
+**Each player carries their own scene, beside their own region.**
+`TournamentPlayer.sceneId` / `sceneLabel` is the scene the engine assigned to
+that player's **home venue**, and it is what a roster's place column should
+print. The other two place fields on the row are the reasons why:
+`regionLabel` is the player's home city, so a column of it names as many places
+as the field has home stores - on `prb-117397899890353177` six known players
+carried `Redwood City, CA` x3, `San Carlos, California` x2 and
+`Sunnyvale, California`, where the scene answer is `Peninsula` x5 and
+`South Bay` x1 - and `componentId` is a connected component that spans several
+scenes, so its label names none of them in particular. They are read off the
+same `PLAYER#<id>/PROFILE` items the BatchGet above already fetches, so this
+costs **no extra read**.
+
+Both are null for a player whose home venue is in no scene: **196 of 7,411
+sampled production profiles, 2.6%**, against 99.9% that carry a `regionLabel`.
+So "has a region, has no scene" is a normal state and `enrich()` does **not**
+fall back from one to the other - a `sceneLabel ?? regionLabel` would put a
+city back under a column headed Scene, silently, on exactly those rows.
 
 ### An event's scene
 

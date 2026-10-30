@@ -154,6 +154,29 @@ export interface TournamentPlayer {
   componentId: string | null;
   componentSize: number | null;
   regionLabel: string | null;
+  /**
+   * The scene this player's **home venue** belongs to, and its name.
+   *
+   * This is the field a roster's place column should print, and the other two
+   * are the reasons why. `regionLabel` is the player's own home city, so a
+   * column of it names as many places as the field has home stores - measured
+   * on `prb-117397899890353177`, six known players carried `Redwood City, CA`
+   * x3, `San Carlos, California` x2 and `Sunnyvale, California`, where the
+   * scene answer is `Peninsula` x5 and `South Bay` x1. `componentId` is a
+   * connected component of the co-play graph and spans several scenes, so its
+   * label names none of them in particular (the Redwood City store that read
+   * "Scene: New York, New York" is the receipt).
+   *
+   * Null for a player whose home venue is in no scene - 196 of 7,411 sampled
+   * production profiles, 2.6%, against 99.9% carrying a `regionLabel`. That is
+   * a normal state and a reader must say so rather than falling back to the
+   * city, which is the fallback that made the column wrong in the first place.
+   *
+   * Free: these come off the same `PLAYER#<id>/PROFILE` items the field's one
+   * BatchGet already fetches.
+   */
+  sceneId: string | null;
+  sceneLabel: string | null;
   /** The component is large enough for its ordering to mean something. */
   comparable: boolean;
 }

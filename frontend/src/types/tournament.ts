@@ -83,7 +83,28 @@ export interface TournamentPlayer {
   gamesUntilRated: number;
   componentId: string | null;
   componentSize: number | null;
+  /**
+   * The player's own home city. **Not what a place column on this page
+   * prints** - see `sceneLabel`.
+   */
   regionLabel: string | null;
+  /**
+   * The scene this player's **home venue** belongs to: the engine's cluster of
+   * stores whose players really play each other.
+   *
+   * This is what the roster's Scene column shows. `regionLabel` names as many
+   * places as the field has home stores - on the live page six known players
+   * carried `Redwood City, CA`, `San Carlos, California` and
+   * `Sunnyvale, California` where the scene answer is `Peninsula` x5 and
+   * `South Bay` x1 - and `componentId` spans several scenes, so neither is a
+   * scene.
+   *
+   * Null for a player whose home venue is in no scene (2.6% of sampled
+   * production profiles, against 99.9% that carry a region). The column has to
+   * say so rather than falling back to the city.
+   */
+  sceneId: string | null;
+  sceneLabel: string | null;
   comparable: boolean;
 }
 
@@ -209,9 +230,17 @@ export interface TournamentField {
   meanRating: number | null;
   medianRating: number | null;
   topRating: number | null;
+  /** The **rank gate**: recorded games before a player holds a position. */
   minGamesForRating: number;
   maxUncertaintyForRating: number;
   minComponentSize: number;
+  /**
+   * The **display floor**: recorded games before the rating *number* is shown
+   * at all. A different and much lower threshold than `minGamesForRating`, and
+   * conflating the two is what made "3 Rated, 10 Unranked" sit under a table
+   * printing six ratings.
+   */
+  minGamesToPublishRating: number;
 }
 
 /**

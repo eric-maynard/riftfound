@@ -180,6 +180,12 @@ function toPlayerRecord(item: Item): PlayerRecord | null {
     componentId: readString(item, ['componentId', 'component']),
     componentSize: readNumber(item, ['componentSize']),
     regionLabel: readString(item, ['regionLabel', 'region']),
+    // The engine writes both onto every profile it has placed in a scene
+    // (`PlayerProfileItem` in scraper/src/ranking/items.ts). They cost nothing
+    // here - this is the same item the field's BatchGet already reads - and
+    // they are the only one of the three place fields that names a *scene*.
+    sceneId: readString(item, ['sceneId']),
+    sceneLabel: readString(item, ['sceneLabel']),
     setRatings: readSetRatings(item),
     updatedAt: readString(item, ['updatedAt', 'ratedAt', 'computedAt']),
     ...readVerdict(item),

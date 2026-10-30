@@ -711,13 +711,34 @@ the heading, where a reader who has just arrived looks, and at the foot under
   - **The size is the scene's too.** `49 players · 4 rated · 3 stores`, from
     the scene - not this event's field, and not the component's, which spans
     several scenes and would overstate a scene by an order of magnitude.
-  - **The roster table's `Scene` column is now `Region`**, with a hint saying
-    so. Its cells were always `player.regionLabel` - that player's home region
-    - so a column of them under the header "Scene" asserted several scenes
-    where there is one, and beside the new line it would have been a flat
-    contradiction. (`/rankings`' own `Scene` column has the same contents and
-    is left alone: it is load-bearing copy there with its own documented
-    reasoning, and changing it is a separate decision.)
+  - **The roster table's column is `Scene` again, and its cells are scenes.**
+    It was `Scene` with `player.regionLabel` in it - a home city, a different
+    one per member of one scene - and was renamed to `Region` because that is
+    what the cells were. The cells are `player.sceneLabel` now, so the reason
+    for the rename is gone and the header goes back. The engine places a
+    *store* in a scene and a player's scene is their home store's, so every
+    cell is the same kind of thing as the line above it. On the reported page
+    the column read `Redwood City, CA`, `San Carlos, California` and
+    `Sunnyvale, California`; it reads `Peninsula` x5 and `South Bay` x1.
+    - `TournamentPlayer.sceneId` / `sceneLabel` were added to carry it. They
+      come off the `PLAYER#<id>/PROFILE` items the field's one BatchGet
+      already fetches, so the column costs **no extra read**.
+    - **A sceneless player never falls back to the city.** 2.6% of sampled
+      production profiles carry a region and no scene, and a `??` would put a
+      city back under this header on exactly those rows. The cell is the
+      page's `--` with the reason on hover, and the reason is one of two: a
+      known player's store is in no rankable scene, or the engine has never
+      seen this player so there is no home store at all. Deliberately not a
+      word - most of an upcoming event's roster is in the second state, and a
+      phrase repeated down twelve rows is the "column of Unranked" failure
+      this section has already been caught in once.
+    - The standings table's sub-label under each name moved with it, for the
+      same reason. It has no header to hang a hint on, so a player with no
+      scene simply has no line there: an absent sub-label reads as nothing,
+      where `--` under a name reads as missing data.
+    - (`/rankings`' own `Scene` column still holds `regionLabel` and is left
+      alone: it is load-bearing copy there with its own documented reasoning,
+      and changing it is a separate decision.)
   - **The whole line is gated on `isRankingsPreview`** - a stricter rule than
     the player links on this page, which render for everyone. This page is
     reachable without the flag, the trophy that leads here is not, and a
@@ -729,10 +750,67 @@ the heading, where a reader who has just arrived looks, and at the foot under
     rows reaching 342px inside a 359px panel, and no page-level horizontal
     scroll. Contrast over the real composited ancestors: name and `Map` cyan
     11.41:1, label and size summary 7.22:1, the `mostly` chip 7.09:1.
-- **Strength of field never prints a bare mean.** The rated subset is
-  systematically the regulars, so the number always carries `ratedShare`'s
-  story - "1,219 mean, across the 7 rated players of 14" - and the three groups
-  are counted in words beside the ranking page's coverage meter.
+- **Strength of field is one word, and the word is measured.** The block used
+  to print a mean at display size, a line of prose naming the players it was
+  taken over ("1,219 mean, across the 7 rated players of 14"), a coverage meter
+  and a median/top line. All four are gone and the measurement is why, not
+  taste.
+  - **Measured on production, events do not differ in strength.** Over all
+    **11,946** events with a captured field (2026-09-25..2026-10-31, 48,173
+    distinct players, 35,661 of them known to the engine), a one-way variance
+    decomposition of rated players' ratings grouped by event gives
+    **within-event SD 84.2, between-event SD 0.0, ICC 0.000**. The 418 events
+    where *every* player in the field is rated make the same point with no
+    sampling argument at all: their means have SD **30.4** against the
+    **31.8** that drawing the same number of players from one pool predicts.
+    So the variation the old mean was displaying was sampling noise, and three
+    surfaces were spent on it.
+  - **The bands are the measured quartiles.** Distribution of the event mean
+    over events with a rated player (n=6,234): p05 1138, p25 1196, p50 1222,
+    p75 1251, p95 1311. Over the pool that actually earns a band (rated sample
+    >= 6, n=2,168): q1 **1203.7**, q2 **1220.3**, q3 **1239.1**. The edges are
+    **1200 / 1220 / 1240**, rounded to tens because the published mean carries
+    one decimal and the quartiles move by at most 6 points as the floor moves
+    from 3 to 8 - they are a property of the corpus, not of the pool. Occupancy
+    20 / 30 / 27 / 24%. Labels **Low / Medium / High / Very high**, in
+    `FIELD_BAND_EDGES` / `FIELD_BAND_LABELS` (`lib/tournament.ts`).
+  - **Below six rated players there is no band**, and the floor is derived
+    rather than picked: a single rated player's published margin may be as wide
+    as `maxUncertaintyForRating` (120), their share of a mean over `k` is that
+    over `k`, so under `ceil(120 / 20) = 6` one person's uncertainty spans more
+    than a whole band. `minRatedForBand` reads the gate off the payload so the
+    floor follows it. The reported page is exactly that case - mean 1,276 over
+    **3 rated of 13** - and reads `Not enough rated players` with the count in
+    the hint instead of `Very high`.
+  - **The word is a position in a distribution, and the hint says so.** With
+    ICC 0.000 it cannot be a claim that this event was harder, so
+    `FIELD_BAND_HINT` states the measurement. Printing the band with its caveat
+    rather than withholding it is the call "Global has positions, and says what
+    they rest on" already made.
+- **The field counter said three where the table showed six, and now counts
+  three groups.** It read "3 Rated &middot; 10 Unranked" over a roster printing
+  **six** ratings, because one word covered two thresholds: the display floor
+  (3 recorded games - whether a *number* appears) and the rank gate (8 games,
+  +/-120, scene >= 8 - whether a *position* is held). Three of the ten sat
+  between them, so the table printed their rating beside the word denying it.
+  The legend is `Rated` / `Still settling` / `No rating yet`, three different
+  answers rather than two rows that would both read `Unranked` - the thing the
+  two-group version existed to avoid. **The counts come from
+  `fieldComposition(detail.players)` through `ratingDisplay`**, the same
+  function the table cells branch on, so counting the numbers in the table
+  cannot give a different answer; `field.provisionalPlayers` would not, because
+  a known player with two recorded games is provisional *and* has no number.
+  `field.ratedPlayers` still agrees with the first group by construction and a
+  test pins it.
+- **The roster shows no `Checked in` and no `Signed up` column**, and the two
+  absences are different. Check-in is a door state nothing else keeps and it
+  told a reader of this page nothing. The sign-up time is **load-bearing
+  data**: `acceptedTermsAt` reconstructs an event's whole signup curve from one
+  snapshot, which is why the scraper fetches a roster once instead of polling,
+  and a dated roster only exists on an event that has not started. So it is
+  dropped from this **view** only - the scraper, the stored fact and
+  `TournamentRosterEntry.registeredAt` are untouched, and `formatClock` still
+  formats the capture line. `rosterColumns` offers `waitlist` alone.
 - **Finality is read off the round, or off the capture - never off a match.**
   Riot leaves matches reading `IN_PROGRESS` inside rounds it has `FINALIZED`
   (21 of 22 on the live event). `openMatches` is a data-quality signal, not a
