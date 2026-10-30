@@ -328,8 +328,18 @@ export function sceneCoverageSentence(coverage: {
  * scene near a pole cannot divide the longitude padding by zero.
  */
 const KM_PER_DEGREE = 111;
-/** Smallest half-width of the frame, so a single-venue scene opens on a city. */
-const MIN_FRAME_KM = 6;
+/**
+ * Smallest half-width of the frame, so a single-venue scene opens on its city
+ * rather than on its street.
+ *
+ * 30km, raised from 6 after looking at the result: a scene with one venue has
+ * no extent, so this figure alone decides what "show me this scene" means, and
+ * 6km framed a corner of San Francisco Bay - close enough to see the pin,
+ * nowhere near enough to see *where* it is. Measured in the picker's pane: a
+ * 30km half-width puts the whole Bay on screen with San Francisco, Oakland and
+ * San Jose all named, which is the scale the question is actually asked at.
+ */
+const MIN_FRAME_KM = 30;
 
 export function sceneFocusBounds(
   scene: SceneMapEntry

@@ -496,17 +496,79 @@ the heading, where a reader who has just arrived looks, and at the foot under
   whole scene line costs **0.71KB** (152.59KB against the 151.88KB base).
   Import a map helper from an eager module and measure, or the lazy route
   quietly stops being one.
-- **The basemap is geometry we serve ourselves, not tiles.** Coastlines and
-  country outlines as one MultiPolygon, plus city labels: `public/basemap/`,
-  built from Natural Earth (public domain, no key, no attribution required) by
+- **The basemap is geometry we serve ourselves, not tiles**, and it is
+  **tiered**, because one scale cannot do both jobs. `public/basemap/`, built
+  from Natural Earth (public domain, no key, no attribution required) by
   `scripts/build-basemap.py`. Rebuild with:
 
   ```bash
   cd frontend && python3 scripts/build-basemap.py \
-      ne_110m_admin_0_countries.geojson ne_50m_populated_places_simple.geojson \
-      public/basemap
+      ne_110m_admin_0_countries.geojson ne_10m_land.geojson ne_10m_lakes.geojson \
+      ne_10m_populated_places_simple.geojson \
+      ne_10m_admin_1_states_provinces_lines.geojson public/basemap
   ```
 
+  | asset | raw | **gzipped** | when |
+  |---|---|---|---|
+  | `land-v1.json` (110m countries) | 119 KB | **39.5 KB** | pane opens |
+  | `places-v1.json` (238 cities, `min_zoom` ≤ 4) | 6.8 KB | **3.5 KB** | pane opens |
+  | `detail/manifest-v1.json` (which cells exist) | 4.2 KB | **0.9 KB** | pane opens |
+  | `detail/<x>_<y>-v1.json` × 460 | 7.95 MB | 2.36 MB | **only the cells on screen** |
+
+  A cell is 10° square and carries 10m coastline, lakes, 10m admin-1
+  boundaries and the ~7,000 cities below the world tier. Median **2.9 KB
+  gzipped**, 90th percentile 14.7 KB, worst (Finland and the Baltic, all lakes
+  and islands) 51 KB.
+
+  **What a first metro view costs**: 43.9 KB for the world tier plus the cells
+  on screen - measured, San Francisco Bay is **one** cell at 3.8 KB, so
+  **47.7 KB**; the Rhine-Main corner, where a scene's own spread straddles two
+  cell boundaries in both axes, is four cells and 134 KB. Everything is cached
+  for the session and by the browser after that.
+
+  - **Why tiers: 110m does not contain the thing being looked for.** Natural
+    Earth 110m is 1:110,000,000, where San Francisco Bay is 60km end to end and
+    is **absent from the source** - not simplified away by our pass, not in the
+    file. The first version shipped 110m alone and the verdict was "I can't
+    even see the SF bay or really tell where SF and SJ are", which was correct
+    and unfixable by tuning: the same goes for Puget Sound, the Chesapeake and
+    the Singapore strait. 10m resolves all of them.
+  - **Why cells rather than a global 10m file.** Global 10m land is 775KB-1.6MB
+    gzipped, which is a download rather than a lazy fetch. Clipped
+    (Sutherland-Hodgman) into a flat 10-degree grid it is the same geometry at
+    2-20KB for the one or two cells a metro view shows. This is **one flat
+    grid, deliberately**: a second level would be a tile pyramid, and if this
+    map ever needs one the honest answer is a tile provider instead.
+  - **The two tiers are never drawn together.** Where 110m says land and 10m
+    says water - the Bay, the Zuiderzee - the coarse fill shows straight
+    through the gap the detail tier exists to open, so the world layer is
+    *removed* once every cell covering the view is in hand, and restored the
+    moment the reader zooms out past `DETAIL_ZOOM` (6) or pans somewhere not
+    yet loaded.
+  - **Admin-1 boundaries are 10m, not 50m, and that was forced by the data.**
+    Natural Earth's 50m admin-1 *lines* layer covers 111 of the 460 cells - the
+    US, Canada, Brazil, Australia - with **no German Länder, no French régions
+    and no Japanese prefectures at all**, which are exactly the countries where
+    this map is otherwise a featureless slab. The 10m layer is worldwide; it is
+    cut at `min_zoom` 7 (Germany's 34 Länder and Japan's 111 prefectures are
+    *all* at 7, so 6 drops both countries), and simplified five times harder
+    than coastline, because a boundary is an abstraction where 1km of wobble is
+    invisible and the same error in a bay *is* the bay.
+  - They are drawn secondary **by pattern, not by visibility**: dashed, same
+    hue as the coast. The first attempt used a 0.5px hairline at 0.55 opacity,
+    which on the land fill was a line nobody could see, and an invisible line
+    is not a subtle one.
+  - **Labels are collision-filtered**, which the zoom tiers alone do not do:
+    over the Rhine-Main, `min_zoom` lets thirty cities through at one zoom and
+    they overprint into a smear - measured, 37 labels in a 350px pane with
+    Nürnberg sitting on Fürth. The most prominent city is placed first and a
+    label is drawn only where it does not land on one already placed; the cap
+    (`MAX_LABELS`, 140) is now a backstop rather than the mechanism.
+  - **Framing a scene is a metro question.** `MIN_FRAME_KM` is 30km and the fit
+    clamps at zoom 10: a single-venue scene has no extent, so that figure alone
+    decides what "show me this scene" means, and the 6km it used to be framed a
+    corner of the Bay. At 30km the Bay is on screen with San Francisco, Oakland
+    and San Jose named.
   - **Minimal by construction.** Nobody picks a Riftbound scene by looking at a
     park. With our own geometry you cannot accidentally ship a road: the only
     things on the map are the things we drew.
@@ -514,40 +576,41 @@ the heading, where a reader who has just arrived looks, and at the foot under
     requests per pan from a third party, on a usage policy that asks heavy
     consumers to self-host. (CARTO's keyless dark basemap, the first choice
     here, now serves tiles reading "API KEY REQUIRED" across every one of them;
-    any keyless CDN basemap is one business decision away from the same.) Two
-    static files on our own CloudFront: **land-v1.json 119KB raw / 39.5KB
-    gzipped, places-v1.json 36KB / 16.6KB**, fetched once and cached.
+    any keyless CDN basemap is one business decision away from the same.)
   - **It themes instead of being fought.** The `filter: invert(1)
-    hue-rotate(180deg)` that forced a light raster dark is gone; the land, the
-    coastline and the labels are drawn in the app's own tokens, and the marker
-    contrast measurements are untouched because nothing filters anything.
+    hue-rotate(180deg)` that forced a light raster dark is gone; land, coast,
+    lakes, boundaries and labels are drawn in the app's own tokens, and the
+    marker contrast measurements are untouched because nothing filters
+    anything.
   - **Versioned filenames**, for the reason the Rankings mark is versioned:
-    `deploy.sh frontend` only invalidates `index.html`.
-  - **The geometry never enters a JS bundle.** It is `fetch`ed at runtime, not
-    imported - an `import` of JSON is inlined by Rollup into the importing
-    chunk. Verified: the eager chunk contains no `leaflet` and no coastline.
-  - **Labels are thinned by zoom**, using Natural Earth's own `min_zoom`, with
-    a floor of 2 so the world view is not unlabelled and a cap of 90 drawn at
-    once. They are rebuilt for the visible bounds on `moveend`/`zoomend`.
-  - **Scale choice**: countries at 110m, because at a 400px map a 50m coastline
-    is the same shape at four times the bytes; places at 50m (1,251 cities)
-    because 110m's 243 leave most of the map unlabelled at the zooms where
-    someone is looking for their own scene. Simplified with Douglas-Peucker at
-    0.1 degrees and rounded to 2 decimals - finer than the generalisation
-    Natural Earth has already applied.
-  - **Past zoom 9 there is nothing**: no imagery, and the densest city labels
-    run out. So every fit clamps to `maxZoom: 9`, and the venue pins carry the
-    local context. For picking a scene that is the right trade - the question
-    is which city, not which street. Admin-1 outlines (US states, German
-    Länder) are the cheap next step if the inside of a large country ever needs
-    more.
+    `deploy.sh frontend` only invalidates `index.html`. Bump the suffix in
+    `build-basemap.py` and `SceneMap.tsx` together.
+  - **No geometry enters a JS bundle.** Everything is `fetch`ed at runtime -
+    an `import` of JSON is inlined by Rollup into the importing chunk. Verified
+    after this change: the eager chunk is byte-identical at **155.21KB gzipped**
+    (nothing eager was touched) and contains no `leaflet`, no coastline and no
+    city names; the tiering logic costs **0.81KB** in the lazy map chunk
+    (46.82 → 47.63KB).
+  - At high zoom there is still no imagery, and that is the trade: the question
+    is which city a scene is in, not which street, and the venue pins carry the
+    local context.
 - `VITE_MAP_TILE_URL` / `VITE_MAP_TILE_ATTRIBUTION` are still honoured and are
-  now the **escape hatch rather than the plan**: set them and `SceneMap` draws
+  the **escape hatch rather than the plan**: set them and `SceneMap` draws
   raster tiles instead of the geometry, which is the route to a minimal Mapbox
-  style (the project already pays Mapbox for geocoding) if the geometry ever
-  proves too bare. That reintroduces a key and a per-request bill, so it is a
-  decision to surface rather than take. They are the app's only
-  `import.meta.env` use (`src/vite-env.d.ts`), both optional, neither a secret.
+  style (the project already pays Mapbox for geocoding). They are the app's
+  only `import.meta.env` use (`src/vite-env.d.ts`), both optional, neither a
+  secret.
+  - **Costed, not avoided.** Mapbox Static Tiles bills per request past 200k a
+    month, and a vector style is ~15-25 tile requests per pan - so a reader who
+    pans a few times is 50-100 requests, and the free tier covers roughly
+    2,000-4,000 such sessions a month before it costs anything (then ~$0.25 per
+    1,000 tiles). Against that the geometry costs 44KB once plus 3-20KB a
+    metro, forever, with no key in a public bundle. The reason to switch would
+    be fidelity, not price: Mapbox gives correct coasts and labels at *every*
+    zoom with no build step, where this gives them down to about zoom 12 and
+    nothing below. Having now seen the tiered version answer "where is the Bay
+    and which dot is SF", I do not think that trade is worth a key and a bill
+    today - but it is one environment variable away if the owner disagrees.
 - Pure logic is in `lib/sceneMap.ts` and tested without a DOM, including that
   the dot scale is area-proportional, that the disc vanishes where there is no
   extent, and that the three coverage sentences are three different answers.

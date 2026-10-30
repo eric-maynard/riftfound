@@ -101,19 +101,55 @@ const TILE_ATTRIBUTION = import.meta.env.VITE_MAP_TILE_ATTRIBUTION ?? '';
  * it on every deploy. As a fetch it is a static file with its own cache entry,
  * and it stays out of the bundle entirely.
  */
-const LAND_URL = `${import.meta.env.BASE_URL}basemap/land-v1.json`;
-const PLACES_URL = `${import.meta.env.BASE_URL}basemap/places-v1.json`;
+const BASEMAP_BASE = `${import.meta.env.BASE_URL}basemap/`;
+const LAND_URL = `${BASEMAP_BASE}land-v1.json`;
+const PLACES_URL = `${BASEMAP_BASE}places-v1.json`;
+const MANIFEST_URL = `${BASEMAP_BASE}detail/manifest-v1.json`;
+const cellUrl = (key: string) => `${BASEMAP_BASE}detail/${key}-v1.json`;
 
 /** `[name, latitude, longitude, minimum zoom]` - see `scripts/build-basemap.py`. */
 type PlaceRow = [string, number, number, number];
+type Ring = [number, number][];
 
 interface Basemap {
   land: unknown;
   places: PlaceRow[];
 }
 
+/**
+ * One 10-degree cell of the detail tier: 10m coastline, the lakes big enough
+ * to orient by, admin-1 boundaries, and the ~7,000 cities too small for the
+ * world tier.
+ */
+interface DetailCell {
+  land: Ring[];
+  water: Ring[];
+  lines: Ring[];
+  places: PlaceRow[];
+}
+
+/**
+ * The zoom at which the world tier stops carrying information.
+ *
+ * Chosen by looking rather than by taste. Natural Earth 110m is 1:110,000,000:
+ * San Francisco Bay is 60km end to end and is **not in that file at all** - not
+ * simplified away, absent - and the same goes for Puget Sound, the Thames
+ * estuary and the Singapore strait. Around zoom 5 that starts to show as a
+ * coast that is too smooth to be anywhere; by 6 it is a lie. So 6 is where the
+ * cells take over, which is also around where a reader has stopped looking at
+ * continents and started looking for their own city.
+ */
+const DETAIL_ZOOM = 6;
+
+/** Cell size in degrees. Must match `CELL_DEG` in scripts/build-basemap.py. */
+const CELL_DEG = 10;
+
 /** One fetch per page load, shared by both maps that can exist in it. */
 let basemapRequest: Promise<Basemap> | null = null;
+/** Which cells exist, so a view over the Pacific asks for nothing. */
+let manifestRequest: Promise<Set<string>> | null = null;
+/** Cells already fetched, by key. Lives for the page, not the component. */
+const cellCache = new Map<string, Promise<DetailCell>>();
 
 function loadBasemap(): Promise<Basemap> {
   if (!basemapRequest) {
@@ -132,6 +168,57 @@ function loadBasemap(): Promise<Basemap> {
   return basemapRequest;
 }
 
+function loadManifest(): Promise<Set<string>> {
+  if (!manifestRequest) {
+    manifestRequest = fetch(MANIFEST_URL)
+      .then((response) => response.json())
+      .then((body) => new Set<string>(body.cells ?? []))
+      .catch((error: unknown) => {
+        manifestRequest = null;
+        throw error;
+      });
+  }
+  return manifestRequest;
+}
+
+function loadCell(key: string): Promise<DetailCell> {
+  let request = cellCache.get(key);
+  if (!request) {
+    request = fetch(cellUrl(key))
+      .then((response) => response.json())
+      .then((body) => ({
+        land: body.land ?? [],
+        water: body.water ?? [],
+        lines: body.lines ?? [],
+        places: body.places ?? [],
+      }))
+      .catch((error: unknown) => {
+        cellCache.delete(key);
+        throw error;
+      });
+    cellCache.set(key, request);
+  }
+  return request;
+}
+
+/** The cell keys a view covers. One or two at a metro zoom, a handful at 6. */
+function cellsForBounds(bounds: L.LatLngBounds): string[] {
+  const west = Math.floor(Math.max(-180, bounds.getWest()) / CELL_DEG) * CELL_DEG;
+  const east = Math.floor(Math.min(179.999, bounds.getEast()) / CELL_DEG) * CELL_DEG;
+  const south = Math.floor(Math.max(-90, bounds.getSouth()) / CELL_DEG) * CELL_DEG;
+  const north = Math.floor(Math.min(89.999, bounds.getNorth()) / CELL_DEG) * CELL_DEG;
+  const keys: string[] = [];
+  // A view wider than the world would otherwise ask for every cell there is;
+  // past about 36 cells it is a world view and the world tier is the answer.
+  if ((east - west) / CELL_DEG > 36) return keys;
+  for (let x = west; x <= east; x += CELL_DEG) {
+    for (let y = south; y <= north; y += CELL_DEG) {
+      keys.push(`${x}_${y}`);
+    }
+  }
+  return keys;
+}
+
 /**
  * The basemap's own colours, in the app's palette.
  *
@@ -143,9 +230,21 @@ function loadBasemap(): Promise<Basemap> {
  */
 const COLOR_LAND = '#3a4150';
 const COLOR_COAST = '#7684b5';
+/** The sea, matching `.scene-map`'s own background so a lake reads as water. */
+const COLOR_SEA = '#21222c';
+/** Admin-1 boundaries: the same hairline token the rest of the app uses. */
+const COLOR_BORDER = '#6272a4';
 
-/** Labels drawn at once, highest zoom floor first. A cap, not a target. */
-const MAX_LABELS = 90;
+/**
+ * Labels drawn at once, most prominent first. A cap, not a target.
+ *
+ * Raised from 90 with the detail tier: "which dot is San Francisco and which
+ * is San Jose" is a *labelling* question as much as a coastline one, and the
+ * cities that answer it are exactly the ones a tight cap drops. The viewport
+ * filter does most of the thinning - this is the backstop for a wide view over
+ * somewhere dense, like the Ruhr or the Kanto plain.
+ */
+const MAX_LABELS = 140;
 
 /**
  * Marker colours, from the app's own palette.
@@ -245,6 +344,8 @@ function SceneMap({
    */
   const map = useRef<L.Map | null>(null);
   const landLayer = useRef<L.LayerGroup | null>(null);
+  /** The 10m tier, drawn over the world tier and in place of it once loaded. */
+  const detailLayer = useRef<L.LayerGroup | null>(null);
   const labelLayer = useRef<L.LayerGroup | null>(null);
   const sceneLayer = useRef<L.LayerGroup | null>(null);
   const venueLayer = useRef<L.LayerGroup | null>(null);
@@ -311,9 +412,10 @@ function SceneMap({
        its own pane it would be drawn over every pin. Neither pane takes
        pointer events: a click on the sea is a click on the map, not on a
        country. */
-    instance.createPane('basemapLand').style.zIndex = '200';
+    instance.createPane('basemapWorld').style.zIndex = '200';
+    instance.createPane('basemapDetail').style.zIndex = '210';
     instance.createPane('basemapLabels').style.zIndex = '250';
-    for (const name of ['basemapLand', 'basemapLabels']) {
+    for (const name of ['basemapWorld', 'basemapDetail', 'basemapLabels']) {
       const pane = instance.getPane(name);
       if (pane) pane.style.pointerEvents = 'none';
     }
@@ -329,7 +431,8 @@ function SceneMap({
       instance.attributionControl.addAttribution('Natural Earth');
     }
 
-    landLayer.current = L.layerGroup([], { pane: 'basemapLand' }).addTo(instance);
+    landLayer.current = L.layerGroup([], { pane: 'basemapWorld' }).addTo(instance);
+    detailLayer.current = L.layerGroup([], { pane: 'basemapDetail' }).addTo(instance);
     labelLayer.current = L.layerGroup([], { pane: 'basemapLabels' }).addTo(instance);
     sceneLayer.current = L.layerGroup().addTo(instance);
     venueLayer.current = L.layerGroup().addTo(instance);
@@ -352,7 +455,7 @@ function SceneMap({
     const resize = new ResizeObserver(() => {
       instance.invalidateSize({ animate: false });
       if (userMoved.current || !fittedBounds.current) return;
-      instance.fitBounds(fittedBounds.current, { padding: [16, 16], maxZoom: 9 });
+      instance.fitBounds(fittedBounds.current, { padding: [16, 16], maxZoom: 10 });
     });
     resize.observe(container.current);
 
@@ -361,6 +464,7 @@ function SceneMap({
       instance.remove();
       map.current = null;
       landLayer.current = null;
+      detailLayer.current = null;
       labelLayer.current = null;
       sceneLayer.current = null;
       venueLayer.current = null;
@@ -372,26 +476,46 @@ function SceneMap({
     // can follow a changing callback without that.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-
   /*
-   * The basemap: coastlines once, city labels per view.
+   * The basemap, in two tiers.
    *
-   * The land is static - one MultiPolygon, added and never touched again. The
-   * labels are not: 1,251 of them drawn at once would be a soup at any zoom
-   * and a waste at every one, so each carries the zoom it earns its place at
-   * (Natural Earth's own `min_zoom`) and the layer is rebuilt for what is
-   * actually on screen whenever the view settles. That is ~20 labels on the
-   * world view and under 90 anywhere else.
+   * **World tier**: 110m country outlines and the ~240 cities Natural Earth
+   * labels at zoom 4 and below. One fetch, kept for the life of the page,
+   * right for a view of continents.
+   *
+   * **Detail tier**: 10m coastline, lakes, admin-1 boundaries and the other
+   * ~7,000 cities, clipped into 10-degree cells and fetched **only for the
+   * cells on screen**, and only past `DETAIL_ZOOM`. A global 10m land file is
+   * 775KB-1.6MB gzipped, which is a download rather than a lazy fetch; the
+   * same geometry cut into cells costs 2-20KB for the one or two a metro view
+   * actually shows.
+   *
+   * The two tiers must not be drawn at once, and that is not a performance
+   * nicety: where 110m says land and 10m says water - San Francisco Bay,
+   * Puget Sound, the Zuiderzee - the coarse fill would show straight through
+   * the gap the detail tier exists to open. So the world layer is **removed**
+   * as soon as every cell covering the view is in hand, and put back the
+   * moment the reader zooms out or pans somewhere that has not loaded yet.
+   *
+   * Labels are drawn per view from both tiers together, each city carrying the
+   * zoom it earns its place at (`min_zoom`), so the world view gets ~20 and a
+   * metro view gets the cities around it rather than a soup.
    *
    * Nothing here is interactive. A label is orientation, not a target: these
    * are cities, and the only clickable things on this map are scenes.
    */
   useEffect(() => {
     const instance = map.current;
-    if (!instance) return;
+    if (!instance || TILE_URL) return;
     let live = true;
 
-    const drawLabels = (places: PlaceRow[]) => {
+    /** Cells drawn into the detail layer already, so a pan redraws nothing. */
+    const drawn = new Set<string>();
+    /** Every city in hand, world tier plus the cells loaded so far. */
+    let places: PlaceRow[] = [];
+    let manifest: Set<string> | null = null;
+
+    const drawLabels = () => {
       const layer = labelLayer.current;
       if (!layer || !live) return;
       layer.clearLayers();
@@ -403,14 +527,34 @@ function SceneMap({
       // this map opens at zoom 0 or 1, below every tier Natural Earth has.
       const zoom = Math.max(2, instance.getZoom() + 1);
       const bounds = instance.getBounds();
-      const visible = places
+      const candidates = places
         .filter(([, latitude, longitude, minZoom]) => {
           if (minZoom > zoom) return false;
           return bounds.contains([latitude, longitude]);
         })
-        // Most prominent first, so the cap keeps the cities worth keeping.
-        .sort((a, b) => a[3] - b[3])
-        .slice(0, MAX_LABELS);
+        // Most prominent first, so both the collision filter below and the cap
+        // keep the cities worth keeping.
+        .sort((a, b) => a[3] - b[3]);
+
+      /* Label collision, which the zoom tiers alone do not solve: over the
+         Rhine-Main or the Kanto plain, Natural Earth's `min_zoom` lets thirty
+         cities through at one zoom and they overprint each other into a grey
+         smear - measured, 37 labels in a 350px pane with Nürnberg sitting on
+         Fürth. So a label is drawn only where it does not land on one already
+         placed, taking the more prominent city first. The box is the drawn
+         text's rough size at this font rather than the dot's: the dot is 3px
+         and the name beside it is what actually overlaps. */
+      const placed: [number, number][] = [];
+      const visible: PlaceRow[] = [];
+      for (const row of candidates) {
+        if (visible.length >= MAX_LABELS) break;
+        const point = instance.latLngToContainerPoint([row[1], row[2]]);
+        if (placed.some(([x, y]) => Math.abs(x - point.x) < 66 && Math.abs(y - point.y) < 13)) {
+          continue;
+        }
+        placed.push([point.x, point.y]);
+        visible.push(row);
+      }
 
       for (const [name, latitude, longitude] of visible) {
         L.marker([latitude, longitude], {
@@ -437,13 +581,109 @@ function SceneMap({
       }
     };
 
+    const drawCell = (key: string, data: DetailCell) => {
+      const layer = detailLayer.current;
+      if (!layer || !live || drawn.has(key)) return;
+      drawn.add(key);
+      for (const ring of data.land) {
+        L.polygon(ring.map(([x, y]) => [y, x] as [number, number]), {
+          pane: 'basemapDetail',
+          interactive: false,
+          color: COLOR_COAST,
+          weight: 0.7,
+          opacity: 0.85,
+          fillColor: COLOR_LAND,
+          fillOpacity: 1,
+        }).addTo(layer);
+      }
+      // Lakes, drawn in the sea's colour over the land they sit in. Without
+      // them a 10m coastline puts Toronto and Chicago in the middle of a
+      // featureless slab.
+      for (const ring of data.water) {
+        L.polygon(ring.map(([x, y]) => [y, x] as [number, number]), {
+          pane: 'basemapDetail',
+          interactive: false,
+          color: COLOR_COAST,
+          weight: 0.5,
+          opacity: 0.6,
+          fillColor: COLOR_SEA,
+          fillOpacity: 1,
+        }).addTo(layer);
+      }
+      /* Admin-1 boundaries - states, provinces, Länder - which are what makes
+         "which of these dots is in California" answerable at all, and the only
+         thing on the basemap inside a large country.
+
+         Secondary to the coast by **pattern**, not by visibility: the first
+         version drew them as a 0.5px hairline at 0.55 opacity in the border
+         token, which on the land fill was a line nobody could see, and an
+         invisible line is not a subtle one. Same hue as the coast, dashed, a
+         shade lighter in weight. */
+      for (const line of data.lines) {
+        L.polyline(line.map(([x, y]) => [y, x] as [number, number]), {
+          pane: 'basemapDetail',
+          interactive: false,
+          color: COLOR_BORDER,
+          weight: 0.9,
+          opacity: 0.8,
+          dashArray: '5 4',
+        }).addTo(layer);
+      }
+      if (data.places.length > 0) places = places.concat(data.places);
+    };
+
+    /**
+     * Whether the detail tier covers what is on screen - and therefore whether
+     * the coarse world layer has to go, so its filled-in bays stop showing
+     * through. A cell the manifest does not list is open ocean: nothing to
+     * load and nothing missing.
+     */
+    const detailCovers = (keys: string[]) =>
+      manifest !== null && keys.every((key) => drawn.has(key) || !manifest!.has(key));
+
+    const syncWorldLayer = (covered: boolean) => {
+      const layer = landLayer.current;
+      if (!layer) return;
+      const shown = instance.hasLayer(layer);
+      if (covered && shown) instance.removeLayer(layer);
+      else if (!covered && !shown) instance.addLayer(layer);
+    };
+
+    const refresh = () => {
+      if (!live) return;
+      const zoom = instance.getZoom();
+      if (zoom < DETAIL_ZOOM || manifest === null) {
+        syncWorldLayer(false);
+        drawLabels();
+        return;
+      }
+      const keys = cellsForBounds(instance.getBounds()).filter((key) => manifest!.has(key));
+      const missing = keys.filter((key) => !drawn.has(key));
+      syncWorldLayer(detailCovers(keys));
+      drawLabels();
+      if (missing.length === 0) return;
+      Promise.all(
+        missing.map((key) =>
+          loadCell(key)
+            .then((data) => drawCell(key, data))
+            .catch(() => {
+              // One cell short is a patch of missing coast, not a broken map.
+            })
+        )
+      ).then(() => {
+        if (!live) return;
+        syncWorldLayer(detailCovers(cellsForBounds(instance.getBounds()).filter((key) => manifest!.has(key))));
+        drawLabels();
+      });
+    };
+
     loadBasemap()
-      .then(({ land, places }) => {
+      .then((basemap) => {
         if (!live) return;
         const layer = landLayer.current;
-        if (layer && !TILE_URL) {
-          L.geoJSON(land as Parameters<typeof L.geoJSON>[0], {
-            pane: 'basemapLand',
+        if (layer) {
+          L.geoJSON(basemap.land as Parameters<typeof L.geoJSON>[0], {
+            pane: 'basemapWorld',
             interactive: false,
             style: {
               color: COLOR_COAST,
@@ -454,17 +694,24 @@ function SceneMap({
             },
           }).addTo(layer);
         }
-        drawLabels(places);
-        instance.on('moveend zoomend', () => drawLabels(places));
+        places = basemap.places;
+        drawLabels();
+        return loadManifest();
+      })
+      .then((cells) => {
+        if (!live || !cells) return;
+        manifest = cells;
+        refresh();
       })
       .catch(() => {
         // Pins on a blank field. Degraded, not broken, and not worth a banner
         // on a control whose job is picking a scene from a list.
       });
 
+    instance.on('moveend zoomend', refresh);
     return () => {
       live = false;
-      instance.off('moveend zoomend');
+      instance.off('moveend zoomend', refresh);
     };
   }, []);
 
@@ -571,7 +818,7 @@ function SceneMap({
     if (wantsFit && !framingSelection && scenes.length > 0) {
       const bounds = sceneBounds(scenes);
       if (bounds) {
-        instance.fitBounds(bounds, { padding: [32, 32], maxZoom: 9 });
+        instance.fitBounds(bounds, { padding: [32, 32], maxZoom: 10 });
         fitted.current = true;
         fittedTo.current = scenes;
         fittedBounds.current = bounds;
@@ -657,11 +904,15 @@ function SceneMap({
     const bounds = sceneFocusBounds(selected);
     if (!bounds) return;
     fittedBounds.current = bounds;
-    // `maxZoom` keeps a single-venue scene from opening too deep. The number
-    // is the basemap's: there is no imagery and the densest city labels run out
-    // around zoom 9, so past it the map is a plain field with one pin on it -
-    // which is a worse answer than the same pin over a labelled region.
-    instance.fitBounds(bounds, { padding: [16, 16], maxZoom: 9 });
+    /* `maxZoom` decides what "show me this scene" means, and the answer is the
+       metro rather than the block. It was 9 while the basemap ran out of
+       coastline and names at about that depth; with the detail tier underneath
+       the limit is no longer the map but the question - at 11 a 350px pane
+       covers ~8km, which is a corner of San Francisco Bay rather than the Bay,
+       and a reader asking which scene this is wants the city around it. 10 is
+       ~30km across: the whole Bay, with San Francisco, Oakland and San Jose
+       all named on it. */
+    instance.fitBounds(bounds, { padding: [16, 16], maxZoom: 10 });
     fitted.current = true;
   }, [selected, variant]);
 
