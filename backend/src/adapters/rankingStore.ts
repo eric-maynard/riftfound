@@ -92,6 +92,35 @@ export interface Page<T> {
   cursor: string | null;
 }
 
+/**
+ * One display-name search, with the honesty about its own reach that the old
+ * shape could not carry.
+ *
+ * `searchPlayers` used to return a bare array, and that is how it managed to
+ * answer "no player by that name" for a rated player on the public
+ * leaderboard: a capped Scan that had examined 0.43% of the corpus and a
+ * complete search that found nothing returned the identical value, so neither
+ * the API nor the page could tell them apart. Both numbers travel now, for the
+ * same reason `coverage` travels beside a ladder page: a filtered list cannot
+ * be read honestly without knowing what it was filtered from.
+ */
+export interface PlayerSearchResult {
+  records: PlayerRecord[];
+  /**
+   * True when every player in the store was compared against the query.
+   *
+   * False means the store could not read its published name index and fell
+   * back to a bounded sample - the state between deploying this and the
+   * engine's next refit, and the state if the index read fails. A page is
+   * expected to say so rather than present a partial answer as a complete one.
+   */
+  complete: boolean;
+  /** Players compared against the query, or null when the store cannot say. */
+  searchedPlayers: number | null;
+  /** Matches before the cap, so a page can say "showing 25 of 112". */
+  matched: number;
+}
+
 export interface LeaderboardPage extends Page<LeaderboardRecord> {
   /** When the engine last wrote this scope, when the item records it. */
   updatedAt: string | null;
@@ -124,7 +153,7 @@ export interface RankingStore {
   getRatingHistory(playerId: string, scope: Scope, limit: number): Promise<RatingPoint[]>;
 
   /** Display-name search. Deliberately capped: no bulk player export. */
-  searchPlayers(query: string, limit: number): Promise<PlayerRecord[]>;
+  searchPlayers(query: string, limit: number): Promise<PlayerSearchResult>;
 
   /** Set ids the engine has actually written rating data for. */
   listSetIds(): Promise<string[]>;

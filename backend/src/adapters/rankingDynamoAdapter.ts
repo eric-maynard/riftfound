@@ -8,6 +8,8 @@ import {
   PLAYER_PROFILE_SK,
   PLAYER_MATCH_SK_PREFIX,
   COMPONENT_CATALOGUE_PARTITION,
+  PLAYER_SEARCH_PK,
+  PLAYER_SEARCH_SK_PREFIX,
   componentProfileKeys,
   venueProfileKeys,
   sceneProfileKeys,
@@ -18,11 +20,20 @@ import {
 } from '../config/dynamodb.js';
 import { normaliseOutcome, resolveVerdict } from '../models/ranking.js';
 import type { GameOutcome, MatchGame, MatchOutcome, PlayerMatch, RatingPoint, Scope } from '../models/ranking.js';
+import {
+  MIN_NEEDLE_LENGTH,
+  decodeSearchShards,
+  normaliseNeedle,
+  searchNameIndex,
+  type PlayerNameIndex,
+  type RawSearchShard,
+} from './playerNameIndex.js';
 import type {
   LeaderboardPage,
   LeaderboardRecord,
   Page,
   PlayerRecord,
+  PlayerSearchResult,
   RankingStore,
   SceneCatalogueEntry,
   SceneCatalogueVenue,
@@ -247,9 +258,126 @@ function decodeCursor(cursor: string | undefined): string | null {
 
 // --- the adapter ------------------------------------------------------------
 
-/** Hard ceiling on a display-name search scan, so it can never walk the table. */
+/**
+ * Hard ceiling on the **fallback** display-name scan.
+ *
+ * This is no longer how search works - see `searchPlayers` below and
+ * `playerNameIndex.ts` - but it is still what answers a query in the window
+ * before the engine has published a name index, and it is deliberately still
+ * capped. What changed is that its reach is now *reported* rather than
+ * presented as a complete answer: measured against production on 2026-10-29,
+ * four pages of 500 examine 2,000 items of a 441,214-item table, which held
+ * **178 of 40,979 profiles (0.43%)** for 203.5 read units.
+ */
 const SEARCH_SCAN_PAGES = 4;
 const SEARCH_SCAN_PAGE_SIZE = 500;
+
+/**
+ * Pages of the `PLAYER_SEARCH` partition the index loader will follow.
+ *
+ * A Query page is 1MB and the whole index is ~1.2MB of gzip at 40,979 players
+ * (measured: ~30 compressed bytes per name), so two pages is the real cost and
+ * this is headroom for a corpus an order of magnitude larger. It exists for
+ * the same reason `SCENE_CATALOGUE_PAGES` does: so the loader cannot loop
+ * indefinitely against a table that has grown in a way nobody expected.
+ */
+const SEARCH_INDEX_PAGES = 16;
+
+/**
+ * How long a loaded name index is reused before it is read again.
+ *
+ * The engine refits daily, so the index is stale for at most a refit cycle
+ * whatever this is; the number that matters is how long a *Lambda container*
+ * may serve a corpus that has moved on. Fifteen minutes is the same order as
+ * the shortest edge TTL in this API, which means a name added by a refit shows
+ * up within a quarter hour of the edge expiring rather than whenever the
+ * container happens to recycle.
+ *
+ * It is a module-scope cache on purpose, and it is what makes the steady-state
+ * cost of a query the BatchGet for its own hits and nothing else. The
+ * pathological case - every single request landing on a cold container - still
+ * costs less than the Scan it replaces: ~150 read units to load the whole
+ * index against 203.5 for a 0.43% answer.
+ */
+const SEARCH_INDEX_TTL_MS = 15 * 60 * 1000;
+
+interface CachedNameIndex {
+  index: PlayerNameIndex | null;
+  loadedAt: number;
+}
+
+let cachedNameIndex: CachedNameIndex | null = null;
+/**
+ * The load in flight, if any.
+ *
+ * A cold container that takes three concurrent search requests would otherwise
+ * read the whole index three times. Sharing the promise makes it once.
+ */
+let nameIndexLoad: Promise<PlayerNameIndex | null> | null = null;
+
+/** Visible for tests: forget the cached index. */
+export function resetPlayerNameIndexCache(): void {
+  cachedNameIndex = null;
+  nameIndexLoad = null;
+}
+
+/**
+ * The published name index, from cache when it is fresh enough.
+ *
+ * A failed or absent index resolves to **null**, never a throw: search falling
+ * back to a bounded sample and saying so is a degraded answer, while a 500 on
+ * the ladder page's search box is an outage. Same rule as `listSceneCatalogue`
+ * and `getVenue`.
+ *
+ * A null is cached too, with the same TTL, so an engine that has never
+ * refitted does not cost a Query per keystroke.
+ */
+async function loadPlayerNameIndex(): Promise<PlayerNameIndex | null> {
+  const now = Date.now();
+  if (cachedNameIndex && now - cachedNameIndex.loadedAt < SEARCH_INDEX_TTL_MS) {
+    return cachedNameIndex.index;
+  }
+  if (nameIndexLoad) return nameIndexLoad;
+
+  nameIndexLoad = (async () => {
+    try {
+      const client = getDynamoClient();
+      const shards: RawSearchShard[] = [];
+      let startKey: Record<string, unknown> | undefined;
+
+      for (let page = 0; page < SEARCH_INDEX_PAGES; page++) {
+        const result = await client.send(
+          new QueryCommand({
+            TableName: getTableName(),
+            KeyConditionExpression: 'PK = :pk AND begins_with(SK, :sk)',
+            ExpressionAttributeValues: {
+              ':pk': PLAYER_SEARCH_PK,
+              ':sk': PLAYER_SEARCH_SK_PREFIX,
+            },
+            ...(startKey ? { ExclusiveStartKey: startKey } : {}),
+          })
+        );
+        shards.push(...((result.Items ?? []) as RawSearchShard[]));
+        startKey = result.LastEvaluatedKey as Record<string, unknown> | undefined;
+        if (!startKey) break;
+      }
+
+      const index = shards.length > 0 ? decodeSearchShards(shards) : null;
+      cachedNameIndex = { index, loadedAt: Date.now() };
+      return index;
+    } catch {
+      // Counts only, and not even those: an index that cannot be read is
+      // reported in the response's `coverage`, which is where a reader can act
+      // on it. Nothing player-identifying is logged here or anywhere.
+      cachedNameIndex = { index: null, loadedAt: Date.now() };
+      return null;
+    } finally {
+      nameIndexLoad = null;
+    }
+  })();
+
+  return nameIndexLoad;
+}
 
 /**
  * Pages of the component catalogue Query the scene map will follow.
@@ -431,11 +559,57 @@ export const dynamoRankingStore: RankingStore = {
       .filter((point): point is RatingPoint => point !== null);
   },
 
-  async searchPlayers(query: string, limit: number): Promise<PlayerRecord[]> {
-    const needle = query.trim().toLowerCase();
-    if (needle.length < 2) return [];
+  /**
+   * Display-name search over the **whole** corpus.
+   *
+   * Two reads, and the first is usually free:
+   *
+   * 1. the published name index (`PLAYER_SEARCH` shards), held in module scope
+   *    between invocations, matched in memory - see `playerNameIndex.ts` for
+   *    the matcher, the ranking, and the measurements behind both;
+   * 2. a `getPlayers` BatchGet for the ids that survived the cap, because the
+   *    index carries three fields and a search hit publishes a rating with its
+   *    margin.
+   *
+   * So a warm query costs ~`limit` keys of BatchGet - ~5 read units at the
+   * default limit of 10 - against 203.5 for the capped Scan that saw 0.43% of
+   * players. The ordering is the index's, not the store's, so the capped set
+   * is the best `limit` matches rather than the first ones a scan reached.
+   *
+   * The fallback below is the pre-refit window and nothing else, and it
+   * reports `complete: false` so the answer is never passed off as a complete
+   * one. It is left as a bounded Scan rather than removed because during that
+   * window a 0.43% answer is still better than no search at all - it is how
+   * two of the four reported failures were finding anybody.
+   */
+  async searchPlayers(query: string, limit: number): Promise<PlayerSearchResult> {
+    const needle = normaliseNeedle(query);
+    if (needle.length < MIN_NEEDLE_LENGTH) {
+      return { records: [], complete: true, searchedPlayers: null, matched: 0 };
+    }
+
+    const index = await loadPlayerNameIndex();
+    if (index) {
+      const { playerIds, matched } = searchNameIndex(index, needle, limit);
+      if (playerIds.length === 0) {
+        return { records: [], complete: true, searchedPlayers: index.entries.length, matched };
+      }
+
+      const profiles = await dynamoRankingStore.getPlayers(playerIds);
+      // Keep the index's order: it is the match ranking, and BatchGet returns
+      // in whatever order DynamoDB pleases. An id with no profile is dropped
+      // rather than published as a name with no page behind it - it should not
+      // happen, since the index is built from the profiles a refit writes, but
+      // a reader is not the place to assume that.
+      const records = playerIds
+        .map((playerId) => profiles.get(playerId))
+        .filter((record): record is PlayerRecord => record !== undefined);
+
+      return { records, complete: true, searchedPlayers: index.entries.length, matched };
+    }
 
     const matches: PlayerRecord[] = [];
+    let examined = 0;
     let startKey: Record<string, unknown> | undefined;
 
     for (let page = 0; page < SEARCH_SCAN_PAGES && matches.length < limit; page++) {
@@ -452,6 +626,7 @@ export const dynamoRankingStore: RankingStore = {
       for (const item of (result.Items ?? []) as Item[]) {
         const record = toPlayerRecord(item);
         if (!record) continue;
+        examined++;
         const haystack = `${record.displayName ?? ''}#${record.tagLine ?? ''}`.toLowerCase();
         if (haystack.includes(needle)) matches.push(record);
         if (matches.length >= limit) break;
@@ -461,7 +636,16 @@ export const dynamoRankingStore: RankingStore = {
       if (!startKey) break;
     }
 
-    return matches.slice(0, limit);
+    return {
+      records: matches.slice(0, limit),
+      // The one case where this is honestly complete: the scan reached the end
+      // of the table, so there was nothing it did not compare. True for the
+      // fixture-sized tables the dev stack and the tests use, false for
+      // production.
+      complete: startKey === undefined,
+      searchedPlayers: examined,
+      matched: matches.length,
+    };
   },
 
   async listSetIds(): Promise<string[]> {

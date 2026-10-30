@@ -1,10 +1,17 @@
 import { resolveVerdict } from '../models/ranking.js';
 import type { PlayerMatch, RatingPoint, Scope } from '../models/ranking.js';
+import {
+  MIN_NEEDLE_LENGTH,
+  buildNameIndex,
+  normaliseNeedle,
+  searchNameIndex,
+} from './playerNameIndex.js';
 import type {
   LeaderboardPage,
   LeaderboardRecord,
   Page,
   PlayerRecord,
+  PlayerSearchResult,
   RankingStore,
   SceneCatalogueEntry,
   SceneDirectoryEntry,
@@ -604,12 +611,36 @@ export function createFixtureRankingStore(data: FixtureData = LAUNCH_FIXTURE_DAT
       return (data.ratings[playerId]?.[scope.raw] ?? []).slice(0, limit);
     },
 
-    async searchPlayers(query: string, limit: number) {
-      const needle = query.trim().toLowerCase();
-      if (needle.length < 2) return [];
-      return data.players
-        .filter((player) => `${player.displayName ?? ''}#${player.tagLine ?? ''}`.toLowerCase().includes(needle))
-        .slice(0, limit);
+    /**
+     * Search over the whole fixture, through the **same** matcher the
+     * DynamoDB store uses.
+     *
+     * It used to be its own `includes` over the fixture list, which happened
+     * to agree with the real store because the real store was also doing a
+     * substring test - and that is exactly how a search bug stays invisible in
+     * a test suite. Sharing `searchNameIndex` means the ranking and the tiers
+     * are pinned here too, and that `./dev.sh` behaves the way production
+     * does rather than merely producing results.
+     *
+     * Always `complete: true`: a fixture is small enough to compare in full,
+     * which is the property the real store now has as well.
+     */
+    async searchPlayers(query: string, limit: number): Promise<PlayerSearchResult> {
+      const needle = normaliseNeedle(query);
+      if (needle.length < MIN_NEEDLE_LENGTH) {
+        return { records: [], complete: true, searchedPlayers: data.players.length, matched: 0 };
+      }
+
+      const { playerIds, matched } = searchNameIndex(buildNameIndex(data.players), needle, limit);
+      const byId = new Map(data.players.map((player) => [player.playerId, player]));
+      return {
+        records: playerIds
+          .map((playerId) => byId.get(playerId))
+          .filter((player): player is PlayerRecord => player !== undefined),
+        complete: true,
+        searchedPlayers: data.players.length,
+        matched,
+      };
     },
 
     async listSetIds() {

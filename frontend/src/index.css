@@ -1904,6 +1904,20 @@ select:disabled {
   color: var(--color-text-muted);
 }
 
+/* The caption that says the search itself was limited, rather than that
+   nobody matched. It is separated by a hairline and *not* by a colour: the
+   same rule the scene list's `no pin` flag and the result pips follow - the
+   words carry the fact, so the ink keeps the already-measured muted token
+   (`--color-text-muted` on `--panel`) and nothing here needs re-measuring.
+   A hairline is not text, so `--color-border` stays as it is. */
+.search-empty.search-partial {
+  border-top: 1px solid var(--color-border);
+}
+
+.search-results > .search-empty.search-partial:first-child {
+  border-top: none;
+}
+
 /* Scene picker: the calendar's location-autocomplete interaction, reused.
    ~194 scenes and growing, so the list is typed into rather than scrolled. */
 .scene-select {

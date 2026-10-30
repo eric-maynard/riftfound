@@ -57,6 +57,7 @@ import type {
   RankingSnapshot,
 } from './ranking/items.js';
 import type { SceneAssignment } from './ranking/scenes.js';
+import { buildPlayerSearchIndex } from './ranking/searchIndex.js';
 import type { MergeOwnedFields } from './merge.js';
 import type { ScrapeCycle } from './cancellations.js';
 import type { ShopCandidate } from './shopMatch.js';
@@ -500,6 +501,18 @@ function initSqliteSchema(db: Database.Database) {
     CREATE TABLE IF NOT EXISTS ranking_scene_assignment (
       key TEXT PRIMARY KEY,
       payload TEXT NOT NULL
+    );
+
+    -- The display-name index: the SQLite mirror of the PLAYER_SEARCH /
+    -- SHARD#<nnn> items. Stored uncompressed here, because the reason to gzip
+    -- on DynamoDB is the 400KB item limit and SQLite has no equivalent - the
+    -- shard boundaries are kept anyway so a refit writing this mirror
+    -- exercises the same sharding the production writer uses.
+    CREATE TABLE IF NOT EXISTS ranking_search_index (
+      shard_index INTEGER PRIMARY KEY,
+      entries INTEGER NOT NULL,
+      body TEXT NOT NULL,
+      generated_at TEXT NOT NULL
     );
 
     -- Write-once bookkeeping for the per-player match log, so a refit does not
@@ -1671,6 +1684,18 @@ export async function saveRankingSnapshot(
     ON CONFLICT(event_external_id) DO UPDATE SET version = excluded.version, written_at = excluded.written_at
   `);
 
+  const upsertSearchShard = db.prepare(`
+    INSERT INTO ranking_search_index (shard_index, entries, body, generated_at) VALUES (?, ?, ?, ?)
+    ON CONFLICT(shard_index) DO UPDATE SET
+      entries = excluded.entries,
+      body = excluded.body,
+      generated_at = excluded.generated_at
+  `);
+
+  // Built from exactly the profiles this snapshot writes, same as the DynamoDB
+  // path, so the two mirrors cannot disagree about who is findable.
+  const searchIndex = buildPlayerSearchIndex(snapshot.profiles);
+
   const summary: RankingWriteSummary = {
     profiles: snapshot.profiles.length,
     historyPoints: snapshot.history.length,
@@ -1682,6 +1707,8 @@ export async function saveRankingSnapshot(
     venues: snapshot.venues.length,
     scenes: snapshot.scenes.length,
     markers: snapshot.matchLogEvents.length,
+    searchShards: searchIndex.shards.length,
+    searchEntries: searchIndex.entries,
     deletedRows: 0,
     deletedScopes: 0,
   };
@@ -1779,6 +1806,14 @@ export async function saveRankingSnapshot(
     }
     for (const eventExternalId of snapshot.matchLogEvents) {
       upsertMarker.run(eventExternalId, matchLogVersion, now);
+    }
+
+    // Prune first, write after: a shrinking corpus leaves high-numbered shards
+    // behind, and a leftover shard keeps serving names whose profiles this
+    // refit did not write.
+    db.prepare('DELETE FROM ranking_search_index WHERE shard_index >= ?').run(searchIndex.shards.length);
+    for (const shard of searchIndex.shards) {
+      upsertSearchShard.run(shard.shardIndex, shard.entries, shard.body, now);
     }
   })();
 

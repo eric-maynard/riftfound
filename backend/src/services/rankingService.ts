@@ -655,9 +655,41 @@ export interface PlayerSearchHit {
   gamesUntilRated: number;
 }
 
-export async function searchPlayers(query: string, limit: number): Promise<PlayerSearchHit[]> {
-  const records = await getRankingStore().searchPlayers(query, limit);
-  return records.map((record) => {
+/**
+ * What a search answered *over*, published beside the hits.
+ *
+ * The reason this exists is the bug it closes. An empty `data` used to mean
+ * either "no player by that name" or "the 0.43% of players this query happened
+ * to examine contained nobody by that name", and the response had no field
+ * that told them apart - so the ladder page printed "No player by that name."
+ * over a rated player it was simultaneously listing. Same reasoning as
+ * `coverage.catalogueUnavailable` on the scene map: "we cannot tell" is not
+ * "there is none", and a page cannot render the difference it is not told.
+ */
+export interface PlayerSearchCoverage {
+  /** True when every known player was compared against the query. */
+  complete: boolean;
+  /** Players compared, or null when the store cannot say. */
+  searchedPlayers: number | null;
+  /** Matches before the cap. */
+  matched: number;
+  /** True when `matched` exceeded the cap, so the list is the best of more. */
+  truncated: boolean;
+  /** The cap in force, so a page need not hardcode it. */
+  maxResults: number;
+}
+
+export interface PlayerSearchResponse {
+  hits: PlayerSearchHit[];
+  coverage: PlayerSearchCoverage;
+}
+
+export async function searchPlayers(
+  query: string,
+  limit: number
+): Promise<PlayerSearchResponse> {
+  const result = await getRankingStore().searchPlayers(query, limit);
+  const hits = result.records.map((record) => {
     const verdict = resolveVerdict(record);
     return {
       playerId: record.playerId,
@@ -672,6 +704,17 @@ export async function searchPlayers(query: string, limit: number): Promise<Playe
       gamesUntilRated: verdict.gamesUntilRated,
     };
   });
+
+  return {
+    hits,
+    coverage: {
+      complete: result.complete,
+      searchedPlayers: result.searchedPlayers,
+      matched: result.matched,
+      truncated: result.matched > hits.length,
+      maxResults: limit,
+    },
+  };
 }
 
 // ---------------------------------------------------------------------------

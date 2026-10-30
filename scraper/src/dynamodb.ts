@@ -33,6 +33,7 @@ import type {
 } from './database.js';
 import type { PlayerProfile, RankingRow, RankingSnapshot } from './ranking/items.js';
 import type { SceneAssignment } from './ranking/scenes.js';
+import { buildPlayerSearchIndex } from './ranking/searchIndex.js';
 import { preserveMergedFields, type MergeOwnedFields } from './merge.js';
 // Value import; everything on the way back here is type-only, so no cycle.
 import { resultsCandidateTournamentId } from './sources/playriftbound.js';
@@ -1459,6 +1460,7 @@ function rosterFromItem(item: DynamoEventRosterItem): EventRoster {
  * | set profile | `SET#<id>` | `PROFILE` |
  * | scope directory | `RANKING_INDEX` | `RANKING_INDEX` |
  * | match-log marker | `RANKING_LOG#<eventId>` | `RANKING_LOG#<eventId>` |
+ * | display-name index | `PLAYER_SEARCH` | `SHARD#<nnn>` |
  *
  * Everything a reader needs is one Query on a single partition: a player page
  * is `PLAYER#<uuid>` (profile, chart and match log arrive together, and the SK
@@ -1468,9 +1470,17 @@ function rosterFromItem(item: DynamoEventRosterItem): EventRoster {
  * rather than a `META` row inside the board, so a reader Querying a board never
  * has to filter a non-player item out of its results.
  *
- * No GSI entries are added. These items would otherwise multiply GSI1's size
- * for no read that needs it, and display-name search is a capped Scan on the
- * API side until a GSI is batched with other infrastructure work.
+ * Name search is the one access pattern with no key to arrive on, and the
+ * `PLAYER_SEARCH` shards are the answer: the whole display-name corpus,
+ * gzipped, in one base-table partition, so finding a player by name is one
+ * Query rather than the capped Scan the API used to serve - which examined
+ * 2,000 raw items of a 441,555-item table and therefore saw 0.43% of players.
+ * See `ranking/searchIndex.ts`.
+ *
+ * No GSI entries are added, the search shards included. These items would
+ * otherwise multiply GSI1's size for no read that needs it, and the shards
+ * already share a partition of their own, so an index entry would duplicate
+ * the payload to answer a Query that is already one Query.
  *
  * Write volume is the real cost here. A refit rewrites every profile and every
  * rating point because WHR revises the whole past curve, and a rank change
@@ -1525,6 +1535,21 @@ function venueKeys(shopExternalId: number) {
 
 function sceneKeys(sceneId: string) {
   return { PK: `SCENE#${sceneId}`, SK: 'PROFILE' };
+}
+
+/**
+ * The display-name index's shards.
+ *
+ * One partition, `SHARD#<nnn>` zero-padded so an SK-ascending Query returns
+ * them in order, exactly like `SCRAPE_CYCLE`'s shards and for the same reason.
+ * The whole index is therefore **one Query** on one partition - no GSI, no
+ * scan, and no new infrastructure. See `ranking/searchIndex.ts` for the format
+ * and for why the index exists at all.
+ */
+const PLAYER_SEARCH_PK = 'PLAYER_SEARCH';
+
+function playerSearchShardKeys(shardIndex: number) {
+  return { PK: PLAYER_SEARCH_PK, SK: `SHARD#${String(shardIndex).padStart(3, '0')}` };
 }
 
 /** GSI1 partitions the catalogue items are enumerable in. */
@@ -1696,6 +1721,18 @@ export interface RankingScopeIndex {
   /** Shop ids with a `VENUE#` item. Numbers, because that is the key. */
   venueIds: number[];
   sceneIds: string[];
+  /**
+   * How many `PLAYER_SEARCH` shards the previous refit wrote.
+   *
+   * A count rather than a list because the shard keys are `SHARD#000` upward
+   * with no gaps, so the count *is* the key set - and because this is the one
+   * entry here that has to be right for a **correctness** reason rather than a
+   * tidiness one. A corpus that shrinks leaves high-numbered shards behind,
+   * and a leftover shard is not a dangling pin a reader can shrug off: it is a
+   * block of names the index would keep serving after their profiles were
+   * pruned.
+   */
+  searchShards: number;
 }
 
 export async function loadRankingScopeIndexDynamoDB(): Promise<RankingScopeIndex> {
@@ -1714,6 +1751,9 @@ export async function loadRankingScopeIndexDynamoDB(): Promise<RankingScopeIndex
     setIds: list(item.setIds),
     venueIds: numbers(item.venueIds),
     sceneIds: list(item.sceneIds),
+    // Absent on an index written before the search shards shipped, which reads
+    // as "no shards to prune" - correct, because there were none.
+    searchShards: Number.isFinite(Number(item.searchShards)) ? Number(item.searchShards) : 0,
   };
 }
 
@@ -1749,6 +1789,10 @@ export interface RankingWriteSummary {
   venues: number;
   scenes: number;
   markers: number;
+  /** `PLAYER_SEARCH` shards written. See `ranking/searchIndex.ts`. */
+  searchShards: number;
+  /** Players in the display-name index, across every shard. */
+  searchEntries: number;
   deletedRows: number;
   deletedScopes: number;
 }
@@ -1827,6 +1871,23 @@ export async function saveRankingSnapshotDynamoDB(
     ...scene,
   }));
 
+  // The display-name index. Built from the same profiles this refit is about to
+  // write, so it can never disagree with them about who exists, and gzipped the
+  // way the `SCRAPE_CYCLE` shards are. Deliberately **not** given GSI1 keys:
+  // the shards live in their own base-table partition, so listing them is
+  // already one Query and an index entry would only duplicate the payload.
+  const searchIndex = buildPlayerSearchIndex(snapshot.profiles);
+  const searchIndexItems = searchIndex.shards.map(shard => ({
+    ...playerSearchShardKeys(shard.shardIndex),
+    entityType: 'PLAYER_SEARCH_SHARD' as const,
+    format: searchIndex.format,
+    shardIndex: shard.shardIndex,
+    shardCount: searchIndex.shards.length,
+    entries: shard.entries,
+    entriesGz: gzipSync(Buffer.from(shard.body, 'utf8')),
+    generatedAt: now,
+  }));
+
   // Prune before writing markers, so a crash mid-run leaves the log un-marked
   // (and therefore retried) rather than marked but unwritten.
   const previous = await loadRankingScopeIndexDynamoDB();
@@ -1865,6 +1926,12 @@ export async function saveRankingSnapshotDynamoDB(
   for (const sceneId of previous.sceneIds) {
     if (!currentScenes.has(sceneId)) staleKeys.push(sceneKeys(sceneId));
   }
+  // A shrinking corpus leaves high-numbered search shards behind, and those are
+  // not harmless: the reader concatenates every shard it finds, so a leftover
+  // would keep serving names whose profiles this refit decided not to write.
+  for (let index = searchIndexItems.length; index < previous.searchShards; index++) {
+    staleKeys.push(playerSearchShardKeys(index));
+  }
 
   const deletedRows = staleKeys.length > 0 ? await batchDelete(staleKeys) : 0;
 
@@ -1878,6 +1945,7 @@ export async function saveRankingSnapshotDynamoDB(
     ...setItems,
     ...venueItems,
     ...sceneItems,
+    ...searchIndexItems,
   ]);
 
   const markerItems = snapshot.matchLogEvents.map(eventExternalId => ({
@@ -1900,6 +1968,7 @@ export async function saveRankingSnapshotDynamoDB(
       setIds: [...currentSets],
       venueIds: [...currentVenues],
       sceneIds: [...currentScenes],
+      searchShards: searchIndexItems.length,
       generatedAt: now,
     },
   }));
@@ -1915,6 +1984,8 @@ export async function saveRankingSnapshotDynamoDB(
     venues: venueItems.length,
     scenes: sceneItems.length,
     markers: markerItems.length,
+    searchShards: searchIndexItems.length,
+    searchEntries: searchIndex.entries,
     deletedRows,
     deletedScopes,
   };

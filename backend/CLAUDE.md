@@ -25,6 +25,7 @@ src/
 │   ├── dynamoAdapter.ts             # Events/shops in DynamoDB
 │   ├── rankingStore.ts              # RankingStore interface
 │   ├── rankingDynamoAdapter.ts      # Real derived ranking items
+│   ├── playerNameIndex.ts           # Display-name matcher + the published index's reader
 │   ├── rankingFixtureAdapter.ts     # In-memory stand-in for dev/tests
 │   ├── tournamentStore.ts           # TournamentStore interface
 │   ├── tournamentDynamoAdapter.ts   # Real RESULTS#/ROSTER# fact items
@@ -63,7 +64,10 @@ src/
 - `GET /api/players/:playerId/ratings?scope=` - Rating time series for the
   chart. Served for a provisional player; empty only below the display floor
   (`pointsWithheld: true`), where every point is still the prior
-- `GET /api/players/search?q=` - Display-name search (min 2 chars, capped, `noindex`)
+- `GET /api/players/search?q=` - Display-name search over **every** player, from
+  the engine's published name index (min 2 chars, capped at 25, no cursor,
+  `noindex`). Carries `coverage`, which says what the search compared - see
+  "Searching for a player"
 - `GET /api/sets` - Set eras from the engine's own `SET#<id>` items (one GSI1
   Query), which are authoritative for names and boundaries and include eras
   with no play yet. Falls back to discovering ids from player profiles when
@@ -342,6 +346,131 @@ Note what this deliberately does **not** change: `listComponents` still
 summarises the scenes on the global board's first page, which is what the
 ladder's picker wants and is a different question at a different cost. The two
 reads are separate on purpose.
+
+### Searching for a player
+
+`GET /api/players/search?q=` reads the engine's published display-name index
+(`PLAYER_SEARCH` / `SHARD#<nnn>`; see scraper/CLAUDE.md, "The display-name
+index") and matches it in memory. `adapters/playerNameIndex.ts` is the matcher,
+`adapters/rankingDynamoAdapter.ts` holds the loaded index between invocations.
+
+**It did not. It was a capped Scan, and that was not a performance note - it
+was a correctness bug the whole way through.** `Limit` on a Scan caps the items
+*examined before the filter*, not the matches, so four pages of 500 looked at
+2,000 raw items and returned whatever had matched by then. Measured against
+production on 2026-10-29:
+
+| | |
+|---|---|
+| items in the table | **441,214** |
+| `PROFILE` rows | **40,979** |
+| items one query examined | 2,000 |
+| `PROFILE` rows among them | **178** |
+| **share of players searched** | **0.43%** |
+| read units per query | **203.5** |
+
+The visible symptom is what this section exists to record, because the previous
+wording ("a capped Scan until a GSI can be batched with other infrastructure
+work") described it as a known limitation and it was not a limitation, it was
+an endpoint that answered wrongly. Search was **anti-correlated with
+relevance**:
+
+```
+sealsmasher  -> 1 result   (found: 1st in scan order)
+Dromex13     -> 1 result   (found: 2nd)
+illusionz    -> 0 results  (rated, on the public leaderboard)
+tpcstld      -> 0 results  (rated, 1,380 +/- 97, 8 games, on the leaderboard)
+```
+
+So the two players the ladder *does* list were unfindable and the two it does
+not were findable. And an empty `data` could not be read, because
+`searchPlayers` returned a bare array: "no player by that name" and "the 0.43%
+this query examined contained nobody" were the same response. That is how the
+ladder page printed "No player by that name." over players it was rendering on
+the board beside the search box.
+
+**What it costs now.** The index is held in module scope for
+`SEARCH_INDEX_TTL_MS` (15 minutes), so the steady-state query is the BatchGet
+for the hits it is about to publish and nothing else - ~10 keys, **~5 read
+units**, against 203.5 for a 0.43% answer. A cold Lambda additionally reads the
+8 shards, ~1.2MB of gzip, ~150 read units eventually-consistent: so even the
+pathological case where every request lands cold is cheaper per query than the
+Scan it replaces, with 100% coverage instead of 0.43%. Concurrent cold requests
+share one load. `/api/rankings`'s ~16 units is the yardstick.
+
+**No full-table Scan per query, in either path.** The index path is one Query
+on one base-table partition. The fallback path is still a bounded scan, and it
+exists only for the window before the engine's next refit publishes the shards -
+it reports `coverage.complete: false` so that answer is never passed off as a
+complete one, and `playerSearch.test.ts` pins that no Scan is issued once the
+index exists.
+
+**Substring search is kept, and that is why this is not a GSI.** A GSI answers
+`begins_with` and nothing else. Measured over 8,000 real display names from the
+live ladder, of every 2-to-4 character substring that occurs in a name a
+whole-name prefix index finds **14.8%** and a word-prefix index **17.3%** -
+the corpus is dominated by single-token handles, so whitespace tokenisation
+buys 2.5 percentage points. A prefix index would have fixed all four failures
+above, which are exact names, and would have quietly stopped answering
+`smasher` for `SealSmasher`. The scraper doc has the rest of the comparison,
+including the write cost of a GSI and the fact that **no Terraform change was
+needed at all** - so there is no plan/apply/refit ordering to get right and no
+window where the code wants an index that does not exist yet.
+
+**Results are ranked now, which is what makes a cap of 25 enough.** Scan order
+is no order at all: the old endpoint returned whichever ten matches it reached
+first and threw away the rest without comparing them. `scoreNameMatch` ranks
+exact name, then name prefix, then word prefix, then name substring, then tag
+line - a tag line last because it is short and shared (`NA1` is thousands of
+players) and must never outrank a name hit. Ties break on the shorter display
+name, then lexicographically, then on `playerId`, so one URL has exactly one
+answer - which an edge-cached route requires, or two origin hits give two
+orders.
+
+**`coverage` travels with the hits**, for the reason `catalogueUnavailable`
+does on the scene map: a filtered list cannot be read honestly without knowing
+what it was filtered from. `complete`, `searchedPlayers`, `matched`,
+`truncated` and `maxResults`, so the page prints "showing the closest 25 of 112"
+or "only some players could be searched" instead of one sentence that is wrong
+two ways out of three.
+
+#### The privacy consequence, stated rather than glossed
+
+Completing the index **does** make the player corpus easier to enumerate
+through this endpoint than a 0.43% scan did. That is a real consequence of
+fixing the bug and the cap was never designed as the guard - it was doing the
+job by accident. Four things answer for it, and only the first two are new:
+
+- **A route-specific cap of 25** (`PLAYER_SEARCH_MAX_RESULTS`), below
+  `MAX_PAGE_LIMIT`'s 100. A person picking a player from a list does not scroll
+  100 names, and the 25 are now the *best* 25.
+- **No cursor.** There is no pagination on this route, so the capped set is
+  everything a caller can get for a needle, however many times they ask. This
+  is the actual guard; the cap is the size of it.
+- Minimum two characters, unchanged: a one-character query matches a large
+  fraction of 40,979 players in response to no information at all.
+- `X-Robots-Tag: noindex, nofollow` and the general rate limiter (100
+  requests/minute per IP), both unchanged.
+
+And the measurement that puts it in proportion, because it is the one that
+would otherwise be missing: **`/api/rankings` is already a bulk export of the
+rated corpus.** It is cursor-paginated with a limit of 100 and no cap on pages,
+and while this change was being measured it returned **8,000 distinct players'
+display names and tag lines in 80 public requests** - `illusionz#1337` and
+`tpcstld#NA1` among them. So the names search can now find were already
+enumerable; what search could not do was find one of them on purpose. The
+index does not create the export surface. If bulk export of the rated board
+is itself unwanted, the place for that is `/api/rankings`'s pagination, not
+here - and it is a separate decision from this one.
+
+**The index is never served to a reader.** It is read inside the Lambda. The
+rejected alternative was publishing it to S3 behind the existing CloudFront and
+filtering client-side - instant, free per query, and it would hand every reader
+of the ladder page a 1.2MB gzipped file of every player's name. See
+scraper/CLAUDE.md, "Privacy of the derived ratings", for that decision in full;
+the short version is that this codebase already treats aggregation as a change
+in kind even when every underlying fact is public, and a roster handed to every
+visitor is the aggregation step.
 
 ### Never seen is not absent
 
@@ -654,7 +783,11 @@ The posture here:
   fields, and the facts themselves. No emails - the scraper never stored any.
 - **No bulk export.** The detail endpoint serves one event; the availability
   endpoint answers yes/no for ids the caller already has. Both are
-  `X-Robots-Tag: noindex, nofollow`, like the player routes.
+  `X-Robots-Tag: noindex, nofollow`, like the player routes. Note where this
+  claim does and does not hold across the whole API: `/api/players/search` is a
+  capped lookup with no cursor, but `/api/rankings` *is* cursor-paginated over
+  the rated board with no page cap, and 8,000 players' names came back from it
+  in 80 public requests on 2026-10-29. See "Searching for a player".
 - **Nothing player-identifying is logged** - counts only, same rule as the
   scraper passes.
 - **Identity is the UUID, never a display name.** A roster entry with no
@@ -719,6 +852,14 @@ sample, and then `listComponents` doing a third Query plus an unconditional
 already returned. That BatchGet is conditional now, on the same
 `needsHydration` reasoning `getRankings` uses, which takes the endpoint to ~16
 units and three round trips before any caching applies.
+
+`/api/players/search` used to be the worst of them and is now among the
+cheapest: **203.5 read units** per query for an answer over 0.43% of players,
+against **~5** for an answer over all of them once the name index is loaded
+(~150 once per container per 15 minutes to load it). The arithmetic is in
+"Searching for a player"; the thing to watch is that the index stays cached -
+a regression that read the shards per query would be correct, invisible to
+every functional test, and ~30x the reads.
 
 `/api/events/tournament-availability` is the other one to watch: 50 ids is a
 100-key BatchGet, and BatchGet rounds *each key* up to 4KB, so ~50 read units
