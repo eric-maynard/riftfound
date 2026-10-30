@@ -441,7 +441,10 @@ round trip.
   already-measured `--color-text-muted` on `--panel` and nothing needed
   re-measuring. The capped list is also now ranked server-side (exact name,
   then prefix, then word prefix, then substring, then tag line), so the 25 are
-  the closest rather than whichever the storage reached first.
+  the closest rather than whichever the storage reached first. Measured: main
+  bundle **155.21KB gzipped before, 155.44KB after** - the caption is a pure
+  function in `lib/ranking.ts`, which is already eager, so it adds 0.23KB and
+  pulls in nothing.
 - `RATING_ANCHOR` (1200) mirrors the engine's `ELO_ORIGIN`. Nothing else in the
   frontend hardcodes a rating value; the chart's axis is fitted to the data.
 
