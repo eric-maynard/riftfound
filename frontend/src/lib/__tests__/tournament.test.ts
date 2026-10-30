@@ -10,8 +10,11 @@ import type {
   TournamentScene,
 } from '../../types/tournament';
 import {
+  fieldBand,
   fieldComposition,
-  fieldStrength,
+  fieldSegmentHint,
+  FIELD_BAND_EDGES,
+  FIELD_BAND_LABELS,
   formatPercent,
   gameOutcomeForTeam,
   matchDecided,
@@ -21,6 +24,7 @@ import {
   NOT_FINAL_REASON,
   rosterColumns,
   rosterNote,
+  minRatedForBand,
   sceneLine,
   type SceneLine,
   roundIsFinal,
@@ -58,7 +62,11 @@ function player(overrides: Partial<TournamentPlayer> = {}): TournamentPlayer {
     gamesUntilRated: 0,
     componentId: 'c-1',
     componentSize: 14,
+    // A home city and a scene, deliberately different strings: the column
+    // prints the second, and a fallback to the first is the bug.
     regionLabel: 'Colorado Springs, CO',
+    sceneId: 's-front-range',
+    sceneLabel: 'Front Range',
     comparable: true,
     ...overrides,
   };
@@ -79,6 +87,7 @@ function field(overrides: Partial<TournamentField> = {}): TournamentField {
     minGamesForRating: 8,
     maxUncertaintyForRating: 120,
     minComponentSize: 8,
+    minGamesToPublishRating: 3,
     ...overrides,
   };
 }
@@ -134,27 +143,68 @@ describe('how a field player\'s rating is shown', () => {
   });
 });
 
-describe('fieldStrength', () => {
-  it('never offers a mean without the sample it was taken over', () => {
-    const strength = fieldStrength(field());
-    expect(strength.hasRating).toBe(true);
-    expect(strength.mean).toBe(1536);
-    expect(strength.basis).toBe('across the 4 rated players of 24');
-    expect(strength.emptyReason).toBeNull();
+describe('strength of field is a word, and the bands are measured', () => {
+  it('cuts the bands at the measured quartiles of event mean ratings', () => {
+    // 11,946 production events with a captured field: q1 1201.3, q2 1220.5,
+    // q3 1242.5, flat to within 6 points across every rated-sample floor
+    // tried. Rounded to tens because the published mean carries one decimal.
+    expect([...FIELD_BAND_EDGES]).toEqual([1200, 1220, 1240]);
+    expect([...FIELD_BAND_LABELS]).toEqual(['Low', 'Medium', 'High', 'Very high']);
+
+    const at = (meanRating: number) => fieldBand(field({ meanRating, ratedSample: 9, ratedPlayers: 9 }));
+    expect(at(1199).label).toBe('Low');
+    expect(at(1200).label).toBe('Medium');
+    expect(at(1219).label).toBe('Medium');
+    expect(at(1220).label).toBe('High');
+    expect(at(1239).label).toBe('High');
+    expect(at(1240).label).toBe('Very high');
+    expect(at(1488).label).toBe('Very high');
   });
 
-  it('says why there is no number when nothing cleared the gate', () => {
-    const strength = fieldStrength(
+  it('refuses a band when one player\'s margin could move it a whole band', () => {
+    // The live report: mean 1,276 over 3 rated players of 13, which would
+    // have read "Very high". The floor is ceil(120 / 20) = 6 - the widest
+    // publishable margin over the narrowest band - and it is read off the
+    // payload so it follows the gate.
+    expect(minRatedForBand(field())).toBe(6);
+
+    const reported = field({
+      totalPlayers: 13,
+      knownPlayers: 6,
+      ratedPlayers: 3,
+      provisionalPlayers: 3,
+      unknownPlayers: 7,
+      ratedSample: 3,
+      ratedShare: 0.231,
+      meanRating: 1276,
+    });
+    const band = fieldBand(reported);
+    expect(band.kind).toBe('thin');
+    expect(band.label).toBe('Not enough rated players');
+    expect(band.hint).toContain('3 of 13');
+    // The hint says what the trap was, not that the data is missing.
+    expect(band.hint).toContain('whole band');
+    // And it never names a band it has refused to award.
+    for (const label of FIELD_BAND_LABELS) expect(band.label).not.toBe(label);
+  });
+
+  it('is a band once the sample reaches the floor', () => {
+    const band = fieldBand(field({ ratedSample: 6, ratedPlayers: 6, meanRating: 1276 }));
+    expect(band.kind).toBe('band');
+    expect(band.label).toBe('Very high');
+  });
+
+  it('says why there is no word at all when nothing cleared the gate', () => {
+    const band = fieldBand(
       field({ ratedPlayers: 0, ratedSample: 0, ratedShare: 0, meanRating: null, medianRating: null, topRating: null, knownPlayers: 7, provisionalPlayers: 7, unknownPlayers: 15, totalPlayers: 22 })
     );
-    expect(strength.hasRating).toBe(false);
-    expect(strength.mean).toBeNull();
-    expect(strength.emptyReason).toContain('7 of 22');
-    expect(strength.emptyReason).toContain('8 recorded games');
+    expect(band.kind).toBe('thin');
+    expect(band.hint).toContain('7 of 22');
+    expect(band.hint).toContain('8 recorded games');
   });
 
   it('distinguishes a field nobody has played in from one nobody has finished', () => {
-    const none = fieldStrength(
+    const none = fieldBand(
       field({
         totalPlayers: 12,
         knownPlayers: 0,
@@ -166,25 +216,89 @@ describe('fieldStrength', () => {
         meanRating: null,
       })
     );
-    expect(none.emptyReason).toContain('has a recorded game yet');
+    expect(none.hint).toContain('has a recorded game yet');
   });
 
-  it('counts the field in two groups, since the third lost its own word', () => {
-    // Was ['Rated', 'Unranked', 'No record'] = [4, 5, 15]. Once the last two
-    // print the same word everywhere else, two legend rows both reading
-    // "Unranked" would be a puzzle rather than a breakdown.
-    const segments = fieldComposition(field());
-    expect(segments.map((segment) => segment.count)).toEqual([4, 20]);
-    expect(segments.map((segment) => segment.label)).toEqual(['Rated', UNRANKED_LABEL]);
-    expect(segments[0].percent).toBeCloseTo((4 / 24) * 100);
-    expect(segments[1].percent).toBeCloseTo((20 / 24) * 100);
+  it('never claims one event is harder than another', () => {
+    // ICC 0.000 over the corpus: between-event SD 0.0 against a within-event
+    // SD of 84.2. The word is a position in a distribution, and the hint has
+    // to say so rather than letting it read as difficulty.
+    const band = fieldBand(field({ ratedSample: 9, ratedPlayers: 9, meanRating: 1300 }));
+    expect(band.hint).toContain('not a claim that this event is harder');
+    expect(band.hint).toContain('between-event SD 0');
+  });
+});
+
+describe('the field is counted in three groups, matching the table', () => {
+  /**
+   * The reported bug: "3 Rated, 10 Unranked" over a roster printing six
+   * ratings. The ten mixed two thresholds - the display floor (a number) and
+   * the rank gate (a position) - and three of them had a number.
+   */
+  const REPORTED = [
+    player({ rating: 1380.1, uncertainty: 96.5, gamesPlayed: 8, provisional: false }),
+    player({ rating: 1249, uncertainty: 100.6, gamesPlayed: 18, provisional: false }),
+    player({ rating: 1199, uncertainty: 104, gamesPlayed: 14, provisional: false }),
+    player({ rating: 1188.1, uncertainty: 128.4, gamesPlayed: 4, provisional: true, provisionalReason: 'uncertainty-too-wide' }),
+    player({ rating: 1250.5, uncertainty: 121.8, gamesPlayed: 3, provisional: true, provisionalReason: 'uncertainty-too-wide' }),
+    player({ rating: 1174.4, uncertainty: 122.2, gamesPlayed: 3, provisional: true, provisionalReason: 'uncertainty-too-wide' }),
+    ...Array.from({ length: 7 }, () =>
+      player({ known: false, rating: null, uncertainty: null, gamesPlayed: null, provisional: true, provisionalReason: 'no-rating' })
+    ),
+  ];
+
+  it('counts the rating numbers the table prints, not the rank gate', () => {
+    const segments = fieldComposition(REPORTED);
+    expect(segments.map((segment) => segment.label)).toEqual(['Rated', 'Still settling', 'No rating yet']);
+    expect(segments.map((segment) => segment.count)).toEqual([3, 3, 7]);
+
+    // The repair, stated as the thing a reader does: count the numbers in the
+    // table, and the first two groups add up to them.
+    const withANumber = REPORTED.filter((entry) => ratingDisplay(entry) !== 'none').length;
+    expect(withANumber).toBe(6);
+    expect(segments[0].count + segments[1].count).toBe(withANumber);
+
+    // And nothing counts "Unranked" over a player who has a rating printed.
+    expect(segments[2].count).toBe(REPORTED.filter((entry) => ratingDisplay(entry) === 'none').length);
+  });
+
+  it('agrees with the API\'s own rated count', () => {
+    // `field.ratedPlayers` applies the same test server-side, so the first
+    // group is the one figure the two sources must not disagree about.
+    const segments = fieldComposition(REPORTED);
+    expect(segments[0].count).toBe(
+      field({ totalPlayers: 13, ratedPlayers: 3, ratedSample: 3 }).ratedPlayers
+    );
+  });
+
+  it('never prints the same word twice in the legend', () => {
+    // The two-group version existed because two rows both reading "Unranked"
+    // would have been a puzzle. Three rows only work if they are three
+    // different answers.
+    const labels = fieldComposition(REPORTED).map((segment) => segment.label);
+    expect(new Set(labels).size).toBe(labels.length);
+    expect(labels).not.toContain(UNRANKED_LABEL);
+  });
+
+  it('gives each group a reason, and names the right threshold in each', () => {
+    const settings = field();
+    expect(fieldSegmentHint('rated', settings)).toContain('8 or more recorded games');
+    expect(fieldSegmentHint('unsettled', settings)).toContain('prints their number');
+    // The third group is the only one the word "Unranked" may be said of.
+    expect(fieldSegmentHint('none', settings)).toContain('fewer than 3 recorded games');
+    expect(fieldSegmentHint('none', settings)).toContain(UNRANKED_LABEL);
   });
 
   it('does not divide by zero on an empty field', () => {
-    const segments = fieldComposition(
-      field({ totalPlayers: 0, knownPlayers: 0, ratedPlayers: 0, provisionalPlayers: 0, unknownPlayers: 0, ratedSample: 0, meanRating: null })
-    );
+    const segments = fieldComposition([]);
     expect(segments.every((segment) => segment.percent === 0)).toBe(true);
+    expect(segments.every((segment) => segment.count === 0)).toBe(true);
+  });
+
+  it('keeps the proportions it is asked for', () => {
+    const segments = fieldComposition(REPORTED);
+    expect(segments[0].percent).toBeCloseTo((3 / 13) * 100);
+    expect(segments[2].percent).toBeCloseTo((7 / 13) * 100);
   });
 });
 
@@ -413,26 +527,28 @@ describe('roster', () => {
   }
 
   it('offers only the columns the source can fill', () => {
-    expect(rosterColumns(roster())).toEqual({
-      registeredAt: true,
-      checkIn: true,
-      waitlist: false,
-    });
+    expect(rosterColumns(roster())).toEqual({ waitlist: false });
 
-    const recovered = roster({
-      source: 'participants',
-      entries: roster().entries.map((entry) => ({
-        ...entry,
-        registeredAt: null,
-        checkedIn: null,
-        status: 'PLAYED',
-      })),
+    const waitlisted = roster({
+      entries: roster().entries.map((entry) => ({ ...entry, waitlistPosition: 3 })),
     });
-    expect(rosterColumns(recovered)).toEqual({
-      registeredAt: false,
-      checkIn: false,
-      waitlist: false,
-    });
+    expect(rosterColumns(waitlisted)).toEqual({ waitlist: true });
+  });
+
+  it('offers no check-in or sign-up column, and does not take the data away', () => {
+    // Both columns were dropped from this *view*, and for different reasons.
+    // Check-in is a door state nothing else keeps. The sign-up time is
+    // load-bearing: `acceptedTermsAt` reconstructs an event's whole signup
+    // curve from one snapshot, which is why the scraper fetches a roster once
+    // instead of polling, and a dated roster is unrecoverable once the event
+    // has started. So the payload still carries both.
+    const columns = rosterColumns(roster()) as Record<string, boolean>;
+    expect(columns.checkIn).toBeUndefined();
+    expect(columns.registeredAt).toBeUndefined();
+
+    const entry = roster().entries[0];
+    expect(entry.registeredAt).toBe('2026-10-25T04:31:09.637Z');
+    expect(entry.checkedIn).toBe(false);
   });
 
   it('says where the list came from in one line', () => {

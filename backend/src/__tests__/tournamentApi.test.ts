@@ -690,6 +690,44 @@ describe('the scene an event belongs to', () => {
     expect(detail?.scene.sceneLabel).not.toBe(detail?.scene.regionLabel);
   });
 
+  it('carries each player\'s own scene, which is not their region', async () => {
+    // The roster's place column prints this, and these are the two reasons it
+    // cannot print `regionLabel` instead. A region is the player's home city,
+    // so a column of it names as many places as the field has home stores -
+    // measured on `prb-117397899890353177`, six known players carried three
+    // different regions where the scene answer is `Peninsula` x5 and
+    // `South Bay` x1. And in the fixture the Bay component spans two scenes,
+    // so one `componentId` cannot name either.
+    const detail = await getTournament(UPCOMING);
+    const placed = detail!.players.filter((player) => player.sceneLabel !== null);
+    expect(placed.length).toBeGreaterThan(0);
+    for (const player of placed) {
+      expect(player.sceneId).not.toBeNull();
+      // Every one of them is in the Bay component, and their scene is not it.
+      expect(player.sceneLabel).not.toBe(player.regionLabel);
+    }
+    // Two scenes under one component, which is the shape that makes a
+    // component-labelled column wrong.
+    expect(new Set(placed.map((player) => player.sceneId)).size).toBeGreaterThan(1);
+    expect(new Set(placed.map((player) => player.componentId)).size).toBe(1);
+  });
+
+  it('leaves a sceneless player sceneless rather than falling back to a city', async () => {
+    // 2.6% of sampled production profiles carry a region and no scene, because
+    // their home store is in no rankable scene. A `sceneLabel ?? regionLabel`
+    // would put a city back in a column headed Scene, silently, on exactly
+    // those rows - so the absence has to survive the API.
+    const detail = await getTournament(UPCOMING);
+    const sceneless = detail!.players.filter((player) => player.known && player.sceneId === null);
+    expect(sceneless.length).toBeGreaterThan(0);
+    for (const player of sceneless) {
+      expect(player.sceneLabel).toBeNull();
+      // The region is there, and is exactly what a fallback would have
+      // printed under a column headed Scene.
+      expect(player.regionLabel).not.toBeNull();
+    }
+  });
+
   it('two events at two stores in one scene agree on its name', async () => {
     // 48812 is in Berkeley and 48540 in San Francisco, 17km apart and in the
     // same scene. One scene must not be named twice.

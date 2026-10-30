@@ -26,8 +26,9 @@ import {
   UNRANKED_LABEL,
 } from '../lib/ranking';
 import {
+  fieldBand,
   fieldComposition,
-  fieldStrength,
+  fieldSegmentHint,
   formatClock,
   formatPercent,
   gameOutcomeForTeam,
@@ -413,19 +414,39 @@ function EventScene({
 }
 
 /**
- * Strength of field, said in a way that cannot be misread.
+ * Strength of field: **one word, and the field counted in three groups.**
  *
- * The rated subset is systematically the regulars, so a bare "1,536" would
- * describe seven people and be read as describing twenty-four. The number
- * therefore never appears without the count it was taken over, and the
- * composition meter puts the three groups - rated, unranked, no record - in
- * proportion with their counts spelled out beside it.
+ * ## What left, and why
+ *
+ * A mean at display size, a line of prose naming the players it was taken
+ * over, a coverage meter, and a median-and-top line. All four are gone, and
+ * the measurement is the reason rather than taste: over 11,946 production
+ * events with a captured field, the between-event SD of the mean rating is
+ * **0.0** against a within-event SD of 84.2 (ICC 0.000). Events do not
+ * measurably differ in strength, so four surfaces were spent on a figure whose
+ * variation is sampling noise. `fieldBand` keeps the one grain the data
+ * supports - a quartile of that distribution, as a word - with the caveat on
+ * hover.
+ *
+ * ## The counter said three where the table showed six
+ *
+ * This block read "3 Rated &middot; 10 Unranked" over a roster printing **six**
+ * rating numbers, because one word covered two different thresholds: the
+ * display floor (3 recorded games, whether a number appears) and the rank gate
+ * (8 games, margin, scene size - whether a position is held). Three of the ten
+ * were between them and had their rating printed beside the word denying it.
+ *
+ * So the legend counts three groups, through the very `ratingDisplay` the
+ * table cells branch on, which is what makes the two agree by construction
+ * rather than by arithmetic that has to be kept in step. The reason for each
+ * group is its hover hint, never prose on the page - the rule the whole
+ * Rankings section follows.
  */
 function FieldStrengthBlock({ detail }: { detail: TournamentDetail }) {
   const field = detail.field;
 
-  // Nothing was ever recorded about who was here. A meter at 0% and three
-  // zeroes in a legend is furniture, not information.
+  // Nothing was ever recorded about who was here. Three zeroes in a legend is
+  // furniture, not information.
   if (field.totalPlayers === 0) {
     return (
       <div className="event-strength">
@@ -435,56 +456,39 @@ function FieldStrengthBlock({ detail }: { detail: TournamentDetail }) {
     );
   }
 
-  const strength = fieldStrength(field);
-  const segments = fieldComposition(field);
+  const band = fieldBand(field);
+  // From the players, not from `field`: the same function the table cells use,
+  // so a reader counting rating numbers in the table gets the legend's answer.
+  const segments = fieldComposition(detail.players);
 
   return (
     <div className="event-strength">
       <span className="stat-label">Strength of field</span>
-      {strength.hasRating ? (
-        <>
-          <p className="headline-value">
-            {formatRating(strength.mean)}
-            <span className="headline-margin">mean</span>
-          </p>
-          {/* Never the number on its own. The rated subset is the regulars, so
-              a bare figure would describe four people and be read as
-              describing twenty-four. */}
-          <p className="event-strength-basis">{strength.basis}</p>
-        </>
+      {band.kind === 'band' ? (
+        // A word, so it is set as one - not in the display face at
+        // `--t-display` pretending to be a figure, which is the rule the
+        // player page's own withheld headline already follows. The dotted
+        // underline is this page's existing "there is a hint here" mark.
+        <p className="field-band">
+          <abbr className="col-hint" title={band.hint}>{band.label}</abbr>
+        </p>
       ) : (
-        <>
-          {/* Set as a sentence, not at display size pretending to be a
-              figure. Deliberately not "Unranked": that word belongs to a
-              player, and this is a statement about the field. */}
-          <p className="field-unmeasured">Not enough rated players</p>
-          <p className="event-strength-basis">{strength.emptyReason}</p>
-        </>
+        // Set as a sentence rather than at display size pretending to be a
+        // verdict. Deliberately not a band and deliberately not "Unranked":
+        // that word belongs to a player, and this is about the field.
+        <p className="field-unmeasured" title={band.hint}>
+          {band.label}
+        </p>
       )}
 
-      {/* The ranking page's coverage meter, for the same quantity it measures
-          there: how much of what we can see is actually rated. One fill, not a
-          segmented chart - the groups are counted in words below. */}
-      <div
-        className="coverage-track"
-        role="img"
-        aria-label={`${field.ratedPlayers} of ${field.totalPlayers} players in this field have a rating`}
-      >
-        <span className="coverage-fill" style={{ width: `${field.ratedShare * 100}%` }} />
-      </div>
       <ul className="field-legend">
         {segments.map((segment) => (
-          <li key={segment.key}>
+          <li key={segment.key} title={fieldSegmentHint(segment.key, field)}>
             <span className="field-legend-count">{segment.count}</span>
             <span className="field-legend-label">{segment.label}</span>
           </li>
         ))}
       </ul>
-      {strength.hasRating && (
-        <p className="event-strength-extra">
-          Median {formatRating(strength.median)} &middot; top {formatRating(strength.top)}
-        </p>
-      )}
     </div>
   );
 }
@@ -576,6 +580,40 @@ function PlayerName({
       {inner}
     </Link>
   );
+}
+
+/**
+ * The scene a player plays in - **their scene, never their city**.
+ *
+ * Both tables on this page used to print `player.regionLabel`, which is the
+ * player's own home city, so one field read `Redwood City, CA`,
+ * `San Carlos, California` and `Sunnyvale, California` where there are two
+ * scenes. `sceneLabel` is the engine's own cluster of stores and is the same
+ * kind of thing for every row.
+ *
+ * **A player in no scene reads so, and never falls back to the city.** That is
+ * 2.6% of sampled production profiles, and 99.9% of them carry a region - so a
+ * `??` here would put a city back in a column headed Scene, silently, on
+ * exactly the rows the column was wrong about.
+ *
+ * The absence is this page's `--` with the reason on hover, not a word.
+ * A word would be right for the 2.6%, and wrong for the case that dominates an
+ * upcoming event's roster: most of that field is unknown to the engine, so a
+ * phrase in every one of those cells would be the column of repeated words
+ * this section has already been caught printing once.
+ */
+function PlayerScene({ player }: { player: TournamentPlayer | null }) {
+  if (!player?.sceneLabel) {
+    return (
+      <span
+        className="player-scene-absent"
+        title={player?.known ? NO_SCENE_HINT : NO_HOME_STORE_HINT}
+      >
+        --
+      </span>
+    );
+  }
+  return <>{player.sceneLabel}</>;
 }
 
 /**
@@ -721,8 +759,17 @@ function StandingsSection({
                   </td>
                   <td>
                     <PlayerName player={standing.player} />
-                    {standing.player?.regionLabel && (
-                      <span className="player-scene">{standing.player.regionLabel}</span>
+                    {/* The scene, for the reason the roster's column is the
+                        scene: this sat under the name as the player's home
+                        city, which is a different place for members of one
+                        scene. A standings row has no header to hang a hint
+                        off, so a player in no scene simply has no line here -
+                        an absent sub-label reads as nothing, where a `--`
+                        under a name reads as missing data. */}
+                    {standing.player?.sceneLabel && (
+                      <span className="player-scene" title={SCENE_HINT}>
+                        {standing.player.sceneLabel}
+                      </span>
                     )}
                   </td>
                   <td className="rating-cell">
@@ -979,9 +1026,38 @@ function PairingSide({
 // Roster
 // ---------------------------------------------------------------------------
 
-const REGION_HINT =
-  "Where this player usually plays - their own home region, not this event's scene. " +
-  'Players in one scene often sit in several.';
+/**
+ * The hint on the `Scene` column.
+ *
+ * The column was `Scene` once, was renamed to `Region` because its cells were
+ * each player's own `regionLabel`, and is `Scene` again now that the cells are
+ * `sceneLabel`. The rename back is the fix, not a revert: a scene is the
+ * engine's cluster of stores whose players really play each other, so it is
+ * the same kind of thing for every row and the same kind of thing as the scene
+ * named in the header above. A home city is not - on the reported page six
+ * known players carried `Redwood City, CA`, `San Carlos, California` and
+ * `Sunnyvale, California`, where the scene answer is `Peninsula` five times
+ * and `South Bay` once.
+ */
+const SCENE_HINT =
+  'The scene this player plays in - the group of stores near enough to each other that their ' +
+  "players really play each other. Not the same thing as their home store's city: several " +
+  'cities make one scene.';
+
+/**
+ * A cell with no scene in it, and **two different reasons** for that.
+ *
+ * Worth keeping apart, because they are not the same claim and the second is
+ * most of an upcoming event's roster: a player the engine has never seen has
+ * no home store to place at all, while a known player's home store can be in
+ * no rankable scene. Both print the page's `--`, and the hint says which.
+ */
+const NO_SCENE_HINT =
+  "This player's home store is not in a rankable scene yet. A scene is only drawn where its " +
+  'stores play each other enough to rank anybody, so some stores will not be in one.';
+
+const NO_HOME_STORE_HINT =
+  'No recorded games for this player yet, so there is no home store to read a scene off.';
 
 function RosterSection({
   roster,
@@ -1016,20 +1092,12 @@ function RosterSection({
                 <th scope="col">Player</th>
                 <th scope="col">Rating</th>
                 <th scope="col" className="numeric">Games</th>
-                {/* "Region", not "Scene" - and the rename is a correctness
-                    fix, not a preference. The cell is `player.regionLabel`,
-                    which is that *player's* own home region: measured on the
-                    live board, one 5,405-player scene holds players labelled
-                    across four of them, so a column of these under the header
-                    "Scene" says four scenes where there is one. With the
-                    event's actual scene now named in the header above, the two
-                    would have been a flat contradiction. */}
+                {/* `Scene`, from `player.sceneLabel`. See SCENE_HINT for why
+                    this is the header *and* the cell again. */}
                 <th scope="col">
-                  <abbr className="col-hint" title={REGION_HINT}>Region</abbr>
+                  <abbr className="col-hint" title={SCENE_HINT}>Scene</abbr>
                 </th>
-                {columns.checkIn && <th scope="col">Checked in</th>}
                 {columns.waitlist && <th scope="col" className="numeric">Waitlist</th>}
-                {columns.registeredAt && <th scope="col">Signed up</th>}
               </tr>
             </thead>
             <tbody>
@@ -1042,15 +1110,11 @@ function RosterSection({
                     <PlayerRating player={entry.player} minGames={minGames} showGate />
                   </td>
                   <td className="numeric">{entry.player.gamesPlayed ?? '--'}</td>
-                  <td className="muted">{entry.player.regionLabel ?? '--'}</td>
-                  {columns.checkIn && (
-                    <td>{entry.checkedIn === null ? '--' : entry.checkedIn ? 'Yes' : 'No'}</td>
-                  )}
+                  <td className="muted">
+                    <PlayerScene player={entry.player} />
+                  </td>
                   {columns.waitlist && (
                     <td className="numeric">{entry.waitlistPosition ?? '--'}</td>
-                  )}
-                  {columns.registeredAt && (
-                    <td className="muted event-figure-text">{formatClock(entry.registeredAt)}</td>
                   )}
                 </tr>
               ))}

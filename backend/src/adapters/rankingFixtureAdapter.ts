@@ -226,6 +226,27 @@ const VENUES = [
   scenePurity: number | null;
 }[];
 
+/**
+ * The scene of the store a player played the most matches at.
+ *
+ * Ties break on the shop id so the answer cannot depend on log order, and a
+ * player with no matches - or one whose home store is in no scene - comes back
+ * with both fields null rather than borrowing a neighbour's name.
+ */
+function sceneOfHomeVenue(
+  own: { shopId: string | null }[]
+): { sceneId: string | null; sceneLabel: string | null } {
+  const tally = new Map<string, number>();
+  for (const match of own) {
+    if (!match.shopId) continue;
+    tally.set(match.shopId, (tally.get(match.shopId) ?? 0) + 1);
+  }
+  if (tally.size === 0) return { sceneId: null, sceneLabel: null };
+  const [shopId] = [...tally.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0];
+  const venue = VENUES.find((row) => row.shopId === shopId);
+  return { sceneId: venue?.sceneId ?? null, sceneLabel: venue?.sceneLabel ?? null };
+}
+
 interface FixtureEvent {
   externalId: string;
   name: string;
@@ -400,6 +421,15 @@ function buildLaunchFixture(): FixtureData {
       componentId: seed.component.componentId,
       componentSize: seed.component.componentSize,
       regionLabel: seed.component.regionLabel,
+      // A player's scene is their **home venue's** scene - the engine's own
+      // rule (`scraper/src/ranking/snapshot.ts`) - so it is derived from the
+      // match log here rather than written down beside the seed. That is what
+      // makes the fixture able to catch the bug this field exists for: the Bay
+      // component spans two scenes, so its players come back with two
+      // different `sceneLabel`s under one `componentId` and one `regionLabel`.
+      // The Bellevue store is in no scene, so Seattle's players come back with
+      // a region and no scene - the state nothing may fall back from.
+      ...sceneOfHomeVenue(own),
       setRatings,
       updatedAt: '2026-10-25T06:00:00.000Z',
     };

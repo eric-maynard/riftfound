@@ -131,6 +131,14 @@ function enrich(
     componentId: profile?.componentId ?? null,
     componentSize: profile?.componentSize ?? null,
     regionLabel: profile?.regionLabel ?? null,
+    // The scene travels beside the region rather than instead of it: the two
+    // answer different questions and a page must be able to tell a player with
+    // no scene from one with no place at all. Deliberately **no fallback** -
+    // `sceneLabel ?? regionLabel` would reintroduce the city labels the scene
+    // exists to replace, and silently, on exactly the 2.6% of profiles that
+    // have a region and no scene.
+    sceneId: profile?.sceneId ?? null,
+    sceneLabel: profile?.sceneLabel ?? null,
     comparable: isComparable(profile?.componentSize ?? null),
   };
 }

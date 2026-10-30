@@ -3837,23 +3837,25 @@ td.is-unsettled .rating-value,
   color: var(--color-text-muted);
 }
 
-.event-strength-basis {
-  margin: 0.15rem 0 0.5rem;
-  font-size: var(--t-meta);
-  color: var(--color-text-muted);
-  max-width: 44ch;
+/* Strength of field, as a word.
+   It replaced a mean in the display face, a line of prose naming the players
+   it was taken over, a coverage meter and a median/top line - four surfaces
+   for a figure whose between-event SD measures 0.0 against a within-event SD
+   of 84.2 over 11,946 production events. So it is deliberately NOT
+   `.headline-value`: a word set at `--t-display` with tabular numerals is a
+   word dressed as a figure, which is the same mistake one size smaller. Same
+   treatment as `.headline-value.is-withheld` on the player page, which is this
+   rule's first application. Full-strength ink, because unlike the "not enough
+   rated players" line below it this is an answer rather than its absence. */
+.field-band {
+  margin-top: 0.1rem;
+  font-size: 1.3rem;
+  font-weight: 600;
+  line-height: 1.2;
 }
 
-.event-strength-extra {
-  margin-top: 0.35rem;
-  font-size: var(--t-meta);
-  color: var(--color-text-muted);
-  font-variant-numeric: tabular-nums;
-}
-
-/* The three groups as counts, in words. The meter above shows one of them in
-   proportion; these are the fact, which is why none of them depends on being
-   able to tell two shades apart. */
+/* The three groups as counts, in words. None of them depends on being able to
+   tell two shades apart; each carries its own reason on hover. */
 .field-legend {
   display: flex;
   flex-wrap: wrap;
@@ -3867,6 +3869,7 @@ td.is-unsettled .rating-value,
   display: inline-flex;
   align-items: baseline;
   gap: 0.3rem;
+  cursor: help;
 }
 
 .field-legend-count {
@@ -3919,11 +3922,23 @@ td.is-unsettled .rating-value,
   white-space: nowrap;
 }
 
-/* The scene under the name, the way the match row carries its venue. */
+/* The scene under the name, the way the match row carries its venue. It was
+   the player's own home city until the engine started placing stores in
+   scenes; a city is a different place for every member of one scene. */
 .player-scene {
   display: block;
   font-size: var(--t-meta);
   color: var(--color-text-muted);
+  cursor: help;
+}
+
+/* No scene in the cell, with the reason on hover - and never the home city
+   instead, which is the fallback the column was renamed away from. Marked as
+   a hint the way every other hover-explained value on the page is. */
+.player-scene-absent {
+  cursor: help;
+  text-decoration: underline dotted;
+  text-underline-offset: 2px;
 }
 
 /* A name with no profile behind it is still a name, not a link. */

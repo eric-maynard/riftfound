@@ -15,7 +15,7 @@ import type {
 // *not* the map's `sceneComparableHint`, which says the same thing - the map
 // module is lazy-loaded and importing from it would drag it into the eager
 // bundle (see `scenePath` in ./ranking).
-import { sceneTooSmallExplanation, UNRANKED_LABEL } from './ranking';
+import { ratingDisplay, sceneTooSmallExplanation, UNRANKED_LABEL } from './ranking';
 
 /**
  * Pure helpers behind the event page.
@@ -43,49 +43,122 @@ import { sceneTooSmallExplanation, UNRANKED_LABEL } from './ranking';
 // Strength of field
 // ---------------------------------------------------------------------------
 
-export interface FieldStrength {
-  /** Whether there is a number to show at all. */
-  hasRating: boolean;
-  mean: number | null;
-  median: number | null;
-  top: number | null;
-  /**
-   * Who the number describes - never omitted beside the number.
-   *
-   * "across the 4 rated players of 24" rather than a bare figure. The rated
-   * subset is systematically the regulars (8+ recorded games), so a mean over
-   * them overstates the room, and `ratedShare` is exactly what lets the copy
-   * say so instead of implying otherwise.
-   */
-  basis: string;
-  /** The honest headline when nothing has cleared the gate. */
-  emptyReason: string | null;
+/**
+ * Strength of field, as **one word**.
+ *
+ * ## Why a word and not a figure with a bar
+ *
+ * The block used to print `1,276 mean`, a coverage meter and a line of prose
+ * saying which players the mean described. Three surfaces for a number that
+ * turns out not to vary: measured over every production event with a captured
+ * field (11,946 of them, 2026-09-25..2026-10-31), a one-way variance
+ * decomposition of rated players' ratings over events gives
+ * **within-event SD 84.2, between-event SD 0.0, ICC 0.000**. Events do not
+ * differ in strength by more than the noise of sampling a few of their
+ * players, and the 418 events where *every* player in the field is rated make
+ * the same point without any sampling argument: their means have SD 30.4
+ * against the 31.8 that drawing the same number of players from one pool
+ * predicts.
+ *
+ * So the figure was precision the data does not support, and the word is the
+ * right grain. What the word says is where this event's mean sits **among
+ * other events' means** - a true statement about an observed number - and
+ * `FIELD_BAND_HINT` carries the caveat that the spread between events is
+ * within sampling noise. Printing it with its caveat rather than withholding
+ * it is the same call the ladder already made for Global positions.
+ *
+ * ## The bands are measured, not chosen
+ *
+ * `FIELD_BAND_EDGES` are the quartiles of that distribution, rounded to the
+ * nearest ten because the published mean carries one decimal and a quartile
+ * quoted to 0.1 would claim a stability the next refit does not have. They are
+ * flat across every floor tried - q1 1201.3 -> 1206.0, q2 1220.5 -> 1220.3,
+ * q3 1242.5 -> 1237.0 as the rated-sample floor moves from 3 to 8 - so the
+ * edges are a property of the corpus rather than of the pool they were cut
+ * from. Occupancy at the floor below: 20 / 30 / 27 / 24%.
+ *
+ * ## The floor, which is the part the data forces
+ *
+ * One rated player's own published margin may be as wide as
+ * `maxUncertaintyForRating` (120). Their contribution to a mean over `k`
+ * players is that margin over `k`, so below `ceil(120 / 20) = 6` rated players
+ * **one person's uncertainty spans more than a whole band** and the word is
+ * their margin rather than the field's level. Below the floor there is no
+ * band: `kind: 'thin'`, and the hint says how many players were rated.
+ *
+ * The live case this was reported against is exactly that - `mean 1,276` over
+ * **3 rated players of 13**, which would have read `Very high`.
+ */
+export const FIELD_BAND_EDGES = [1200, 1220, 1240] as const;
+
+/** Low to high, one per quartile. */
+export const FIELD_BAND_LABELS = ['Low', 'Medium', 'High', 'Very high'] as const;
+
+/**
+ * The narrowest band, and therefore the yardstick the floor is derived from.
+ * The two inner bands are 20 points wide; the outer two are open-ended.
+ */
+export const FIELD_BAND_WIDTH = FIELD_BAND_EDGES[1] - FIELD_BAND_EDGES[0];
+
+export const FIELD_BAND_HINT =
+  "Where this event's mean rating sits among all events we have a field for - the bands are the " +
+  'quartiles of 11,946 of them. It is not a claim that this event is harder: measured over the same ' +
+  'corpus, event means vary no more than drawing a few players at random from one pool would make ' +
+  'them (within-event SD 84, between-event SD 0).';
+
+/**
+ * How many rated players a band needs: enough that one player's own margin
+ * cannot move it a whole band.
+ *
+ * Read off the payload rather than hardcoded, so the floor follows the gate if
+ * the gate moves. Two is the lower bound whatever the arithmetic says, because
+ * a "mean" over one person is that person.
+ */
+export function minRatedForBand(field: TournamentField): number {
+  return Math.max(2, Math.ceil(field.maxUncertaintyForRating / FIELD_BAND_WIDTH));
 }
 
-export function fieldStrength(field: TournamentField): FieldStrength {
-  const { ratedSample, totalPlayers, knownPlayers, minGamesForRating } = field;
+export type FieldBand =
+  /** One of `FIELD_BAND_LABELS`. */
+  | { kind: 'band'; label: string; hint: string }
+  /**
+   * A rated sample too small to carry a band - including none at all. One
+   * state rather than two, because the page has one slot for a word and the
+   * difference between "nobody rated" and "two rated" belongs in the hint.
+   */
+  | { kind: 'thin'; label: string; hint: string };
 
-  if (ratedSample === 0 || field.meanRating === null) {
+/** The band this event's mean falls in, as an index into `FIELD_BAND_LABELS`. */
+export function fieldBandIndex(mean: number): number {
+  let index = 0;
+  while (index < FIELD_BAND_EDGES.length && mean >= FIELD_BAND_EDGES[index]) index += 1;
+  return index;
+}
+
+export function fieldBand(field: TournamentField): FieldBand {
+  const floor = minRatedForBand(field);
+  const { ratedSample, totalPlayers, knownPlayers, meanRating, minGamesForRating } = field;
+
+  if (ratedSample < floor || meanRating === null) {
     return {
-      hasRating: false,
-      mean: null,
-      median: null,
-      top: null,
-      basis: `0 of ${totalPlayers} ${plural(totalPlayers, 'player')} rated`,
-      emptyReason:
-        knownPlayers === 0
-          ? `None of these ${totalPlayers} ${plural(totalPlayers, 'player')} has a recorded game yet, so there is no rating to average.`
-          : `${knownPlayers} of ${totalPlayers} have played before, but none has reached ${minGamesForRating} recorded games, so there is no rating to average.`,
+      kind: 'thin',
+      label: 'Not enough rated players',
+      hint:
+        ratedSample === 0
+          ? knownPlayers === 0
+            ? `None of these ${totalPlayers} ${plural(totalPlayers, 'player')} has a recorded game yet, so there is nothing to average.`
+            : `${knownPlayers} of ${totalPlayers} have played before, but none has reached ${minGamesForRating} recorded games, so there is nothing to average.`
+          : `${ratedSample} of ${totalPlayers} ${plural(totalPlayers, 'player')} ${
+              ratedSample === 1 ? 'is' : 'are'
+            } rated. Over fewer than ${floor} of them one player's own margin moves the mean a whole band, ` +
+            `so the word would report that player's uncertainty rather than this field.`,
     };
   }
 
   return {
-    hasRating: true,
-    mean: field.meanRating,
-    median: field.medianRating,
-    top: field.topRating,
-    basis: `across the ${ratedSample} rated ${plural(ratedSample, 'player')} of ${totalPlayers}`,
-    emptyReason: null,
+    kind: 'band',
+    label: FIELD_BAND_LABELS[fieldBandIndex(meanRating)],
+    hint: FIELD_BAND_HINT,
   };
 }
 
@@ -94,36 +167,96 @@ function plural(count: number, word: string): string {
 }
 
 export interface FieldSegment {
-  key: 'rated' | 'unranked';
+  key: 'rated' | 'unsettled' | 'none';
   label: string;
   count: number;
   percent: number;
 }
 
 /**
- * The field's groups, as counts.
+ * The field's groups, as counts - **three of them, because the table prints
+ * three things**.
  *
- * **Two groups, not three.** It used to separate "Unranked" from "No record",
- * and once those two print the same word in every other place on the site, two
- * legend rows reading `Unranked` would be a puzzle rather than a breakdown.
- * The split was never load-bearing here anyway - what the block is for is the
- * rated share.
+ * This is the bug the block was reported for. It counted two groups, `Rated`
+ * and `Unranked`, and the live page read "3 Rated, 10 Unranked" over a roster
+ * showing **six** rating numbers. Both figures were right and the pair was
+ * unreadable, because one word was doing the work of two different thresholds:
+ *
+ * | threshold | what it decides |
+ * |---|---|
+ * | display floor, 3 recorded games | whether a **number** is shown |
+ * | rank gate, 8 games / margin <= 120 / scene >= 8 | whether a **position** is held |
+ *
+ * Three of those ten "Unranked" players sat between the two - 1,188 +/-128 on
+ * 4 games, 1,250 +/-122 on 3, 1,174 +/-122 on 3 - so the table printed their
+ * rating right beside the word saying they had none.
+ *
+ * **The counts come from the players, through `ratingDisplay`.** Not from
+ * `field`, and that is the whole repair: `ratingDisplay` is the function the
+ * table cells themselves branch on, so a reader who counts the numbers in the
+ * table cannot get a different answer from the legend. Counting the middle
+ * group off `field.provisionalPlayers` would be wrong in the same direction
+ * again - a known player with two recorded games is provisional *and* has no
+ * number, so they belong with the third group and not the second.
+ *
+ * `field.ratedPlayers` is still the authority on the first group and agrees
+ * with it by construction (the API applies the same test); a test pins that.
  *
  * Deliberately *not* drawn as a segmented meter: in this theme the fills would
  * have to sit above 3:1 on the panel and still be told apart from each other,
- * and the best available pair measures 1.08:1 - two shades nobody could
- * separate. So the page draws the ranking section's one-fill coverage meter
- * for the rated share and prints the counts in words beside it. `percent` is
- * kept for anything that wants the proportion.
+ * and the best available pair measures 1.08:1. `percent` is kept for anything
+ * that wants the proportion.
  */
-export function fieldComposition(field: TournamentField): FieldSegment[] {
-  const total = field.totalPlayers;
+export function fieldComposition(
+  players: { rating?: number | null; provisional?: boolean }[]
+): FieldSegment[] {
+  const total = players.length;
   const share = (count: number) => (total > 0 ? (count / total) * 100 : 0);
-  const unranked = field.provisionalPlayers + field.unknownPlayers;
+
+  let rated = 0;
+  let unsettled = 0;
+  let none = 0;
+  for (const player of players) {
+    const display = ratingDisplay(player);
+    if (display === 'rated') rated += 1;
+    else if (display === 'unsettled') unsettled += 1;
+    else none += 1;
+  }
+
   return [
-    { key: 'rated', label: 'Rated', count: field.ratedPlayers, percent: share(field.ratedPlayers) },
-    { key: 'unranked', label: UNRANKED_LABEL, count: unranked, percent: share(unranked) },
+    { key: 'rated', label: 'Rated', count: rated, percent: share(rated) },
+    // A number, with a record short enough or a margin wide enough that it is
+    // not a position yet. The ladder already shows this state as a muted
+    // rating; this is the word for it.
+    { key: 'unsettled', label: 'Still settling', count: unsettled, percent: share(unsettled) },
+    // No number at all - which is what `Unranked` means in the table, and the
+    // only group that word may be counted over.
+    { key: 'none', label: 'No rating yet', count: none, percent: share(none) },
   ];
+}
+
+/** The hover hint on each legend row, so each one says which state it is. */
+export function fieldSegmentHint(key: FieldSegment['key'], field: TournamentField): string {
+  switch (key) {
+    case 'rated':
+      return (
+        `Settled: ${field.minGamesForRating} or more recorded games with a margin inside ` +
+        `+/-${field.maxUncertaintyForRating}, in a scene of at least ${field.minComponentSize}. ` +
+        `These hold a position on the ladder.`
+      );
+    case 'unsettled':
+      return (
+        `A rating, shown with its margin, that is not a position yet - fewer than ` +
+        `${field.minGamesForRating} recorded games, or a margin wider than ` +
+        `+/-${field.maxUncertaintyForRating}. The table prints their number.`
+      );
+    default:
+      return (
+        `No rating to print: fewer than ${field.minGamesToPublishRating} recorded games, where the ` +
+        `estimate still echoes the starting average rather than describing the player. The table ` +
+        `reads ${UNRANKED_LABEL}.`
+      );
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -353,23 +486,37 @@ export function rosterNote(
 /**
  * The rows a roster table should actually offer columns for.
  *
- * A `participants` roster has no sign-up times and a played event's entries
- * carry no check-in or waitlist state, so offering those columns would be
- * three columns of em-dashes.
+ * A played event's entries carry no waitlist state, so offering the column
+ * would be a column of em-dashes.
+ *
+ * **`checkedIn` and `registeredAt` are no longer offered as columns**, and the
+ * difference between the two absences matters:
+ *
+ *  - **Check-in is not kept anywhere else, and nothing wanted it.** It is a
+ *    door-management state on Riot's side, true of a roster for a few hours
+ *    around one event, and it told a reader of this page nothing about the
+ *    field.
+ *  - **The sign-up time is load-bearing data and is only dropped from this
+ *    view.** `acceptedTermsAt` is what reconstructs an event's whole signup
+ *    curve from a single snapshot, which is the reason the scraper fetches a
+ *    roster once instead of polling - and a *dated* roster exists only on an
+ *    event that has not started yet, so it is unrecoverable afterwards (see
+ *    scraper/CLAUDE.md, "Rosters are a different story, and worse"). So
+ *    nothing in the scraper, the stored fact or the API payload changed:
+ *    `TournamentRosterEntry.registeredAt` still travels, and
+ *    `formatClock` below still formats it for the capture line. This table
+ *    simply stops being the place it is read, because a column of
+ *    minute-precision timestamps is not what anyone opens a roster for.
  */
 export function rosterColumns(roster: TournamentRoster): {
-  registeredAt: boolean;
-  checkIn: boolean;
   waitlist: boolean;
 } {
   return {
-    registeredAt: roster.entries.some((entry) => entry.registeredAt !== null),
-    checkIn: roster.entries.some((entry) => entry.checkedIn !== null),
     waitlist: roster.entries.some((entry) => entry.waitlistPosition !== null),
   };
 }
 
-/** Sign-up time, to the minute. Dates are elsewhere on the page. */
+/** A capture or sign-up time, to the minute. Dates are elsewhere on the page. */
 export function formatClock(iso: string | null | undefined): string {
   if (!iso) return '--';
   const value = new Date(iso);

@@ -652,6 +652,9 @@ describe('the engine\'s verdict decides, not the API\'s own arithmetic', () => {
     componentId: 'c-bay',
     componentSize: 23,
     regionLabel: 'San Francisco Bay Area',
+    // A scene is not the region: the Bay component spans two of them.
+    sceneId: 'sf-berkeley',
+    sceneLabel: 'San Francisco & Berkeley',
     setRatings: [],
     updatedAt: '2026-10-25T06:00:00.000Z',
     ...over,
@@ -826,6 +829,9 @@ describe('the display floor and the rank gate are different thresholds', () => {
     componentId: 'c-bay',
     componentSize: 23,
     regionLabel: 'San Francisco Bay Area',
+    // A scene is not the region: the Bay component spans two of them.
+    sceneId: 'sf-berkeley',
+    sceneLabel: 'San Francisco & Berkeley',
     setRatings: [],
     updatedAt: '2026-10-25T06:00:00.000Z',
     ...over,
@@ -983,6 +989,9 @@ describe('provisionalReason, end to end, for all three states', () => {
     componentId: 'c-bay',
     componentSize: 23,
     regionLabel: 'San Francisco Bay Area',
+    // A scene is not the region: the Bay component spans two of them.
+    sceneId: 'sf-berkeley',
+    sceneLabel: 'San Francisco & Berkeley',
     setRatings: [],
     updatedAt: '2026-10-25T06:00:00.000Z',
   };
@@ -1069,6 +1078,9 @@ describe('the Global scope has positions, with the gate still on each row', () =
     componentId: 'c-bay',
     componentSize: 23,
     regionLabel: 'San Francisco Bay Area',
+    // A scene is not the region: the Bay component spans two of them.
+    sceneId: 'sf-berkeley',
+    sceneLabel: 'San Francisco & Berkeley',
     setRatings: [],
     updatedAt: '2026-10-25T06:00:00.000Z',
     ...over,
