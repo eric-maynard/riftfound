@@ -772,9 +772,44 @@ export const PlayerRatingsQuerySchema = z.object({
 });
 export type PlayerRatingsQuery = z.infer<typeof PlayerRatingsQuerySchema>;
 
+/**
+ * The cap on one display-name search, and it is lower than every other
+ * endpoint's on purpose.
+ *
+ * Search now compares the *whole* corpus instead of the 0.43% a capped Scan
+ * reached, and that is a real change in what the endpoint exposes, so the
+ * guard that was accidentally doing the work has to become a deliberate one.
+ * The guard is this cap plus the **absence of a cursor**: there is no
+ * pagination on this route, so the capped set is everything a caller can get
+ * for a needle, however many times they ask.
+ *
+ * 25 rather than `MAX_PAGE_LIMIT`'s 100 because a person choosing a player
+ * from a list does not scroll 100 names - and because with results now ranked
+ * by match quality (`adapters/playerNameIndex.ts`) the best 25 are a better
+ * answer than the arbitrary 100 the old cap would have allowed. `truncated`
+ * and `matched` travel in the response, so a page says "showing 25 of 112,
+ * keep typing" rather than silently cutting the list.
+ *
+ * Be clear about what this does and does not hold. It is not what keeps the
+ * corpus from being enumerated - `/api/rankings` is cursor-paginated, and
+ * 8,000 rated players' display names and tag lines came back from it in 80
+ * public requests while this change was being measured. The rated half of the
+ * corpus is already a bulk export and this cap was never the thing preventing
+ * it. What the cap does hold is that *this* endpoint stays a lookup: it
+ * answers "which players are called this", for a caller who already has a
+ * name in mind, and it will not walk the corpus for one who does not.
+ */
+export const PLAYER_SEARCH_MAX_RESULTS = 25;
+
 export const PlayerSearchQuerySchema = z.object({
   q: z.string().trim().min(2, 'q must be at least 2 characters').max(64),
-  limit: limitParam('10'),
+  limit: z
+    .string()
+    .transform(Number)
+    .refine((n) => Number.isFinite(n) && n >= 1 && n <= PLAYER_SEARCH_MAX_RESULTS, {
+      message: `limit must be between 1 and ${PLAYER_SEARCH_MAX_RESULTS}`,
+    })
+    .default('10'),
 });
 export type PlayerSearchQuery = z.infer<typeof PlayerSearchQuerySchema>;
 

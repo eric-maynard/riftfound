@@ -370,7 +370,10 @@ export async function runRankingPass(options: RankingPassOptions = {}): Promise<
       `${summary.writes.matchLogEntries} match log entries for ${summary.writes.markers} new events, ` +
       `${summary.writes.rankingRows} ladder rows across ${summary.writes.metas} scopes, ` +
       `${summary.writes.components} components, ${summary.writes.sets} sets, ` +
-      `${summary.writes.venues} venues, ${summary.writes.scenes} scenes ` +
+      `${summary.writes.venues} venues, ${summary.writes.scenes} scenes, ` +
+      // Counts only, as everywhere in this pass: the shard count and the
+      // number of names in the index, never a name.
+      `${summary.writes.searchEntries} searchable names in ${summary.writes.searchShards} shards ` +
       `(pruned ${summary.writes.deletedRows} rows, ${summary.writes.deletedScopes} scopes)`
   );
 

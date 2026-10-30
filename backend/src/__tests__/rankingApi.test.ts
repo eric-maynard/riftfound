@@ -7,7 +7,7 @@ import {
   EMPTY_FIXTURE_DATA,
   LAUNCH_FIXTURE_DATA,
 } from '../adapters/rankingFixtureAdapter.js';
-import { CONFIDENCE } from '../models/ranking.js';
+import { CONFIDENCE, PLAYER_SEARCH_MAX_RESULTS } from '../models/ranking.js';
 import type { PlayerRecord } from '../adapters/rankingStore.js';
 import { startServer, getJson, type TestServer } from './helpers/server.js';
 
@@ -421,12 +421,73 @@ describe('GET /api/players/search', () => {
     expect((await get('/api/players/search?q=a&limit=1000')).status).toBe(400);
   });
 
+  /**
+   * The cap on this route is lower than `MAX_PAGE_LIMIT`, and it has to stay
+   * that way now that search compares the whole corpus rather than the 0.43%
+   * of players a capped Scan reached. 100 results per needle would be the
+   * beginnings of the bulk export this API does not offer; 25 ranked matches
+   * is a lookup. The cap plus the *absence of a cursor* is the guard - see
+   * `PLAYER_SEARCH_MAX_RESULTS`.
+   */
+  it('caps the limit at the route-specific maximum, not the general page limit', async () => {
+    expect((await get(`/api/players/search?q=kira&limit=${PLAYER_SEARCH_MAX_RESULTS}`)).status).toBe(200);
+    expect((await get(`/api/players/search?q=kira&limit=${PLAYER_SEARCH_MAX_RESULTS + 1}`)).status).toBe(400);
+  });
+
+  /**
+   * The field that makes an empty list readable.
+   *
+   * Without it, "no player by that name" and "the index that would know is not
+   * published yet" were the same response, and that is how the ladder page
+   * printed the first sentence over `illusionz` and `tpcstld` - two rated
+   * players it was listing on the board beside the search box. Same contract
+   * as `/api/rankings/map`'s `coverage.catalogueUnavailable`.
+   */
+  it('publishes what the search compared, so an empty list can be read', async () => {
+    const { body } = await get('/api/players/search?q=zzzznobody');
+    expect(body.data).toEqual([]);
+    expect(body.coverage).toMatchObject({ complete: true, matched: 0, truncated: false });
+    expect(body.coverage.searchedPlayers).toBeGreaterThan(0);
+  });
+
+  /**
+   * A cut list has to say it was cut, and there is no cursor to find the rest
+   * with. `matched` is what lets the page print "showing 1 of 15, keep typing"
+   * rather than presenting an arbitrary slice as the answer - and it is also
+   * why 25 is enough of a cap: the slice is the *best* 25 now, ranked, instead
+   * of whichever ones a scan reached first.
+   */
+  it('reports a truncated list as truncated, with the total', async () => {
+    const { body } = await get('/api/players/search?q=NA1&limit=1');
+    expect(body.data).toHaveLength(1);
+    expect(body.coverage.truncated).toBe(true);
+    expect(body.coverage.matched).toBeGreaterThan(1);
+    expect(body.coverage.maxResults).toBe(1);
+    // Nothing invites a second page.
+    expect(body.pagination).toBeUndefined();
+  });
+
   it('returns nothing for a term that matches nobody', async () => {
     expect((await get('/api/players/search?q=zzzznobody')).body.data).toEqual([]);
   });
 
   it('is not shadowed by the :playerId route', async () => {
     expect((await get('/api/players/search?q=kira')).body.data).toBeInstanceOf(Array);
+  });
+
+  /**
+   * Both headers are part of this route's contract and neither may be dropped
+   * while fixing what it serves: the edge TTL is what keeps a keystroke from
+   * becoming a Lambda invocation plus a round of DynamoDB reads, and the
+   * robots header is what keeps a public directory of player names from being
+   * built out of an endpoint that now sees every player.
+   */
+  it('stays edge-cached and noindex', async () => {
+    const { headers } = await get('/api/players/search?q=kira');
+    expect(headers.get('cache-control')).toBe(
+      'public, max-age=300, s-maxage=3600, stale-while-revalidate=86400'
+    );
+    expect(headers.get('x-robots-tag')).toBe('noindex, nofollow');
   });
 });
 

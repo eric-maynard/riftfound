@@ -20,6 +20,13 @@ router.use(cacheRanking);
  * its own event pages, but there is no reason for a search engine to build a
  * directory of them out of this API. Every player route is marked noindex and
  * there is no endpoint that lists players in bulk.
+ *
+ * `/search` is the route that has to keep earning that last clause now that it
+ * searches the whole corpus rather than 0.43% of it. It does, and the guards
+ * are structural rather than incidental: a minimum of two characters, a cap of
+ * `PLAYER_SEARCH_MAX_RESULTS`, and **no cursor** - the capped set is all a
+ * caller gets for a needle. See the cap's own comment in `models/ranking.ts`
+ * for what it holds and, honestly, what it does not.
  */
 router.use((_req: Request, res: Response, next: NextFunction) => {
   res.setHeader('X-Robots-Tag', 'noindex, nofollow');
@@ -40,8 +47,15 @@ router.get('/search', async (req: Request, res: Response, next: NextFunction) =>
       return;
     }
 
-    const hits = await rankingService.searchPlayers(queryResult.data.q, queryResult.data.limit);
-    res.json({ data: hits });
+    // `coverage` rides alongside the hits because an empty list has two very
+    // different meanings - "no player by that name" and "the index this API
+    // searches is not published yet" - and the page renders a different
+    // sentence for each. Same contract as `/api/rankings/map`'s coverage.
+    const { hits, coverage } = await rankingService.searchPlayers(
+      queryResult.data.q,
+      queryResult.data.limit
+    );
+    res.json({ data: hits, coverage });
   } catch (error) {
     next(error);
   }

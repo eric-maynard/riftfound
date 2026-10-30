@@ -3,6 +3,7 @@ import type {
   GameOutcome,
   LeaderboardEntry,
   PlayerMatch,
+  PlayerSearchCoverage,
   ProvisionalReason,
   RatingPoint,
   SetInfo,
@@ -484,6 +485,65 @@ export const GLOBAL_POSITION_HINT =
  * reports, and the reason is the hover hint. No paragraph.
  */
 export const GLOBAL_POSITION_NOTICE = 'Global places every scene on one ladder — no recorded game crosses a scene.';
+
+/**
+ * What to say under the player search box, given what the API says it
+ * compared.
+ *
+ * Three answers, and they have to be three, because the one sentence this box
+ * used to have was wrong for two of them. "No player by that name." was
+ * printed for `illusionz` and `tpcstld` - both rated, both on the ladder this
+ * very page was drawing - because search was a capped table scan over 0.43% of
+ * players and an empty list said nothing about its own reach. The API sends
+ * `coverage` now, so the page stops guessing:
+ *
+ * | state | line |
+ * |---|---|
+ * | complete, no hits | the plain "no player by that name" |
+ * | **incomplete** | says the search was partial, and does *not* claim nobody matched |
+ * | capped | says how many matched, so the cut list reads as a cut list |
+ *
+ * `null` means there is nothing to add: a complete search with hits that all
+ * fit inside the cap is the ordinary case and needs no caption.
+ *
+ * Absent coverage - an older API deploy - is read as complete, so this cannot
+ * put a "search is limited" caption under a working search.
+ */
+export interface SearchCaption {
+  text: string;
+  /** True when the caption is explaining a *limitation*, not a count. */
+  partial: boolean;
+}
+
+export function searchCaption(
+  coverage: PlayerSearchCoverage | undefined,
+  hitCount: number
+): SearchCaption | null {
+  const complete = coverage?.complete ?? true;
+
+  if (!complete) {
+    // Deliberately does not say "no player by that name" even when there are
+    // no hits: we do not know that, and claiming it is the bug.
+    return {
+      text:
+        hitCount > 0
+          ? 'Only some players could be searched — there may be more matches.'
+          : 'Only some players could be searched, so this is not a complete answer. Try again shortly.',
+      partial: true,
+    };
+  }
+
+  if (hitCount === 0) return { text: 'No player by that name.', partial: false };
+
+  if (coverage?.truncated) {
+    return {
+      text: `Showing the closest ${hitCount} of ${coverage.matched.toLocaleString()} matches — keep typing to narrow it.`,
+      partial: false,
+    };
+  }
+
+  return null;
+}
 
 /**
  * Why a settled rating still has no position: its scene is too small for an

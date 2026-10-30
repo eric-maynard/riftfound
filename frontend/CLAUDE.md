@@ -416,6 +416,32 @@ round trip.
   a venues panel drops in without disturbing the layout. The map of *scenes*
   shipped first (`/rankings/map`, below), because the engine publishes a scene
   catalogue today and has written **zero** `VENUE#` items.
+- **"Find a player" no longer claims nobody matched when it does not know.**
+  The box used to print one sentence for every empty list - "No player by
+  that name." - and the API it was asking is what made that a lie: search was a
+  capped table scan over **0.43%** of players, so the page printed that
+  sentence for `illusionz` and `tpcstld`, both of whom were rated and on the
+  ladder rendered directly beside it. The API publishes `coverage` now (see
+  backend/CLAUDE.md, "Searching for a player") and `searchCaption` turns it
+  into three answers, which is the right number:
+
+  | state | line |
+  |---|---|
+  | complete, no hits | `No player by that name.` |
+  | **incomplete** | says the search was partial, and never that nobody matched |
+  | capped | `Showing the closest 25 of 112 — keep typing to narrow it.` |
+
+  An ordinary complete answer gets no caption at all. A **failed request** is
+  reported as incomplete rather than empty, for the same reason. Absent
+  coverage - an older API deploy - reads as complete, so this cannot put a
+  "search is limited" caption under a working search; same deploy-order
+  discipline as `profile.known`. The partial caption is separated by a hairline
+  and **not** by a colour, following the rule the scene list's `no pin` flag
+  and the result pips follow - the words carry the fact, so the ink keeps the
+  already-measured `--color-text-muted` on `--panel` and nothing needed
+  re-measuring. The capped list is also now ranked server-side (exact name,
+  then prefix, then word prefix, then substring, then tag line), so the 25 are
+  the closest rather than whichever the storage reached first.
 - `RATING_ANCHOR` (1200) mirrors the engine's `ELO_ORIGIN`. Nothing else in the
   frontend hardcodes a rating value; the chart's axis is fitted to the data.
 

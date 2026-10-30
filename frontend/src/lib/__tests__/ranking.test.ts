@@ -48,6 +48,7 @@ import {
   SET_PILL_LIMIT,
   sceneOptions,
   sceneCatalogueOptions,
+  searchCaption,
   sceneCountSummary,
   scenePinAbsence,
   selectableSets,
@@ -1086,5 +1087,63 @@ describe('rating movement', () => {
   it('falls back to the timestamp when a log entry carries no event date', () => {
     const undated = { ...log('2026-10-18', 'a', 'win'), eventDate: null };
     expect(matchDays([undated])[0].date).toBe('2026-10-18');
+  });
+});
+
+/**
+ * The player search box used to print one sentence - "No player by that
+ * name." - for every empty list, and that sentence was wrong twice over:
+ * search was a capped table scan covering 0.43% of players, so the box said it
+ * about `illusionz` and `tpcstld`, both of whom were on the ladder rendered
+ * directly beside it. The API publishes `coverage` now, and these are the
+ * three answers the page is allowed to give.
+ */
+describe('searchCaption', () => {
+  const complete = (matched: number, truncated = false) => ({
+    complete: true,
+    searchedPlayers: 40_979,
+    matched,
+    truncated,
+    maxResults: 25,
+  });
+
+  it('says nobody matched only when the whole corpus was searched', () => {
+    expect(searchCaption(complete(0), 0)).toEqual({
+      text: 'No player by that name.',
+      partial: false,
+    });
+  });
+
+  it('never claims nobody matched when the search was incomplete', () => {
+    // The bug, as a test: with an incomplete search an empty list says nothing
+    // about whether a player exists, so the caption must not say it does.
+    const caption = searchCaption({ ...complete(0), complete: false }, 0);
+    expect(caption?.partial).toBe(true);
+    expect(caption?.text).not.toContain('No player by that name');
+  });
+
+  it('flags an incomplete search even when it did find somebody', () => {
+    const caption = searchCaption({ ...complete(1), complete: false }, 1);
+    expect(caption?.partial).toBe(true);
+    expect(caption?.text).toContain('more matches');
+  });
+
+  it('says how many matched when the list was cut', () => {
+    const caption = searchCaption(complete(112, true), 25);
+    expect(caption?.partial).toBe(false);
+    expect(caption?.text).toContain('25');
+    expect(caption?.text).toContain('112');
+  });
+
+  it('adds nothing to an ordinary complete answer', () => {
+    expect(searchCaption(complete(3), 3)).toBeNull();
+  });
+
+  it('reads a missing coverage block as complete, so an older API still works', () => {
+    // Deploy order: the frontend can ship before the API sends `coverage`, and
+    // a "search is limited" caption under a working search would be worse than
+    // no caption at all.
+    expect(searchCaption(undefined, 2)).toBeNull();
+    expect(searchCaption(undefined, 0)?.text).toBe('No player by that name.');
   });
 });

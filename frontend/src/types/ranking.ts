@@ -215,8 +215,31 @@ export interface PlayerSearchHit {
   provisional: boolean;
 }
 
+/**
+ * What a search actually compared, so the page can tell "nobody by that name"
+ * apart from "the index that would know is not published yet".
+ *
+ * The distinction is not hypothetical. Search was a capped table scan that
+ * examined 0.43% of players, so this page printed "No player by that name."
+ * over players it was simultaneously *listing on the ladder* - `illusionz` and
+ * `tpcstld` both returned nothing while sitting on the live board. An empty
+ * list had two meanings and the response carried no field that separated them.
+ *
+ * Optional because an older API deploy sends no `coverage` at all, and a
+ * missing one is read as "complete" - the same deploy-order discipline as
+ * `profile.known`.
+ */
+export interface PlayerSearchCoverage {
+  complete: boolean;
+  searchedPlayers: number | null;
+  matched: number;
+  truncated: boolean;
+  maxResults: number;
+}
+
 export interface PlayerSearchResponse {
   data: PlayerSearchHit[];
+  coverage?: PlayerSearchCoverage;
 }
 
 // --- The scene map ---------------------------------------------------------

@@ -6,6 +6,7 @@ import SetScope from '../components/SetScope';
 import type {
   ComponentSummary,
   LeaderboardEntry,
+  PlayerSearchCoverage,
   PlayerSearchHit,
   RankingCoverage,
   SetInfo,
@@ -29,6 +30,7 @@ import {
   ratingExplanation,
   sceneSizeHint,
   sceneTooSmallExplanation,
+  searchCaption,
   setLabel,
   splitByRating,
   UNRANKED_LABEL,
@@ -606,12 +608,14 @@ function PlayerSearch() {
   const { search } = useLocation();
   const [query, setQuery] = useState('');
   const [hits, setHits] = useState<PlayerSearchHit[]>([]);
+  const [coverage, setCoverage] = useState<PlayerSearchCoverage | undefined>(undefined);
   const [searching, setSearching] = useState(false);
 
   useEffect(() => {
     const term = query.trim();
     if (term.length < 2) {
       setHits([]);
+      setCoverage(undefined);
       return;
     }
 
@@ -620,10 +624,16 @@ function PlayerSearch() {
     const timer = window.setTimeout(() => {
       searchPlayers(term)
         .then((response) => {
-          if (!cancelled) setHits(response.data);
+          if (cancelled) return;
+          setHits(response.data);
+          setCoverage(response.coverage);
         })
         .catch(() => {
-          if (!cancelled) setHits([]);
+          if (cancelled) return;
+          setHits([]);
+          // A failed request is not a complete search, and must not be
+          // reported as "no player by that name".
+          setCoverage({ complete: false, searchedPlayers: null, matched: 0, truncated: false, maxResults: 0 });
         })
         .finally(() => {
           if (!cancelled) setSearching(false);
@@ -635,6 +645,8 @@ function PlayerSearch() {
       window.clearTimeout(timer);
     };
   }, [query]);
+
+  const caption = searchCaption(coverage, hits.length);
 
   return (
     <div className="filter-group player-search">
@@ -650,7 +662,6 @@ function PlayerSearch() {
       {query.trim().length >= 2 && (
         <div className="search-results" role="listbox" aria-label="Player search results">
           {searching && hits.length === 0 && <div className="search-empty">Searching...</div>}
-          {!searching && hits.length === 0 && <div className="search-empty">No player by that name.</div>}
           {hits.map((hit) => (
             <Link
               key={hit.playerId}
@@ -671,6 +682,15 @@ function PlayerSearch() {
               </span>
             </Link>
           ))}
+          {/* The caption carries the three answers an empty or cut list needs
+              to be read honestly - see `searchCaption`. It replaces a flat
+              "No player by that name.", which this box printed over players
+              the ladder beside it was listing. */}
+          {!searching && caption && (
+            <div className={caption.partial ? 'search-empty search-partial' : 'search-empty'} role="status">
+              {caption.text}
+            </div>
+          )}
         </div>
       )}
     </div>

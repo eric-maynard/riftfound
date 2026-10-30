@@ -214,6 +214,30 @@ export function sceneProfileKeys(sceneId: string) {
   };
 }
 
+/**
+ * The display-name index the refit publishes.
+ *
+ * `PLAYER_SEARCH` / `SHARD#<nnn>`: the whole display-name corpus, gzipped,
+ * split into items that fit DynamoDB's 400KB limit. This is the one access
+ * pattern the output contract had no key for, and the shards are it - reading
+ * the whole index is a single Query on a single base-table partition, with no
+ * GSI and no scan.
+ *
+ * The shards carry no GSI1 keys on purpose. GSI1 exists so a *catalogue* whose
+ * items are addressed individually can also be listed; these items are only
+ * ever read as a set, and they already share a partition, so an index entry
+ * would duplicate ~1.2MB of payload to answer a Query that is already one
+ * Query.
+ *
+ * `PLAYER_SEARCH_INDEX_FORMAT` has to match the scraper's
+ * `ranking/searchIndex.ts` exactly, so like the key spellings above it is
+ * named here rather than inlined at the call site - and the reader refuses a
+ * format it does not recognise rather than guessing at the bytes.
+ */
+export const PLAYER_SEARCH_PK = 'PLAYER_SEARCH';
+export const PLAYER_SEARCH_SK_PREFIX = 'SHARD#';
+export const PLAYER_SEARCH_INDEX_FORMAT = 'tsv-1';
+
 // --- Tournament facts (written by the scraper's playriftboundResults pass) ---
 // RESULTS#<externalId> / RESULTS#<externalId>  - standings, pairings, per-game
 // ROSTER#<externalId>  / ROSTER#<externalId>   - dated registrations

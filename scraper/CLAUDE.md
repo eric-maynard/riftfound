@@ -712,11 +712,34 @@ event, with coordinates and dates.
   rather than by accident.
 - **Identity is Riot's UUID.** Display names and tag lines are mutable
   presentation data, carried for rendering and never keyed on, so a player who
-  renames themselves is renamed everywhere on the next refit.
+  renames themselves is renamed everywhere on the next refit. That rule
+  survived the display-name index: the index is a *payload* keyed on a shard
+  number, not a name-keyed index, so no stored key anywhere holds a name.
 - **Both are sanitised** through `sanitize.ts` at the converter *and* at the
   `saveRankingSnapshot` boundary, like every other free-text field.
+- **The name index is a derived list of every player, and it stays inside the
+  backend.** `PLAYER_SEARCH` holds `{playerId, displayName, tagLine}` for all
+  40,979 of them, which is the most concentrated personal-data item this pass
+  writes - so where it is allowed to go is a decision rather than a detail.
+  It is read by the API in the Lambda and is **never served**. The alternative
+  considered was publishing it to S3 behind the existing CloudFront and
+  filtering client-side, which would make search instant and free per query;
+  it was rejected on this section's own terms. "Their results are on Riot's
+  site" and "here is a file of every Riftbound player's name" are different
+  exposures even though every name in it is already public, and a 1.2MB
+  gzipped roster handed to every reader of the ladder page is the aggregation
+  step this document says is a change in kind. (It is also 1.2MB of page
+  weight per reader, measured at ~30 compressed bytes a name, against 8 items
+  the Lambda reads once - so the privacy answer and the cheap answer agree
+  here.) What the index does change is that search now compares every player
+  instead of 0.43% of them, which genuinely makes the corpus easier to
+  enumerate through that endpoint; the guards that answer for it are in
+  backend/CLAUDE.md, "Searching for a player", including the measurement that
+  `/api/rankings` was already a bulk export of the rated half.
 - **Nothing player-identifying is logged.** The pass logs counts only - no
-  player id, no display name, no event name, not even in an error path.
+  player id, no display name, no event name, not even in an error path. The
+  refit's new line is the number of searchable names and the shard count,
+  never a name.
 - **Retention is open-ended here too, and more consequentially.** The facts are
   an archive; the ratings are a *published* archive. There is currently no
   mechanism to age a rating out, to drop a player who stopped playing, or to
@@ -2005,6 +2028,7 @@ backend API and the ranking UI; additions are safe, renames are not.**
 | set profile | `SET#<id>` | `PROFILE` |
 | **venue profile** | **`VENUE#<shopExternalId>`** | **`PROFILE`** |
 | **scene profile** | **`SCENE#<sceneId>`** | **`PROFILE`** |
+| **display-name index** | **`PLAYER_SEARCH`** | **`SHARD#<nnn>`** |
 | scope directory | `RANKING_INDEX` | `RANKING_INDEX` |
 | match-log marker | `RANKING_LOG#<eventId>` | `RANKING_LOG#<eventId>` |
 | scene assignment (not derived) | `SCENE_ASSIGNMENT` | `SCENE_ASSIGNMENT` |
@@ -2045,19 +2069,119 @@ with the API rather than by writing them.
   likewise being rebuilt by reading the global board and unioning profiles.
   Nothing needs migrating: a refit rewrites the whole item, so the keys land on
   the next one. `rankingCatalogue.test.ts` pins both queries.
-- **No *other* GSI entries are added.** The per-player and per-board items would
-  multiply GSI1's size for no read that needs it. Display-name search is a capped
-  Scan on the API side until a GSI can be batched with other infrastructure work
-  - so nothing here is designed assuming search is cheap.
+- **`PLAYER_SEARCH` / `SHARD#<nnn>` is the display-name index**, and it is the
+  item that closes the one hole in everything above: name search was the single
+  access pattern this contract gave a reader no key to arrive on. See "The
+  display-name index" below for the format, the measurements and why it is not
+  a GSI.
+- **No *other* GSI entries are added, the search shards included.** The
+  per-player and per-board items would multiply GSI1's size for no read that
+  needs it, and the shards already share a partition of their own, so an index
+  entry would duplicate ~1.2MB of payload to answer a Query that is already one
+  Query.
 - **The per-player match log is the one place duplicate writes are justified**:
   two items per match, one from each side, denormalising the opponent's display
   name, the per-game outcomes, the event, the venue and the set. The per-player
   page needs "every game and against whom" without replaying history.
 
+### The display-name index
+
+`src/ranking/searchIndex.ts`, published as `PLAYER_SEARCH` / `SHARD#<nnn>`.
+
+Everything else in the contract above gives a reader a key to arrive on. **Name
+search did not**, so the API served it as a capped Scan - and `Limit` on a Scan
+caps the items *examined before the filter*, not the matches. Measured against
+production on 2026-10-29:
+
+| | |
+|---|---|
+| items in the table | **441,214** |
+| `PROFILE` rows | **40,979** |
+| items a query examined (4 pages x 500) | 2,000 |
+| `PROFILE` rows among those 2,000 | **178** |
+| **share of players a query searched** | **0.43%** |
+| read units it spent doing it | **203.5** |
+
+The failure that mattered was not slowness, it was that search became
+**anti-correlated with relevance**. `sealsmasher` and `Dromex13` came back
+because they sit at the front of scan order; `illusionz#1337` and `tpcstld#NA1`
+came back empty - and both of those are rated, on the public leaderboard, and
+served in full by `/api/players/:id`. A player the ladder lists and the search
+cannot find is the headline, and no page count fixes it: covering 40,979
+profiles that way is a full-table Scan per keystroke.
+
+**What is in it.** One tab-separated line per player - `playerId`,
+`displayName`, `tagLine` - gzipped, split across shards. Nothing else: the
+index answers *which ids match this text*, and the API then fetches those ids'
+profiles with the `getPlayers` BatchGet it already has. So the published
+artifact carries the minimum that answers the question, and the search hit's
+rating still comes off the profile.
+
+**Why one partition and not a GSI.** A GSI keyed on the name is the obvious
+answer and it was measured rather than assumed, because it loses two things:
+
+- **Substring search.** A GSI answers `begins_with` and nothing else. Over
+  8,000 real display names pulled from the live ladder, of every 2-to-4
+  character substring that actually occurs in a name a whole-name prefix index
+  finds **14.8%** and a word-prefix index **17.3%** - because this corpus is
+  overwhelmingly single-token handles (`SealSmasher`, `illusionz`), so
+  splitting on whitespace buys 2.5 percentage points. Prefix search would have
+  fixed all four reported failures, which are exact names, and would have
+  quietly stopped answering `smasher`.
+- **The rule that a name is never a key.** Identity is Riot's UUID; display
+  names and tag lines are mutable presentation data carried for rendering. A
+  name-keyed GSI would be maintained correctly by DynamoDB, but the *contract*
+  would then be that a display name is addressable. Here a name is a payload
+  keyed on a shard number, so a renamed player is renamed by the next refit
+  rewriting a shard body and no stored key ever held a name.
+
+The cost side also favours the shards. A GSI over 40,979 profiles of ~1,285
+bytes each (measured) projecting ALL is **~53MB of index storage and ~82,000
+extra write units per refit**; KEYS_ONLY is ~41,000 extra write units. The
+shards are **8 items**, ~1.2MB of gzip in total, and need no Terraform - so no
+plan, no apply, and no window where the code is deployed and the index it wants
+does not exist.
+
+**The shard budget is on the uncompressed payload**, and that is the one design
+decision here worth defending. DynamoDB's ceiling is 400KB per item, and gzip
+never expands data of this shape, so an uncompressed budget under 400KB is a
+*proof* that the item fits - whatever any particular set of names compresses
+to, including a future corpus of mostly-unique non-Latin handles. The
+alternative is fill, compress, measure, re-split, and that loop fails by
+overflowing a `BatchWriteItem`, which shows up as a **partially** populated
+index: a search that works for most names and silently cannot see the rest.
+That is precisely the bug being fixed, so the fix does not get to reintroduce
+it in a smaller form. At 300,000 bytes a shard holds ~5,800 players as ~175KB
+of stored gzip, and 40,979 players is 8 shards.
+
+**Two things it is strict about**, both pinned in
+`rankingSearchIndex.test.ts`. The shard carries `format: 'tsv-1'` and the
+reader is required to refuse a format it does not know rather than guess at the
+bytes - the writer is here and the reader is in another package, so a format
+change that half-parsed would produce an index that *works* and is *wrong*. And
+a shard count that shrinks **prunes**: the reader concatenates every shard it
+finds, so a leftover shard would keep serving names whose profiles this refit
+decided not to write. The count is tracked in the scope directory
+(`searchShards`) with the component, set, venue and scene ids.
+
+**It is not published to readers.** The shards are read by the API, inside the
+Lambda, and the endpoint on top of them keeps the shape it has always had:
+minimum two characters, a capped result set, no cursor, `noindex`. Shipping the
+list to the browser would make search free per query and would also hand every
+reader every player's name in one request - see
+backend/CLAUDE.md, "Searching for a player", for that decision in full.
+
+**Nothing is searchable until the next refit.** The items are written by
+`saveRankingSnapshot` like everything else, so production acquires them when a
+refit next runs with this code deployed (`RANKING_REFIT_INTERVAL_HOURS`, 24).
+Until then the API falls back to the bounded scan and *reports* that it did,
+which is the same discipline as every other null here.
+
 SQLite mirrors all of this (`player_profiles`, `player_rating_history`,
 `player_matches`, `ranking_rows`, `ranking_meta`, `ranking_components`,
-`ranking_sets`) so `./dev.sh` can run a real refit and the storage tests run
-against a real throwaway database rather than a mock. PostgreSQL is left out
+`ranking_sets`, `ranking_search_index`) so `./dev.sh` can run a real refit and
+the storage tests run against a real throwaway database rather than a mock.
+PostgreSQL is left out
 rather than half-supported, exactly as `supportsEventFacts()` does -
 `supportsRankingWrites()` is the same rule.
 
@@ -2348,6 +2472,14 @@ matches is ~50MB that way.
 - **A cross-component rank being read as a placement.** Hence
   `positionsSuppressed` and `giantComponentShare` on every board. If the giant
   share ever falls, the global board has to stop being the default.
+- **A half-written name index.** The reader concatenates every shard it finds,
+  so a dropped shard is not a visibly broken search - it is a search that works
+  for most names and silently cannot see a block of players, which is the
+  original bug wearing a smaller hat. Two things stop it and both have to stay:
+  the shard budget is measured **uncompressed**, so an item cannot overflow
+  whatever the names compress to, and a shrinking corpus prunes rather than
+  leaving high-numbered shards behind. Check `searchEntries` in the refit's log
+  line against the profile count if search ever looks patchy.
 - **Write volume.** A refit rewrites every profile and every rating point. At
   current regional scale that is a few thousand items; extrapolated nationally
   with the full backfill it is a few hundred thousand per refit. The 24-hour
@@ -2705,6 +2837,14 @@ properties the design rests on rather than its surface:
   half a coordinate pair, and an antipodal cancellation. The component walk is
   exercised too, because the venue tallies the centroid is computed from are a
   by-product of that loop.
+- `rankingSearchIndex.test.ts` - the display-name index: **every** profile
+  reaches it (a player written last round-trips through storage, which is the
+  position `tpcstld` was in when the capped Scan could not see them), a shard
+  provably fits the 400KB item limit even when the names are incompressible,
+  the shard number is zero-padded so an SK-ascending Query is shard order, a
+  tab in a name is stripped rather than shifting every field on its line, the
+  same corpus in a different order produces byte-identical shards, and a
+  shrinking corpus **prunes** the shards it no longer fills.
 - `rankingSets.test.ts` - set partitioning, including that an unpublished
   boundary stays unpublished and that filling one in splits the era.
 - `rankingStore.test.ts` - the storage shape against a real throwaway SQLite
