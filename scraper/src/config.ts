@@ -43,6 +43,11 @@ const envSchema = z.object({
   PLAYRIFTBOUND_RESULTS_ENABLED: z.string().transform(v => v !== 'false').default('true'),
   // Event pages fetched per run; the rest roll over to the next run
   PLAYRIFTBOUND_RESULTS_MAX_EVENTS_PER_RUN: z.string().transform(Number).default('250'),
+  // Share of a run's pages roster work may take. Roster work is the urgent half
+  // and still goes first, but unbounded priority starved the results backfill
+  // on every production run - see ROSTER_BUDGET_SHARE in
+  // sources/playriftboundResults.ts for the measurements behind 0.5.
+  PLAYRIFTBOUND_RESULTS_ROSTER_SHARE: z.string().transform(Number).default('0.5'),
   // How far back to look for finished events still awaiting a results capture.
   // Bounded above by deleteOldEvents(60) - a capture needs an event row as its
   // candidate - and below by when `prb-` rows start existing (2026-10-01).

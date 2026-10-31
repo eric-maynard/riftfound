@@ -155,6 +155,63 @@ export const RESULTS_SETTLE_MS = 6 * 60 * 60 * 1000;
 export const RESULTS_RECHECK_AFTER_MS = 24 * 60 * 60 * 1000;
 
 /**
+ * The share of a run's page budget that roster work may take, at most.
+ *
+ * Roster work is urgent and results work is not (see `selectDueEventFacts`), so
+ * roster work goes first. It used to go first *without a bound*, and that let
+ * it take the whole run - which it did, on every run, and starved the results
+ * backfill to a third of its nominal rate.
+ *
+ * The mechanism, measured on production over 31 consecutive runs
+ * (2026-10-29..31) and visible in the pass's own log line:
+ *
+ * - **A roster fetch that finds no registrants records nothing.**
+ *   `normalizeRosterFromRegistrants` returns null for an empty registrant list,
+ *   so `hasRoster` stays false and the event is still roster-due on the next
+ *   run - every two hours, for the whole 24h of `ROSTER_LEAD_MS`, up to 12
+ *   times, writing nothing each time.
+ * - **Most events in the window are in that state.** Of the 696 candidate rows
+ *   starting on 2026-11-01, **445 (64%) had no roster row** while the window
+ *   was open, and every roster that did exist was non-empty - which is the
+ *   proof, since an empty one is never written.
+ * - **So roster work does not drain.** Every run read `500 of ~30,000 due`
+ *   (295-467 rosters, 33-255 results), fetched 489 pages, and wrote only
+ *   109-222 rosters. Means over the 31 runs: 352.5 roster slots, 147.5
+ *   results slots - exactly the 500 cap - and 140.8 rosters written. So
+ *   **~212 of 500 slots per run went to a fetch that wrote nothing**, ~2,540 a
+ *   day of a 6,000/day budget.
+ * - **Results got the remainder**: a mean of **147.5 slots per run** across
+ *   those 31 runs, ~1,770/day against ~19,100 events awaiting a capture and
+ *   ~1,000 newly finishing each day - a net drain of ~770/day. The capture
+ *   frontier accordingly sat at event date **2026-10-17** on 2026-10-31, with
+ *   2026-10-18 onward holding **8** captures across 15,626 candidate rows.
+ *
+ * Capping roster work at half the budget costs nothing measurable and roughly
+ * **1.7x**es the results drain (147.5 -> 250 slots/run, ~3,000/day, which
+ * clears the backlog in ~10 days rather than ~25), because
+ * 250 slots/run is 3,000 roster fetches a day against a measured **~1,690
+ * rosters actually written** per day (140.8 per run x 12). The cap binds on the
+ * futile re-fetches, not on the writes.
+ *
+ * It is also a *better* allocation for rosters, not merely a cheaper one.
+ * Roster work is sorted by start time, so the 250 served are the soonest to
+ * begin - the events whose window is actually closing and whose page is most
+ * likely to have registrants on it. An event 23h out is both the least urgent
+ * and the most likely to return nothing.
+ *
+ * What this does **not** do is stop the futile fetches; it only stops them
+ * monopolising the run. Fixing them needs the pass to remember that it looked
+ * and found nothing, which is a stored fact it does not currently have - the
+ * natural shape being `attempts`/`lastCheckedAt` on an empty roster row, read
+ * back by the candidate loader's existing projection at no extra cost, plus a
+ * `saveEventRoster` that may replace an empty roster and never a populated one.
+ * That is the next step here, and it is deliberately not bundled with this one:
+ * a roster is the unrecoverable fact in this pipeline, so a change to what may
+ * overwrite one deserves its own measurement.
+ */
+export const ROSTER_BUDGET_SHARE = 0.5;
+
+/**
  * Total successful results fetches allowed per event: the first capture plus one
  * re-check. After that the event is done whatever state it is in, which is what
  * keeps this pass cheap.
@@ -925,6 +982,8 @@ export interface DueSelectionOptions {
   now?: Date;
   /** Hard cap for one run; the remainder rolls over to the next. */
   max?: number;
+  /** Fraction of `max` roster work may take at most (see ROSTER_BUDGET_SHARE). */
+  rosterShare?: number;
   rosterLeadMs?: number;
   settleMs?: number;
   recheckAfterMs?: number;
@@ -940,6 +999,14 @@ export interface DueSelectionOptions {
  * is queued oldest-first: the longer an event has been over, the more likely its
  * organizer has finished closing it out.
  *
+ * Roster work's priority is bounded rather than absolute: it may take at most
+ * `rosterShare` of the budget while there is any results work waiting. See
+ * `ROSTER_BUDGET_SHARE` for why - unbounded priority starved the results
+ * backfill on every production run, because an event whose page has no
+ * registrants records nothing and stays roster-due until it starts. Whatever
+ * roster work does not use falls through to results work and vice versa, so a
+ * run is never left short of a page to fetch.
+ *
  * Anything already captured is never fetched again, which is what keeps the pass
  * at two requests per event for its whole life.
  */
@@ -947,12 +1014,46 @@ export function selectDueEventFacts(
   candidates: EventFactCandidate[],
   options: DueSelectionOptions = {}
 ): FactWorkItem[] {
+  const { rosterDue, resultsDue } = partitionDueEventFacts(candidates, options);
+  const max = options.max ?? DEFAULT_MAX_EVENTS_PER_RUN;
+
+  // Roster work keeps the head of the queue, but only up to its share of the
+  // budget, and only while results work is actually waiting for the rest.
+  const share = options.rosterShare ?? ROSTER_BUDGET_SHARE;
+  const rosterLimit =
+    max > 0 && resultsDue.length > 0
+      ? Math.max(0, Math.floor(max * Math.min(Math.max(share, 0), 1)))
+      : rosterDue.length;
+
+  const work: FactWorkItem[] = [
+    ...rosterDue.slice(0, rosterLimit).map(candidate => ({ candidate, kind: 'roster' as const })),
+    ...resultsDue.map(candidate => ({ candidate, kind: 'results' as const })),
+    // Roster work the share held back, behind the results it was held back for,
+    // so a run with little results work still spends its budget on rosters.
+    ...rosterDue.slice(rosterLimit).map(candidate => ({ candidate, kind: 'roster' as const })),
+  ];
+  return max > 0 ? work.slice(0, max) : work;
+}
+
+/**
+ * Everything that is due, in priority order, with **no budget applied**.
+ *
+ * Separate from `selectDueEventFacts` so the pass can report the size of the
+ * queue as well as the slice of it this run will fetch. That distinction is not
+ * cosmetic: the log line used to read `500 of 30,631 due`, where 500 was the
+ * *capped* number and the real backlog of ~19,100 results never appeared
+ * anywhere. The number that would have shown the starvation described under
+ * `ROSTER_BUDGET_SHARE` was the one nothing printed.
+ */
+export function partitionDueEventFacts(
+  candidates: EventFactCandidate[],
+  options: DueSelectionOptions = {}
+): { rosterDue: EventFactCandidate[]; resultsDue: EventFactCandidate[] } {
   const now = (options.now ?? new Date()).getTime();
   const rosterLeadMs = options.rosterLeadMs ?? ROSTER_LEAD_MS;
   const settleMs = options.settleMs ?? RESULTS_SETTLE_MS;
   const recheckAfterMs = options.recheckAfterMs ?? RESULTS_RECHECK_AFTER_MS;
   const maxAttempts = options.maxAttempts ?? MAX_ATTEMPTS;
-  const max = options.max ?? DEFAULT_MAX_EVENTS_PER_RUN;
 
   const rosterDue: EventFactCandidate[] = [];
   const resultsDue: EventFactCandidate[] = [];
@@ -986,12 +1087,7 @@ export function selectDueEventFacts(
 
   rosterDue.sort((a, b) => a.eventStartDate.getTime() - b.eventStartDate.getTime());
   resultsDue.sort((a, b) => a.eventStartDate.getTime() - b.eventStartDate.getTime());
-
-  const work: FactWorkItem[] = [
-    ...rosterDue.map(candidate => ({ candidate, kind: 'roster' as const })),
-    ...resultsDue.map(candidate => ({ candidate, kind: 'results' as const })),
-  ];
-  return max > 0 ? work.slice(0, max) : work;
+  return { rosterDue, resultsDue };
 }
 
 // ---------------------------------------------------------------------------
@@ -1003,6 +1099,8 @@ export interface ResultsPassOptions {
   requestDelayMs?: number;
   /** Pages fetched per run; the rest roll over to the next run. */
   maxEvents?: number;
+  /** Share of the run's pages roster work may take (see ROSTER_BUDGET_SHARE). */
+  rosterShare?: number;
   /** How far back in the events table to look for finished events. */
   lookbackDays?: number;
   /** How far ahead to look for events needing a roster snapshot. */
@@ -1017,9 +1115,17 @@ export interface ResultsPassOptions {
 export interface ResultsPassSummary {
   /** Stored `prb-` events inside the lookback/lookahead window. */
   candidates: number;
+  /** Pages this run scheduled, i.e. the queue capped at the per-run budget. */
   due: number;
   rosterDue: number;
   resultsDue: number;
+  /**
+   * The *whole* queue, before the per-run budget. Reported separately from
+   * `rosterDue`/`resultsDue` because the capped numbers cannot show a backlog
+   * growing or a share starving the other - see `partitionDueEventFacts`.
+   */
+  rosterOutstanding: number;
+  resultsOutstanding: number;
   fetched: number;
   /** Captures that held real pairings and standings. */
   withResults: number;
@@ -1063,6 +1169,8 @@ export async function runPlayriftboundResultsPass(
     due: 0,
     rosterDue: 0,
     resultsDue: 0,
+    rosterOutstanding: 0,
+    resultsOutstanding: 0,
     fetched: 0,
     withResults: 0,
     withoutResults: 0,
@@ -1090,19 +1198,28 @@ export async function runPlayriftboundResultsPass(
   const candidates = await loadEventFactCandidates({ daysBack: lookbackDays, daysForward: lookaheadDays });
   summary.candidates = candidates.length;
 
-  const work = selectDueEventFacts(candidates, {
+  const selection: DueSelectionOptions = {
     now: options.now,
     max: options.maxEvents ?? DEFAULT_MAX_EVENTS_PER_RUN,
-  });
+    rosterShare: options.rosterShare,
+  };
+  // The whole queue, then the slice of it this run can afford. Both are
+  // reported: the capped number alone hid a starved backfill for weeks (see
+  // partitionDueEventFacts).
+  const outstanding = partitionDueEventFacts(candidates, selection);
+  const work = selectDueEventFacts(candidates, selection);
   summary.due = work.length;
   summary.notFetched = work.length;
   summary.rosterDue = work.filter(item => item.kind === 'roster').length;
   summary.resultsDue = work.length - summary.rosterDue;
+  summary.rosterOutstanding = outstanding.rosterDue.length;
+  summary.resultsOutstanding = outstanding.resultsDue.length;
 
   console.log(
-    `[prb-results] ${work.length} of ${candidates.length} playriftbound events due ` +
-      `(${summary.rosterDue} rosters, ${summary.resultsDue} results; ` +
-      `-${lookbackDays}/+${lookaheadDays} day window, ${requestDelayMs}ms between requests)`
+    `[prb-results] ${work.length} of ${candidates.length} playriftbound events scheduled ` +
+      `(${summary.rosterDue} rosters, ${summary.resultsDue} results) from a queue of ` +
+      `${summary.rosterOutstanding} rosters + ${summary.resultsOutstanding} results due; ` +
+      `-${lookbackDays}/+${lookaheadDays} day window, ${requestDelayMs}ms between requests`
   );
   if (work.length === 0) {
     summary.durationMs = Date.now() - startedAt;
@@ -1170,7 +1287,8 @@ export async function runPlayriftboundResultsPass(
     `[prb-results] fetched ${summary.fetched} pages in ${summary.requests} requests: ` +
       `${summary.rostersWritten} rosters, ${summary.resultsWritten} results written ` +
       `(${summary.withResults} with pairings, ${summary.withoutResults} listing-only, ` +
-      `${summary.unchanged} unchanged), ${summary.failed} failed, ${summary.notFetched} left for later`
+      `${summary.unchanged} unchanged), ${summary.failed} failed, ${summary.notFetched} left for later; ` +
+      `queue was ${summary.rosterOutstanding} rosters + ${summary.resultsOutstanding} results`
   );
   return summary;
 }

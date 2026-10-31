@@ -743,6 +743,7 @@ async function runPlayriftboundResults(
     const summary = await runPlayriftboundResultsPass({
       requestDelayMs: env.PLAYRIFTBOUND_REQUEST_DELAY_MS,
       maxEvents: env.PLAYRIFTBOUND_RESULTS_MAX_EVENTS_PER_RUN,
+      rosterShare: env.PLAYRIFTBOUND_RESULTS_ROSTER_SHARE,
       lookbackDays: env.PLAYRIFTBOUND_RESULTS_LOOKBACK_DAYS,
       deadline: Date.now() + context.getRemainingTimeInMillis() - PRB_RESULTS_RESERVED_MS,
     });

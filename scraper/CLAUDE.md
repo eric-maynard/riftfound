@@ -535,6 +535,12 @@ once. 500 per run fits the budget on measurement rather than hope: a 250-item ru
 used 376s (1.5s per page - 0.8s fetch plus the 1s politeness delay), so 500 is
 ~750s plus ~37s of candidate loading against the 840s available.
 
+> **That projection did not hold, and the next section is why.** It assumed the
+> results queue got the 500 page slots a run; it got a mean of 147.5 of them,
+> because roster work had unbounded priority over a shared budget. Four days of
+> work took fourteen. Read the two sections together: the arithmetic above is
+> right about the *budget* and wrong about the *allocation*.
+
 **The new candidates interleave; they do not jump the queue.** Worth checking
 rather than assuming, because `selectDueEventFacts` is strictly oldest-first on
 the event's start time and an injection at the head would stall the existing
@@ -565,6 +571,102 @@ included, in serial 100-key chunks), so it scales with the window and is now
 come back heavily deferred, and a key dropped after four attempts reads as "not
 captured" and costs one wasted re-fetch. Neither is new, but both get bigger
 with the window, so they are the things to watch if the drain stalls.
+
+#### Why that projection was wrong by a factor of seven: roster starvation
+
+**The 4.3-day estimate above assumed the results queue got the run's budget. It
+got a third of it, and the shortfall was invisible in the logs.** Measured on
+production over the 31 consecutive runs of 2026-10-29..31, after an owner report
+that a San Francisco store's recent events had no results on the site.
+
+The frontier is unambiguous. Per event-day, candidate rows against `RESULTS#`
+captures on 2026-10-31:
+
+| event date | candidates | captures |
+|---|---|---|
+| 2026-09-25..09-28 | 4 | 4 |
+| 2026-10-01..10-15 | 6,926 | 6,917 (**~100%**) |
+| **2026-10-16** | 2,495 | **2,495** |
+| **2026-10-17** | 4,531 | **1,040** - the frontier, mid-day |
+| **2026-10-18** | 2,585 | **0** |
+| 2026-10-19..10-31 | 13,041 | **8** |
+
+(A day's captures can slightly exceed its candidates - captures carry no TTL and
+outlive the event rows they came from - so the per-day shortfall is floored at
+zero when summed.)
+
+So on 2026-10-31 the backfill had reached event date **2026-10-17** and
+**19,120** events were still waiting, 15,618 of them on 2026-10-18 or later -
+fourteen days behind, not four. The reported store is a clean cross-section of
+it: its 2026-10-16 Pre-Rift was
+captured on 10-29 and its 2026-10-17 Pre-Rift on 10-31, while its 10-18, 10-22,
+10-23, 10-24 and 10-31 events had no capture at all.
+
+The cause is that **roster work was placed ahead of results work with no
+bound**, and roster work does not drain:
+
+- **A roster fetch that finds no registrants records nothing.**
+  `normalizeRosterFromRegistrants` returns null for an empty registrant list, so
+  `hasRoster` stays false and the event is still roster-due on the next run -
+  every two hours for the whole 24h of `ROSTER_LEAD_MS`, up to 12 times, writing
+  nothing each time.
+- **That is the majority state, not an edge case.** Of the 696 candidate rows
+  starting 2026-11-01, **445 (64%) had no roster row** while their window was
+  open - and every roster that did exist was non-empty, which is the proof,
+  since an empty one is never written.
+- **So each run's budget went mostly to futile fetches.** Every one of the 31
+  runs read `500 of ~30,000 due` (295-467 rosters, 33-255 results), fetched 489
+  pages, failed exactly 11, and wrote only 109-222 rosters. Means over the 31
+  runs: **352.5 roster slots, 147.5 results slots** (exactly the 500 cap), and
+  **140.8 rosters written**. So **~212 of 500 slots per run bought nothing** -
+  ~2,540 a day of a 6,000/day budget.
+- **Results got the remainder: a mean of 147.5 slots per run**, ~1,770/day,
+  against **~1,000 events newly finishing each day** (mean candidates/day over
+  2026-10-19..31: 1,003; over all of October: 954). **Net drain ~770/day**, so
+  19,120 outstanding is ~25 days, not 4.3 - and at 25 days the oldest of them
+  are 42 days old against a 45-day lookback and a 59-day retention floor. The
+  queue was draining with almost no margin, and a busier calendar would have
+  stopped it draining at all.
+
+**The log line is why this ran for weeks unnoticed.** It read `500 of 30,631
+playriftbound events due`, where 500 was the number *after* the per-run cap and
+30,631 was every candidate in the window, captured or not. Neither number is the
+backlog. Nothing printed the one figure - ~19,100 results due - that would have
+shown it. `partitionDueEventFacts` now computes the uncapped queue alongside the
+schedule, and both log lines carry it (`rosterOutstanding` /
+`resultsOutstanding` on the summary).
+
+**The fix is `ROSTER_BUDGET_SHARE` (0.5, env
+`PLAYRIFTBOUND_RESULTS_ROSTER_SHARE`)**: roster work still goes first and still
+sorts by start time, but takes at most half the run while results work is
+waiting. Unused halves fall through in both directions, so a run is never left
+idle.
+
+| | before | after |
+|---|---|---|
+| results slots per run | 147.5 (mean of 31 runs) | **250** |
+| results slots per day | ~1,770 | **~3,000** |
+| net drain against ~1,000/day arriving | ~770/day | **~2,000/day** |
+| time to clear 19,120 | ~25 days | **~10 days** |
+
+**It costs the rosters nothing measurable.** 250 slots/run is 3,000 roster
+fetches a day against a measured **~1,690 rosters actually written** per day
+(140.8 per run x 12), so
+the cap binds on the futile re-fetches and not on the writes. It is also a
+*better* allocation: the 250 served are the soonest to start, which are both the
+events whose window is closing and the ones whose page is most likely to have
+registrants on it. An event 23h out is simultaneously the least urgent and the
+most likely to return nothing.
+
+**What it does not do is stop the futile fetches**, only stop them monopolising
+the run - ~2,460 pages a day are still fetched for nothing. Fixing that needs
+the pass to remember that it looked and found nothing, which is a stored fact it
+does not have. The natural shape is `attempts` / `lastCheckedAt` on an *empty*
+roster row, which the candidate loader's existing projection already reads at no
+extra cost, plus a `saveEventRoster` that may replace an empty roster and never
+a populated one. That is deliberately a separate change: a dated roster is the
+one unrecoverable fact in this pipeline, so relaxing what may overwrite one
+deserves its own measurement rather than riding along with a scheduling fix.
 
 #### Rosters are a different story, and worse
 
@@ -2515,6 +2617,24 @@ matches is ~50MB that way.
   margin; raising it past the high 50s without re-measuring retention would
   mean querying day partitions whose rows are being deleted under the run, which
   degrades silently - the candidate simply is not there.
+- **The results backfill falling behind without saying so.** This has already
+  happened once and cost ten days of coverage (see "Why that projection was
+  wrong by a factor of seven"). The thing to watch is *not* the per-run numbers,
+  which are capped and therefore constant whatever the backlog does: watch
+  `resultsOutstanding` in the pass's log line, and the gap between the newest
+  event date with `RESULTS#` captures and today. If the first grows run over run
+  or the second stops shrinking, something is eating the budget. Roster work was
+  the first such thing; the ~2,460 futile roster fetches a day it still makes
+  are the obvious next candidate, and `PLAYRIFTBOUND_RESULTS_ROSTER_SHARE` is
+  the lever that needs no deploy.
+- **An organizer that never resolves to its UVS shop.** The symptom is not an
+  error, it is a *second shop row for the same building*, which splits one
+  venue's history across two store pages, two `VENUE#` profiles and two scenes.
+  1,015 synthesised organizer rows are currently unresolved and most of them are
+  genuinely not UVS stores, so the number itself is not the signal - the signal
+  is an unresolved organizer with a UVS shop inside 250m, which is 206 pairs
+  today and worth re-auditing whenever `shopNameSimilarity` changes. See "When
+  the name match fails, one venue becomes two".
 
 ### Metrics
 
@@ -2611,6 +2731,64 @@ Resolved organizers' events are written with the UVS shop's id/name/coordinates
 (the UVS shop row itself is never written by this pass), older stored events are
 re-pointed, and the synthesised shop row is deleted.
 
+#### When the name match fails, one venue becomes two
+
+An unresolved organizer is not a cosmetic duplicate. It is a second shop row for
+the same building, so that venue's history is split across two `shopExternalId`s
+- and therefore across two `VENUE#` profiles, two scene assignments and two
+store pages. San Francisco carried a textbook case: UVS **1979 "GamescapeSF"**
+and synthesised Riot **2230608066 "Gamescape San Francisco"**, geocoded **1m
+apart** at 333 Divisadero St.
+
+The proximity test passes easily at 1m. The name test scored them **0.00**, and
+the reason is the tokeniser: `shopNameTokens` splits on non-alphanumerics, so
+`GamescapeSF` is the single token `gamescapesf` and shares nothing with
+`["gamescape","san","francisco"]`. Token Jaccard of two disjoint sets is zero -
+the same score two unrelated stores get.
+
+Measured across the whole live shop corpus (9,536 rows, **1,015** synthesised
+organizers still unresolved, 206 of them with a UVS shop inside the 250m
+radius), the failures fall into exactly two systematic classes:
+
+| class | example pair | apart |
+|---|---|---|
+| **one side abbreviates** | `GamescapeSF` / `Gamescape San Francisco` | 1m |
+| | `CHS` / `Chaos Hobby Store` | 22m |
+| | `Top Deck Games EHT` / `Top Deck Games - Egg Harbor Township` | 174m |
+| | `CP Collectibles` / `Combat Power Gaming and Collectibles` | 142m |
+| | `BDJ LOISIRS` / `Bulle de Jeux Melun` | 0m |
+| | `BNW Unlimited LLC` / `Brave New Worlds - Willow Grove` | 1m |
+| | `ArlyToys Speelgoed en TCG` / `ArlyToys Trading Card Games` | 0m |
+| **one side runs the words together** | `GameAndTrade` / `Game and Trade` | 6m |
+| | `WorldofBoardGames` / `World of Board Games` | 1m |
+
+`shopNameSimilarity` now reads both: a stopword-retaining squashed form for the
+run-together class, and initialism expansion for the acronym class. **All nine
+resolve**, all nine are the same store by inspection, and of the 206 in-radius
+pairs **10 change score and 0 fall**.
+
+**That last number is the design constraint, not a nice property.** This function
+also *gates* the match, so a similarity that went *down* would orphan an
+organizer that resolves today - resurrecting a duplicate shop row, which is a
+silent failure rather than an error. So every rule is folded in with `max` and
+cannot lower a score. A tokeniser change was tried first and rejected on exactly
+this: splitting on a lower-to-upper transition fixes Gamescape and breaks
+`CardPro Hobbies` against `Cardpro Hobbes` (0.33 -> 0.12, destroying the one
+token they share) along with every `GmbH` in the corpus, which the stopword list
+stops seeing once it is spelled `gmb h`.
+
+The one score that rises without being a match is worth recording too:
+`ARCANA LIFE IS A GAME` against `In bocca al gioco` 200m away goes 0.00 -> 0.14,
+because `al` reads as initials of "A GAME". It stays far below the 0.5 threshold
+and is not a sole candidate, so it resolves to nothing - which is the division of
+labour: this function supplies evidence and the two thresholds take the decision.
+
+**Nothing is repaired retroactively by this change alone.** Resolution happens
+in the playriftbound pass, which re-points the organizer's stored events onto the
+UVS shop and then deletes the synthesised row - so a duplicate heals on the next
+run that sweeps that organizer's anchor, and the derived `VENUE#` / `SCENE#`
+items follow on the next refit after that.
+
 ## De-duplication
 
 The two sources share no identifier, so events are matched on location + time
@@ -2676,6 +2854,56 @@ A UVS row can only absorb **one** Riot record per run: if a store runs two Riot
 tournaments at the same minute and the same place, the first merges into the
 matching UVS row and the second is inserted as its own event.
 
+#### Concurrent events are kept, and that is measured rather than argued
+
+This gets reported as a bug - "that store has two concurrent events and I think
+we incorrectly block that" - so here is the evidence, because the intuition is
+reasonable and wrong.
+
+**Structurally it cannot happen.** `splitDuplicates` *partitions* its input:
+every Riot record comes back either in `matched`, where it is field-merged onto
+a UVS row that stays in the table, or in `unique`, where it becomes its own row.
+Neither path discards an event, and `claimed` stops two Riot records from
+collapsing onto one UVS row. The only count-reducing operation in the whole pass
+is `orphansDeleted`, which removes a `prb-` row *because the same event now
+lives on the UVS row* - a de-duplication, not a loss.
+
+**And it does not happen in the data.** Three whole day partitions
+(2026-10-24, 10-25, 11-07; 3,874 rows with coordinates), grouped by the
+de-duplication key:
+
+| events sharing one location+minute cell | cells |
+|---|---|
+| 1 | 3,700 |
+| 2 | 70 |
+| 3 | 7 |
+| 4 | 2 |
+| 5 | 1 |
+
+80 cells hold more than one event - 174 rows - and every source combination is
+represented: `uvs`+`uvs` (38 cells), `prb`+`prb` (18), `merged`+`uvs` (10),
+`merged`+`prb` (3), up to five UVS events in one cell. The three `merged`+`prb`
+cells are the documented one-per-run rule working: one Riot record merged into
+the UVS twin and the store's *other* concurrent tournament was inserted beside
+it. Cells holding a UVS or merged row next to **two or more** Riot-only rows:
+**0**, so the one shape that could churn a merged row's identity across runs
+does not currently occur.
+
+The reported store itself (`shopExternalId` 23916, `Just For Fun`, San
+Francisco - note the capital F, a search for "Just for Fun" returns nothing)
+has **six** start minutes carrying more than one event, including two
+*identically named* `Casual 2v2 Tournament` rows at 2026-10-10T00:45 and three
+events on 2026-10-31. All of them are stored. Its events were missing results,
+not missing; see "Why that projection was wrong by a factor of seven".
+`dedupe.test.ts` pins those real rows.
+
+What the one-per-run rule *does* cost is the opposite error, and it is small: if
+a UVS row absorbs the wrong one of two same-minute Riot records, the right one
+stays as a separate `prb-` row and the calendar shows the event twice. That is
+the 3 `merged`+`prb` cells above - 0.08% of 3,874 rows - and it is the price of
+not over-merging, which the price+category audit measured at 192 wrong pairs of
+391.
+
 The index is built during the UVS pass only. playriftbound events are never
 de-duplicated against each other - one store legitimately runs two different
 tournaments at the same minute, and Riot's tournament ids already keep those
@@ -2737,6 +2965,11 @@ future code path can write raw text to a table.
 - `PLAYRIFTBOUND_QUERY_HASH`: Pin the persisted query hash (optional, normally self-healing)
 - `PLAYRIFTBOUND_RESULTS_ENABLED`: Enable the rosters + results pass (default: `true`)
 - `PLAYRIFTBOUND_RESULTS_MAX_EVENTS_PER_RUN`: Event pages fetched per run (default: `250`; production sets `500`)
+- `PLAYRIFTBOUND_RESULTS_ROSTER_SHARE`: Share of a run's pages roster work may
+  take (default: `0.5`). Roster work is the urgent half and still goes first,
+  but unbounded priority starved the results backfill to a third of its rate -
+  see "Why that projection was wrong by a factor of seven". `1` restores the old
+  behaviour; `0` suspends roster work while any results are due.
 - `PLAYRIFTBOUND_RESULTS_LOOKBACK_DAYS`: How far back to look for finished
   events awaiting a results capture (default: `45`). Bounded above by
   `deleteOldEvents(60)` - a capture needs an event row as its candidate - and
