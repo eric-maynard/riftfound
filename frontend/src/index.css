@@ -939,7 +939,7 @@ select:disabled {
    which existed only to let a chip's title shrink out of the glyph's way.
 
    The grid's own routes to an event's standings are the hover card's footer
-   (`.event-tooltip-actions`) and this list, reached from the `+` on the cell.
+   (`.event-tooltip-actions`) and this list, which the day cell itself opens.
 
    The ink is #21222c, the app's own darkest surface, read here as dark grey
    ink. Measured against each chip colour it actually sits on - not against the
@@ -987,71 +987,90 @@ select:disabled {
 }
 
 /* ---------------------------------------------------------------
-   The `+` on a day cell
+   A day cell that leads somewhere
    ---------------------------------------------------------------
-   A day with events gets a plain button in its top-left corner that opens that
-   day's list. It is the deterministic click path the hover card is not: the
-   card's own links are reachable now (see `.event-tooltip-actions`), but
-   reaching them is still a short, aimed pointer move, and this is a target
-   that sits still.
+   Clicking anywhere in a day with events opens that day's list, which is what
+   tapping one has always done on a phone. There used to be a `+` in the
+   corner of every such cell instead, and nothing now stands in for it
+   visually, so the cell has to say for itself that it is a control.
 
-   `position: absolute` in `.fc-daygrid-day-frame`, which FullCalendar already
-   makes `position: relative`, rather than a flex item in `.fc-daygrid-day-top`
-   beside the date. Two reasons, both load-bearing:
-     - the day-top is where the cell is narrowest. At 390px a cell measures 51px and
-       the date numeral already claims 2rem of it with its padding; a second
-       item in that row is what makes a `<td>` wider than its column and drags
-       the whole page sideways. Out of flow, this costs the grid nothing at any
-       width.
-     - `.fc .fc-day-other .fc-daygrid-day-top` is `opacity: .3`, and opacity
-       applies to the subtree - a child cannot climb back out of it. Inside the
-       day-top, the button on a trailing-month day would have been a third as
-       visible as the one next to it.
-   It sits in the day-top's own band (~31px tall here, from the day number's
-   0.5rem padding), above where the first chip starts, so it overlaps no chip
-   and steals no hover.
+   Two marks, no more than that. A **pointer cursor**, and a cyan hairline
+   drawn inside the cell's own edge - cyan because that is the ink the
+   "+N more" link in the same cell uses and they open the same dialog. Both
+   are scoped to `.day-has-events`: a cursor that promises a click on a day
+   with nothing in it is a promise the click does not keep (`openDayList`
+   returns on an empty day, deliberately - see CalendarPage).
 
-   Cyan, the colour the "+N more" link in the same cell already uses, because
-   they open the same dialog. Measured on every ground a day cell can have:
-     #21222c normal cell        11.40:1
-     #2a2b36 other-month cell   10.78:1
-     #38334b today (the 15%
-       lavender wash composited)  8.70:1
-     #303d49 its own hover tint   7.95:1
-   Text needs 4.5:1 and a graphic 3:1; the glyph clears both everywhere. */
-.fc .day-list-button {
-  position: absolute;
-  top: 2px;
-  left: 2px;
-  z-index: 5;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 20px;
-  height: 20px;
-  padding: 0;
-  border: none;
-  border-radius: 3px;
-  background: none;
-  color: var(--color-cyan);
-  font-size: 0.95rem;
-  font-weight: 600;
-  line-height: 1;
+   **A line, not a wash, and that was decided on measurements.** A tinted
+   background was the obvious thing and it is the one thing that cannot be
+   made to work here, because every ink on this calendar is light on dark and
+   a wash moves the ground out from under all of it at once:
+
+     tint on `.fc-daygrid-day-frame`   today's "+N more", measured in situ
+     none                                        5.31:1
+     10% cyan  (#565272 -> #5b6180)              4.35:1   under AA
+      8% cyan                                    4.53:1   0.03 of margin
+      6% cyan                                    4.71:1   and barely visible
+     14% black (#565272 -> #4a4762)              6.41:1
+
+   Today's cell is the binding case: its composited ground is **#565272** -
+   not the #38334b an older comment here claimed, which is what a DOM walk is
+   for - so it is already the lightest cell in the grid and has the least room
+   to give. Darkening instead fixes every ratio and fails the other way: it
+   moves #21222c to #1c1d26, a 1.05:1 change nobody can see, while being
+   obvious on today's lavender. One tint, two different amounts of signal.
+
+   The hairline changes no ground at all, so no text on the calendar was
+   re-measured, and as a non-text graphic it needs 3:1 against the cell it
+   sits in: **11.41:1** on a normal cell, **5.31:1** on today's. It is 1px
+   inset rather than the 2px outset ring `:focus-visible` draws, so hover and
+   focus are two different marks rather than one mark in two places.
+
+   **It stays up while the pointer is on a chip**, which is a deliberate no
+   rather than an oversight. The precise version -
+   `:hover:not(:has(.fc-event:hover))`, so the mark means "this click opens
+   the day" and a chip click is visibly a different thing - flickers: chips
+   are stacked with a gap between them, and sweeping down a cell crosses cell
+   background, chip, background, chip. A ring that strobes under a moving
+   pointer is a worse lie than one that stays up while the pointer is in the
+   day, and the chip has an affordance of its own anyway - it is a coloured
+   block that raises a card. */
+.fc .fc-daygrid-day.day-has-events {
   cursor: pointer;
 }
 
-.fc .day-list-button[hidden] {
-  /* `display: flex` above would otherwise beat the `hidden` attribute. */
-  display: none;
+.fc .fc-daygrid-day.day-has-events:hover .fc-daygrid-day-frame {
+  box-shadow: inset 0 0 0 1px var(--color-cyan);
 }
 
-.fc .day-list-button:hover {
-  background-color: rgba(139, 233, 253, 0.14);
-}
+/* ---------------------------------------------------------------
+   The date number, which is the control
+   ---------------------------------------------------------------
+   `navLinks` is on at every width, so FullCalendar renders each date as an
+   `<a data-navlink tabindex="0">` with its own Enter/Space handling, and
+   CalendarPage names it and takes the empty days back out of the tab order.
+   That makes it the keyboard route into a day's *list* - a chip is focusable
+   and opens its own event, but nothing else reaches the dialog that holds the
+   hover card's link - so it needs a focus ring of its own. Cyan, 2px, as
+   everywhere else here.
 
-.fc .day-list-button:focus-visible {
+   **A day with events lifts its day-top out of FullCalendar's `opacity: .3`
+   for other-month cells.** That rule predates there being a *control* in the
+   day-top: our own rule two screens up already mutes those numbers with
+   `--color-text-muted`, which was measured for exactly this job (**6.41:1**
+   on #2a2b36, in situ), and multiplying a measured colour by 0.3 drops it to
+   **1.82:1** - a named button nobody can see. The 0.3 stays on the
+   trailing days with nothing in them, where it is decoration rather than ink.
+   This is also why the `+` used to sit outside the day-top; with the control
+   back inside it, the opacity is the thing that has to give. */
+.fc .fc-daygrid-day-number:focus-visible {
   outline: 2px solid var(--color-cyan);
   outline-offset: 1px;
+  border-radius: 3px;
+}
+
+.fc .fc-day-other.day-has-events .fc-daygrid-day-top {
+  opacity: 1;
 }
 
 .fc .fc-more-link,
@@ -1181,15 +1200,17 @@ select:disabled {
    The day list
    ---------------------------------------------------------------
    No longer the phone path: it is the one day list on every width, opened by
-   the `+` on a cell, by "+N more", and by a tap on a cell or its date. It
+   a click anywhere in a day cell, by its date number, or by "+N more". It
    replaced FullCalendar's own "+N more" popover rather than sitting beside it,
    because two layouts answering the same question is one too many - and the
    popover only ever existed on the minority of days that overflow, which is
    why the hover card's links were unreachable on all the others.
 
    It is a real dialog now (role, label, focus in and back out, Escape), since
-   it is also the only keyboard route to an event's standings: a FullCalendar
-   chip is a `<div>` with no `url` and has never been focusable. */
+   it is also the only keyboard route to an event's standings. A grid chip is
+   focusable - `<a tabindex="0">`, measured, not the unfocusable `<div>` three
+   comments here used to claim - but Enter on one opens that event's visit URL,
+   and the hover card it would otherwise take is hover-only. */
 .day-events-backdrop {
   position: fixed;
   top: 0;
@@ -1487,11 +1508,6 @@ select:disabled {
     order: 0;
   }
 
-  /* Make day cells more tappable on mobile */
-  .fc .fc-daygrid-day-top {
-    cursor: pointer;
-  }
-
   .fc .fc-daygrid-day-number {
     padding: 0.5rem !important;
     min-width: 2rem;
@@ -1515,22 +1531,13 @@ select:disabled {
     padding: 1px 2px;
   }
 
-  /* No `+` on a day cell at this width, and the reason is the width rather
-     than the input: a cell measures 51px here, the date numeral already owns 2rem
-     of its top row, and a second mark in that corner is clutter in a cell that
-     has no room to spare.
-
-     Nothing is lost by it. There is no hover trap to escape on a phone -
-     `isMobile` withholds the hover card entirely - and tapping anywhere in the
-     cell, or its date, already opens the same day list; the `+` would be a
-     third tap target for a gesture that is already the whole cell. The one
-     reader this leaves out is a *desktop* window narrowed under 600px, who
-     keeps the mouse but loses the button: for them the hover card's own
-     footer is the route, which is the fix this cell control was added
-     alongside rather than instead of. */
-  .fc .day-list-button {
-    display: none;
-  }
+  /* Nothing here about getting into a day's events, and that is the point:
+     the whole cell opens the day list at every width now, so this breakpoint
+     has nothing left to withhold. It used to hide the `+` (51px of cell, 2rem
+     of it already the date numeral) and to put `cursor: pointer` on every
+     day-top, including the empty ones - a promise a tap on an empty day never
+     kept. The `.day-has-events` cursor above covers every width and only the
+     days that lead somewhere. */
 }
 
 /* Toast notification */

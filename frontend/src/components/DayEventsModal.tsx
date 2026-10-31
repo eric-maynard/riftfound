@@ -12,8 +12,8 @@ import EventTrophyLink from './EventTrophyLink';
  * and the popover existed on desktop only on the days that overflow - which is
  * the minority of days and exactly the reason the hover card's links were
  * unreachable everywhere else. So this is the one day list now, on every width
- * and from every route into it: the `+` on a day cell, the "+N more" link, and
- * a tap on a cell or its date.
+ * and from every route into it: a click or tap anywhere in a day cell, its
+ * date number, and the "+N more" link.
  *
  * Each row is a coloured band carrying two separate targets: the event itself,
  * and - when that event has standings or a roster - a trophy to its event page.
@@ -21,12 +21,16 @@ import EventTrophyLink from './EventTrophyLink';
  * announces as one confused control. The band holds the colour so the two can
  * sit side by side without either looking bolted on.
  *
- * It is also **the keyboard route to everything the hover card holds**. A
- * FullCalendar chip is a `<div>` with no event `url`, so it is not focusable
- * and never has been; the card it opens cannot be reached by keyboard at all.
- * Every row and trophy in here is a real control in the tab order, reached
- * from a real button in the grid, so the dialog behaves like one: focus moves
- * in on open, Escape dismisses, and focus goes back to whatever opened it.
+ * It is also **the keyboard route to everything the hover card holds**, and
+ * for a narrower reason than this comment used to give. It said a grid chip is
+ * a `<div>` with no event `url` and so is not focusable: in 6.1.19 it is an
+ * `<a tabindex="0">` with FullCalendar's own Enter/Space handling, measured in
+ * Chromium, so a keyboard reader can reach a chip and open its event. What
+ * they cannot do is raise the *card*, which is hover-only - so the trophy in
+ * it, and the standings behind that, exist for them only in here. Every row
+ * and trophy is a real control in the tab order, reached from the day's date
+ * number in the grid, so the dialog behaves like one: focus moves in on open,
+ * Escape dismisses, and focus goes back to whatever opened it.
  */
 
 interface DayEventsModalProps {
@@ -73,10 +77,13 @@ function DayEventsModal({
   /*
    * Focus in, and focus back out again.
    *
-   * Read at mount rather than passed down: this opens from four different
-   * places - the day cell's `+`, FullCalendar's own "+N more" anchor, a tap on
-   * a cell, a tap on its date number - and only two of those are elements this
-   * app made. Whatever had focus is the thing to hand it back to.
+   * Read at mount rather than passed down: this opens from three different
+   * places - a click anywhere in a day cell, the cell's date number, and
+   * FullCalendar's own "+N more" anchor - and none of the three is an element
+   * this app made. Whatever had focus is the thing to hand it back to. A click
+   * on a cell's *background* has no focusable target at all, which is why
+   * `handleDateClick` focuses the date number on the way in: Escape then lands
+   * the reader back on the day they opened rather than on `<body>`.
    *
    * The dialog itself takes focus rather than its first row, because the
    * heading names the day the list is for and a reader dropped straight onto

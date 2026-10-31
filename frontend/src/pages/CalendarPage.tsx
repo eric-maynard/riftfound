@@ -60,8 +60,15 @@ const HOVER_CARD_MAX_WIDTH = 300;
 /** The gap the clamp keeps between a clamped card and the viewport edge. */
 const HOVER_CARD_VIEWPORT_MARGIN = 8;
 
-/** Marks the `+` this page injects into every day cell that has events. */
-const DAY_LIST_BUTTON_CLASS = 'day-list-button';
+/**
+ * Marks a day cell that has events, so CSS can say the cell is clickable.
+ *
+ * Applied to the `<td>` rather than read off a `:has()` selector because the
+ * cell has to answer for the day *the counts* know about, which is the same
+ * set `getEventsForDate` will open - and because a day whose chips are all
+ * hidden behind "+N more" still has events.
+ */
+const DAY_HAS_EVENTS_CLASS = 'day-has-events';
 
 // Filter out full events if the setting is off.
 const isEventFull = (event: Event): boolean =>
@@ -370,9 +377,10 @@ function CalendarPage({ active = true }: CalendarPageProps) {
   const pointerOnCardRef = useRef(false);
 
   const calendarRef = useRef<FullCalendar>(null);
-  // The rendered grid, for the one job that needs the real DOM: keeping the
-  // injected day-cell buttons labelled. `getApi()` returns a `CalendarApi`,
-  // which does not publish its root element.
+  // The rendered grid, for the one job that needs the real DOM: keeping each
+  // day cell's own affordance - its class and its date number's name - in step
+  // with the events. `getApi()` returns a `CalendarApi`, which does not publish
+  // its root element.
   const calendarWrapperRef = useRef<HTMLDivElement>(null);
   const [searchTrigger, setSearchTrigger] = useState(0);
   const isUserSearchRef = useRef(false); // Track if search was user-initiated
@@ -905,12 +913,26 @@ function CalendarPage({ active = true }: CalendarPageProps) {
   /**
    * Open a day's list. The one way in, whichever affordance was used.
    *
-   * There are four: the `+` on the day cell, the "+N more" link, a tap on a
-   * cell and a tap on its date number. All four used to build the list
-   * themselves - three from `getEventsForDate`, "+N more" from FullCalendar's
-   * own `allSegs` - and two of them were gated on `isMobile`. One opener means
-   * one source of truth for what a day contains and one place the availability
-   * retry lives.
+   * There are three: a click anywhere in a day cell, a click on its date
+   * number, and the "+N more" link. They all used to build the list
+   * themselves - two from `getEventsForDate`, "+N more" from FullCalendar's
+   * own `allSegs` - and the first two were gated on `isMobile`, so desktop had
+   * no whole-cell route at all. One opener means one source of truth for what a
+   * day contains and one place the availability retry lives.
+   *
+   * **A day with no events opens nothing**, here rather than at each caller.
+   * The cell is clickable for the mouse at all times - a `dateClick` cannot be
+   * declined per cell - so this is where "nothing to show" becomes "nothing
+   * happens". A dialog listing no events would be worse than the silence: it
+   * answers a question the reader did not ask and then has to be dismissed.
+   *
+   * **Any open hover card goes with it.** The card is drawn at the pointer and
+   * takes no pointer events, so a click that lands while one is up - entirely
+   * possible, since leaving a chip only *schedules* the close - would otherwise
+   * leave it floating over the dialog for the rest of the delay, on top of the
+   * thing the reader just asked for. On a phone this cannot arise (the card is
+   * withheld there, and the one a tap raises has its own backdrop), so it needs
+   * no `isMobile` branch.
    *
    * `date` must already be a real local `Date`: see lib/calendarDates.ts for
    * which of FullCalendar's callbacks hand over a marker instead.
@@ -918,38 +940,90 @@ function CalendarPage({ active = true }: CalendarPageProps) {
   const openDayList = useCallback((date: Date) => {
     const dayEvents = getEventsForDate(date);
     if (dayEvents.length === 0) return;
+    handleTooltipClose();
     setDayEventsModal({ date, events: dayEvents });
     // The range sweep has normally answered for these already; this is the
     // retry path for a batch whose request failed. Gated on the flag, like the
     // sweep itself: without it there is no trophy to light, so an unflagged
     // reader should not be sending Rankings requests either.
     if (rankingsPreview) loadAvailability(dayEvents);
-  }, [getEventsForDate, loadAvailability, rankingsPreview]);
+  }, [getEventsForDate, handleTooltipClose, loadAvailability, rankingsPreview]);
 
   /*
-   * Held in a ref as well, for the two callers that cannot re-subscribe.
+   * Held in a ref as well, for the caller that cannot re-subscribe.
    *
-   * `dayCellDidMount` is handed to FullCalendar as an option, and a new
-   * function identity there makes it re-render every cell in the month - which
-   * would mean re-creating all 42 buttons on every keystroke in the filters.
-   * The injected button's own native listener has the same problem from the
-   * other side: it is attached once, at mount, and must still call the current
-   * opener a month later.
+   * `moreLinkClick` is handed to FullCalendar as an option, and a new function
+   * identity there re-renders the grid - which would mean re-rendering every
+   * cell in the month on every keystroke in the filters.
    */
   const openDayListRef = useRef(openDayList);
   openDayListRef.current = openDayList;
 
-  // Handle date click (on mobile, show day events modal)
+  /**
+   * A click anywhere in a day cell opens that day's list, on every width.
+   *
+   * This is what the owner asked for: "on mobile tapping a date cell just
+   * opens the events popout, can we have desktop behave that way instead of
+   * having explicit (+) on each date?" It used to `return` unless `isMobile`,
+   * which is why desktop needed a `+` in the corner of every cell.
+   *
+   * **A chip click is not a cell click**, and that is the library's doing
+   * rather than ours: FullCalendar's `DateClicking` calls `isValidDateDownEl`
+   * on the pointerdown target and declines anything inside `.fc-event`,
+   * `.fc-more-link`, `a[data-navlink]` or `.fc-popover`. So a chip goes to
+   * `eventClick`, the date number to `navLinkDayClick` and "+N more" to
+   * `moreLinkClick`, each exactly once, with no `stopPropagation` anywhere.
+   * (The `+` did need one - it was our own element, invisible to that test,
+   * and on touch `dateClick` opened the list a second time behind it.)
+   *
+   * **Focus moves to the day number first.** `dateClick`'s target is a plain
+   * `<div>`, so a click on the cell's background leaves focus on `<body>` -
+   * and `DayEventsModal` hands focus back to whatever had it, which would mean
+   * Escape dropping the reader at the top of the document. Focusing the day
+   * number makes the return landing the day they just looked at. It is also
+   * the control a keyboard reader would have used to get here, so both routes
+   * end up in the same place.
+   *
+   * It costs the mouse nothing, and that was measured rather than hoped for:
+   * Chromium does not match `:focus-visible` on a programmatic focus when the
+   * last real interaction was a pointer, so a click leaves no ring - while the
+   * *same* element does show one after Escape, because by then the last
+   * interaction was a key. Neither case needed a branch, and neither did
+   * touch.
+   */
   const handleDateClick = useCallback((info: DateClickArg) => {
-    if (!isMobile) return;
+    if (getEventsForDate(info.date).length === 0) return;
+    info.dayEl.querySelector<HTMLElement>('.fc-daygrid-day-number')?.focus();
     openDayList(info.date);
-  }, [isMobile, openDayList]);
+  }, [getEventsForDate, openDayList]);
 
-  // Handle nav link day click (clicking the date number)
+  /**
+   * The date number opens the same list - and is the keyboard route to it.
+   *
+   * `navLinks` is on at every width now (it used to be `isMobile`), which is
+   * what makes the number a real control: FullCalendar gives it
+   * `data-navlink`, `tabIndex: 0` and a keydown handler for Enter *and* Space.
+   * Without it the number is an `<a>` with no `href` and no `tabindex`, which
+   * is not focusable - verified in Chromium, where `focus()` on one leaves
+   * `document.activeElement` on `<body>`.
+   *
+   * **Correcting the record on the chips while we are here.** Three comments
+   * in this codebase said a FullCalendar chip is a `<div>` with no event `url`
+   * and therefore unfocusable. In 6.1.19 it is an `<a tabindex="0">` with
+   * FullCalendar's own Enter/Space handling, so a keyboard reader can already
+   * reach a chip and open that event - measured in Chromium, where Enter on a
+   * focused chip fires `eventClick` and opens the visit URL. What was *not*
+   * reachable, and still would not be without this, is the day's **list**:
+   * only that dialog holds the hover card's "Standings and roster" link, and
+   * only it names the day and says how much is in it. So the date number is
+   * the keyboard route to a day's events, not to its events one at a time.
+   *
+   * What the number does *not* get from FullCalendar is a usable name or a
+   * sense of which days lead anywhere; see `applyDayAffordance`.
+   */
   const handleNavLinkDayClick = useCallback((date: Date) => {
-    if (!isMobile) return;
     openDayList(date);
-  }, [isMobile, openDayList]);
+  }, [openDayList]);
 
   /**
    * "+N more" opens the day list, on every width.
@@ -959,13 +1033,13 @@ function CalendarPage({ active = true }: CalendarPageProps) {
    * for the same question, it only ever existed on the days that overflow, and
    * it was the sole reason the trophy had a `display: none` on the grid and a
    * carve-out to show it back again inside `.fc-popover`. One day list now,
-   * from all four routes, which is also the only one with dialog semantics.
+   * from all three routes, which is also the only one with dialog semantics.
    *
-   * The `+` on the cell stays where it is on an overflowing day rather than
-   * yielding to this link. They are not rival doors - they open the same
-   * dialog - and the link says something the `+` cannot, which is that this
-   * cell is not showing everything it holds and how much it is hiding. What
-   * absorbed what here is that both of them absorbed the popover.
+   * The link **stays** even though the whole cell now opens the same dialog,
+   * because it is not a rival door - it is a *count*. "+2 more" is the only
+   * thing on the grid that says this cell is not showing everything it holds
+   * and how much it is hiding, which is exactly the fact a reader needs before
+   * deciding to open it.
    */
   const handleMoreLinkClick = useCallback((info: MoreLinkArg): string => {
     // `info.date` is a FullCalendar *date marker* - a Date whose UTC fields
@@ -998,127 +1072,130 @@ function CalendarPage({ active = true }: CalendarPageProps) {
   }, []);
 
   /**
-   * How many events each day holds, so the `+` on a cell can say so.
+   * How many events each day holds, so a cell can say so and know whether to
+   * claim it is clickable at all.
    *
-   * Counted once per set of displayed events rather than per cell: a label
-   * change touches all 42 cells of a month, and 42 passes over the event list
-   * to count them is work for nothing. Keyed the way `getEventsForDate`
-   * buckets, so the button's count and the list it opens cannot disagree.
+   * Counted once per set of displayed events rather than per cell: the answer
+   * is needed for all 42 cells of a month whenever the events change, and 42
+   * passes over the event list to count them is work for nothing. Keyed the
+   * way `getEventsForDate` buckets, so a cell announcing "3 events" and the
+   * list it opens cannot disagree.
    */
   const dayCounts = useMemo(() => dayEventCounts(displayEvents), [displayEvents]);
 
   /**
-   * Put the current state on one day-cell button: hidden, or named.
+   * Say, on one day cell, whether it leads anywhere - and if so, to what.
    *
-   * **The day comes off the cell's `data-date`, never out of a closure.**
-   * FullCalendar re-renders the grid in place on a month change and may keep
-   * the same `<td>` elements, in which case the mount hook does not fire
-   * again - a captured `arg.date` would then open November's list from a
-   * December cell. The attribute is whatever the cell is currently drawn for.
+   * This replaced the `+` that used to sit in every cell's corner. The owner's
+   * complaint was that desktop needed an explicit control for a gesture the
+   * phone already had, so the gesture moved onto the whole cell and the mark
+   * went away. What the mark was *also* doing, though, was being the only
+   * keyboard route into a day's events and the only thing on the grid with an
+   * accessible name - a whole-cell `dateClick` is neither - so both jobs had
+   * to land somewhere. They land here, on the cell's own date number, which
+   * `navLinks` has already made a focusable control with Enter/Space handling.
    *
-   * **A day with no events gets no button.** A control that promises a list
-   * and opens an empty one is a broken promise, and the alternative is 42
-   * identical controls a screen reader has to read past to find the three that
-   * lead anywhere. `hidden` rather than a class, so it leaves the tab order
-   * and the accessibility tree together.
+   * Three things are set, and none of them is set twice:
+   *
+   * - **`aria-label`**, carrying the count and the date in full ("Show all 3
+   *   events on Friday, November 7", `dayListLabel`). Without it the control's
+   *   name is its own text, so a screen reader's control list reads a column
+   *   of bare numerals with nothing to choose between them. The visible "7" is
+   *   still *inside* the name, which is what WCAG's label-in-name wants - and
+   *   it always will be, because the numeral is the day of the month and the
+   *   label spells the date out with a numeric day.
+   * - **`role="button"`**, because that is what it now is: it opens a dialog
+   *   rather than going anywhere, and it answers Space as well as Enter.
+   * - **`tabindex="-1"` on a day with no events**, so the tab order holds the
+   *   days that lead somewhere and not all 42. `navLinks` makes every number
+   *   tabbable and offers no per-cell say in it, so this is a correction after
+   *   the fact rather than a setting.
+   *
+   * **Writing these by hand is safe, and the reason is specific.** Preact
+   * only removes an attribute it had in its own previous props, and
+   * FullCalendar's navlink props are `title`, `data-navlink`, `tabIndex`, `id`
+   * and two handlers - so `role` and `aria-label` are ours alone, and
+   * `tabIndex` is written only when its value *changes*, which between two
+   * navlink renders it never does. Verified in Chromium: all three survive an
+   * event change that re-renders the cell in place. A month change replaces
+   * the cells outright, so the mount hook catches those.
+   *
+   * **The day comes off the cell's `data-date`, never out of a closure**, for
+   * the case where FullCalendar re-renders in place and keeps the same `<td>`:
+   * the mount hook does not fire again, and a captured `arg.date` would then
+   * describe November from a December cell.
    */
-  const applyDayListButton = useCallback(
-    (button: HTMLButtonElement, dayString: string | null) => {
+  const applyDayAffordance = useCallback(
+    (cell: HTMLElement) => {
+      const dayString = cell.getAttribute('data-date');
       const date = dayString ? dayStringToLocalDate(dayString) : null;
       const count = date ? dayCounts.get(localDateKey(date)) ?? 0 : 0;
+      const number = cell.querySelector<HTMLElement>('.fc-daygrid-day-number');
+      cell.classList.toggle(DAY_HAS_EVENTS_CLASS, count > 0);
+      if (!number) return;
       if (!date || count === 0) {
-        button.hidden = true;
-        button.removeAttribute('aria-label');
-        button.removeAttribute('title');
+        number.removeAttribute('role');
+        number.removeAttribute('aria-label');
+        number.setAttribute('tabindex', '-1');
         return;
       }
-      // The whole name, not a bare "+": announced on its own in a screen
-      // reader's list of controls, a cell's numeral has nothing around it to
-      // say which day it means. See lib/calendarGrid.ts.
-      const label = dayListLabel(date, count);
-      button.hidden = false;
-      button.setAttribute('aria-label', label);
-      button.title = label;
+      number.setAttribute('role', 'button');
+      number.setAttribute('aria-label', dayListLabel(date, count));
+      number.setAttribute('tabindex', '0');
     },
     [dayCounts]
   );
 
-  const applyDayListButtonRef = useRef(applyDayListButton);
-  applyDayListButtonRef.current = applyDayListButton;
+  const applyDayAffordanceRef = useRef(applyDayAffordance);
+  applyDayAffordanceRef.current = applyDayAffordance;
 
-  /**
-   * The `+` on a day cell: a guaranteed click into that day's events.
-   *
-   * Hovering a chip is how this grid is browsed and the hover card is the
-   * right thing for it, but a card you have to chase with the pointer is the
-   * wrong place for a *link*. Only the days that overflow had a second way in,
-   * through "+N more", so on every other day the card's contents could not be
-   * reached by mouse at all - and could never be reached by keyboard anywhere,
-   * since a FullCalendar chip is a `<div>` with no `url` and so is not
-   * focusable. One plain button per day with events fixes both at once.
-   *
-   * **Built by hand rather than through `dayCellContent`.** That hook's
-   * content is injected *inside* the `<a class="fc-daygrid-day-number">`
-   * FullCalendar wraps around it, and interactive content inside an anchor is
-   * invalid markup that announces as one confused control - the same reason
-   * `DayEventsModal` puts its trophy beside its row button instead of in it.
-   * So the button is appended to `.fc-daygrid-day-frame` and positioned
-   * absolutely in its top-left corner, which also keeps it out of two things:
-   * the day-top's flex row, where it would have competed with the date for a
-   * ~51px cell, and `.fc-day-other`'s `opacity: .3`, which a child cannot
-   * climb back out of.
+  /*
+   * Dress a cell the moment it exists.
    *
    * Stable identity, deliberately: handed to FullCalendar as an option, a new
-   * function here re-renders every cell in the month, so the pieces that do
-   * change ride refs instead.
+   * function here re-renders every cell in the month, so the part that changes
+   * rides a ref instead.
    */
   const handleDayCellDidMount = useCallback((arg: DayCellMountArg) => {
-    const cell = arg.el;
-    const frame = cell.querySelector('.fc-daygrid-day-frame');
-    if (!frame || frame.querySelector(`.${DAY_LIST_BUTTON_CLASS}`)) return;
-
-    const button = document.createElement('button');
-    button.type = 'button';
-    button.className = DAY_LIST_BUTTON_CLASS;
-    const glyph = document.createElement('span');
-    // The name is on the button; a "+" announced after it is noise.
-    glyph.setAttribute('aria-hidden', 'true');
-    glyph.textContent = '+';
-    button.appendChild(glyph);
-
-    button.addEventListener('click', (event) => {
-      // FullCalendar's `dateClick` is one delegated *native* listener on the
-      // view element, so a React `stopPropagation` would be far too late - the
-      // same reason EventTrophyLink handles its own clicks. It matters on
-      // touch, where `dateClick` would otherwise open this list a second time.
-      event.stopPropagation();
-      event.preventDefault();
-      const date = dayStringToLocalDate(cell.getAttribute('data-date') ?? '');
-      if (date) openDayListRef.current(date);
-    });
-
-    frame.appendChild(button);
-    applyDayListButtonRef.current(button, cell.getAttribute('data-date'));
+    applyDayAffordanceRef.current(arg.el);
   }, []);
 
   /**
-   * Re-label the buttons already in the grid.
+   * Re-dress the cells already in the grid.
    *
    * The mount hook covers a cell that has just been created; this covers the
    * ones that were already there when the answer changed - a search landing, a
    * type filter, "show full events", or a month navigation that reused the
-   * same cells with new dates. `applyDayListButton` changes identity with the
+   * same cells with new dates. `applyDayAffordance` changes identity with the
    * counts, so this effect is keyed on exactly that, plus the visible range
    * for the case where the events are cached and only the dates moved.
    */
   useEffect(() => {
     const root = calendarWrapperRef.current;
     if (!root) return;
-    root.querySelectorAll<HTMLElement>('.fc-daygrid-day').forEach((cell) => {
-      const button = cell.querySelector<HTMLButtonElement>(`.${DAY_LIST_BUTTON_CLASS}`);
-      if (button) applyDayListButton(button, cell.getAttribute('data-date'));
-    });
-  }, [applyDayListButton, visibleDateRange, active]);
+    root.querySelectorAll<HTMLElement>('.fc-daygrid-day').forEach(applyDayAffordance);
+  }, [applyDayAffordance, visibleDateRange, active]);
+
+  /**
+   * What hovering a date number says, for a pointer that stops on one.
+   *
+   * The same sentence as the accessible name, so the two cannot drift, and
+   * **empty** rather than FullCalendar's default "Go to November 7, 2025",
+   * which describes a day view this calendar does not have. A day with no
+   * events gets no tooltip at all: there is nothing to promise.
+   *
+   * A FullCalendar option, so it must keep one identity - a new function here
+   * re-renders the whole month - and it therefore reads the counts off a ref.
+   * The hint is recomputed whenever a cell renders, which is whenever the
+   * events that changed the counts were drawn, so the ref is never behind.
+   */
+  const dayCountsRef = useRef(dayCounts);
+  dayCountsRef.current = dayCounts;
+
+  const navLinkHint = useCallback((_dateStr: string, date: Date): string => {
+    const count = dayCountsRef.current.get(localDateKey(date)) ?? 0;
+    return count === 0 ? '' : dayListLabel(date, count);
+  }, []);
 
   const handleDayEventsClose = useCallback(() => {
     setDayEventsModal(null);
@@ -1321,8 +1398,9 @@ function CalendarPage({ active = true }: CalendarPageProps) {
           dayMaxEventRows={3}
           moreLinkContent={(arg) => isMobile ? `+${arg.num}` : `+${arg.num} more`}
           moreLinkClick={handleMoreLinkClick}
-          navLinks={isMobile}
+          navLinks
           navLinkDayClick={handleNavLinkDayClick}
+          navLinkHint={navLinkHint}
           customButtons={{
             updatingIndicator: {
               text: isRefreshing ? 'Updating...' : '',
