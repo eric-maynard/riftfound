@@ -75,7 +75,7 @@ connected component*, so if play is clustered a global ladder is not meaningful.
 ./ranking-metrics.sh connectivity --remote   # measure the co-play graph
 ./ranking-metrics.sh communities --remote    # Louvain communities vs connected components
 ./ranking-metrics.sh venues --remote         # per-venue aggregates + the scene assignment in force
-./ranking-metrics.sh validate --remote       # held-out accuracy, knob sweeps, event-tier weights
+./ranking-metrics.sh validate --remote       # held-out accuracy, knob sweeps, event-tier weights, set carry
 ./ranking-metrics.sh bar --remote            # how many players clear each publishing bar
 ./ranking-metrics.sh fit --remote            # dry-run refit summary (writes nothing)
 ./ranking-metrics.sh all --remote            # everything
@@ -104,6 +104,15 @@ distribution by tier first, because that is what decides whether weighting can
 help: up-weighting a tier that holds 1% of the matches cannot improve a ladder,
 only add variance. The shipped table is neutral; see
 [scraper/CLAUDE.md](../../scraper/CLAUDE.md), "is an event tier worth a weight?".
+
+`validate` also sweeps the **set-carry rotation widening** - how wide the prior
+is when a per-era fit opens from the previous era's closing ratings instead of
+the global prior. Three tables, because they are three different claims: the
+held-out log loss on the rows every variant can call, the same split by how thin
+the player's record in the *new* era is, and what the carry does to each era's
+rated population. The shipped default is on at a rotation of 100; see
+[scraper/CLAUDE.md](../../scraper/CLAUDE.md), "does carrying a rating across a
+set era help?". Re-run it at the first real rotation with a gap on both sides.
 
 All read-only; `fit` is a dry run and never writes derived items. The `--file`
 form reads NDJSON of `{externalId, results, roster}` objects, which is how a

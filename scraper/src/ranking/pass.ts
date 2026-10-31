@@ -102,6 +102,11 @@ export interface RankingPassSummary {
   scenesUnassigned: boolean;
   scopes: { scope: string; rated: number; total: number }[];
   skippedEras: { eraId: string; matches: number }[];
+  /**
+   * Per-era carried-prior counts, empty when the carry is off. Counts only -
+   * which players carried a rating is not something a log line may say.
+   */
+  setCarry: { eraId: string; carried: number; capped: number; fresh: number }[];
   converged: boolean;
   iterations: number;
   byeLeaks: number;
@@ -133,6 +138,7 @@ function emptySummary(): RankingPassSummary {
     scenesUnassigned: true,
     scopes: [],
     skippedEras: [],
+    setCarry: [],
     converged: false,
     iterations: 0,
     byeLeaks: 0,
@@ -346,6 +352,16 @@ export async function runRankingPass(options: RankingPassOptions = {}): Promise<
       `${diagnostics.playersWithMatches} players clear the bar, ${diagnostics.componentCount} components, ` +
       `giant share ${(diagnostics.giantComponentShare * 100).toFixed(1)}%`
   );
+  if (diagnostics.setCarry.length > 0) {
+    // Counts only: how many priors were carried into each era, and how many of
+    // those were capped back to the global width.
+    console.log(
+      `[ranking] set carry: ` +
+        diagnostics.setCarry
+          .map(row => `${row.eraId} ${row.carried} carried (${row.capped} capped), ${row.fresh} fresh`)
+          .join('; ')
+    );
+  }
   console.log(
     diagnostics.scenesUnassigned
       ? `[ranking] ${diagnostics.venueCount} venues, scenes unassigned ` +
@@ -390,6 +406,7 @@ function applyDiagnostics(summary: RankingPassSummary, diagnostics: SnapshotDiag
   summary.scenesUnassigned = diagnostics.scenesUnassigned;
   summary.scopes = diagnostics.scopes;
   summary.skippedEras = diagnostics.skippedEras;
+  summary.setCarry = diagnostics.setCarry;
   summary.converged = diagnostics.converged;
   summary.iterations = diagnostics.iterations;
 }

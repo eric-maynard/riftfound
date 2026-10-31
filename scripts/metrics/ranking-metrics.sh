@@ -10,7 +10,9 @@
 #
 # Usage:
 #   ./ranking-metrics.sh connectivity            # measure the co-play graph
-#   ./ranking-metrics.sh validate                # held-out accuracy vs Riot's tiebreakers
+#   ./ranking-metrics.sh validate                # held-out accuracy vs Riot's tiebreakers,
+#                                                # plus the prior-SD, observation-level, tier-weight
+#                                                # and set-carry sweeps
 #   ./ranking-metrics.sh communities             # Louvain communities vs connected components
 #   ./ranking-metrics.sh venues                  # per-venue aggregates (what a map view needs)
 #   ./ranking-metrics.sh bar                     # how many players clear each publishing bar

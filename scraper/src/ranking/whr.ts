@@ -74,6 +74,51 @@ export function eloToNat(elo: number, origin: number = DEFAULT_ELO_ORIGIN): numb
   return (elo - origin) / ELO_PER_NAT;
 }
 
+/**
+ * A per-player override of the global prior on the first rating.
+ *
+ * The one use is **carrying a rating across a set rotation**: a per-era fit can
+ * be handed the previous era's closing ratings so that a player's first day in
+ * the new set starts from where they finished the last one, instead of from the
+ * global mean. See `snapshot.ts` (`carriedPriorFor`) and scraper/CLAUDE.md,
+ * "Measured: does carrying a rating across a set era help?".
+ *
+ * **Natural units, deliberately.** Both arrays are in logistic units with 0
+ * meaning "the global prior mean", which is the same convention the fit works
+ * in. Carrying an *Elo* number here would make `eloOrigin` load-bearing - the
+ * carried mean would shift with the anchor while the likelihood did not - and
+ * the anchor's whole contract is that it is a display offset. `priorMeanOf`
+ * reads a previous fit directly so that no conversion happens on the way.
+ *
+ * A player absent from both arrays (index out of range, or a non-finite /
+ * non-positive sigma) falls back to the global prior, which is what makes a
+ * player with no previous era behave exactly as they do today.
+ */
+export interface PlayerPrior {
+  /** Prior mean of this player's first rating, natural units. */
+  mean: Float64Array;
+  /**
+   * Prior SD of this player's first rating, natural units.
+   *
+   * Non-finite or <= 0 means "use the global prior SD", so a sparse override
+   * can be a zero-filled array with only the carried players set.
+   */
+  sigma: Float64Array;
+}
+
+/** Prior mean and SD for one player, falling back to the global prior. */
+function priorFor(
+  prior: PlayerPrior | null | undefined,
+  player: number,
+  globalSigma: number
+): { mean: number; sigma: number } {
+  if (!prior || player >= prior.mean.length) return { mean: 0, sigma: globalSigma };
+  const sigma = prior.sigma[player];
+  if (!Number.isFinite(sigma) || sigma <= 0) return { mean: 0, sigma: globalSigma };
+  const mean = prior.mean[player];
+  return { mean: Number.isFinite(mean) ? mean : 0, sigma };
+}
+
 export interface WhrOptions {
   /**
    * Prior SD of a player's first rating, in Elo points.
@@ -284,6 +329,14 @@ export interface WhrFit {
   options: WhrOptions;
   /** Natural-unit prior SD, i.e. the rating of a player with no games at all. */
   priorSigma: number;
+  /**
+   * The per-player prior this fit was given, or null for the global prior.
+   *
+   * Kept on the fit so `latestRating` can answer for a player the fit never
+   * saw: under a carried prior their honest rating is the carried mean at the
+   * carried width, not the global mean.
+   */
+  playerPrior: PlayerPrior | null;
 }
 
 function sigmoid(x: number): number {
@@ -355,7 +408,16 @@ function solveTridiagonal(diag: Float64Array, off: Float64Array, rhs: Float64Arr
  * Deterministic: the same ObservationSet and options give the same numbers, so a
  * refit from scratch is reproducible and the derived items are idempotent.
  */
-export function fitWhr(observations: ObservationSet, overrides: Partial<WhrOptions> = {}): WhrFit {
+export function fitWhr(
+  observations: ObservationSet,
+  overrides: Partial<WhrOptions> = {},
+  /**
+   * Per-player override of the global prior on the first rating. Omit it (the
+   * production default for `all`, and for the first era) and every player is
+   * drawn from N(0, sigma0^2) exactly as before.
+   */
+  playerPrior: PlayerPrior | null = null
+): WhrFit {
   const options: WhrOptions = { ...DEFAULT_WHR_OPTIONS, ...overrides };
   const playerCount = observations.players.length;
   const matchCount = observations.playerA.length;
@@ -364,7 +426,6 @@ export function fitWhr(observations: ObservationSet, overrides: Partial<WhrOptio
   // as a plain division rather than `eloToNat(origin + sigma)` precisely so that
   // the anchor cannot creep into the fit by accident.
   const priorSigma = options.priorSigmaElo / ELO_PER_NAT;
-  const priorPrecision = 1 / (priorSigma * priorSigma);
   const driftNat = options.driftEloPerSqrtDay / ELO_PER_NAT;
   const driftVariancePerDay = driftNat * driftNat;
 
@@ -395,6 +456,11 @@ export function fitWhr(observations: ObservationSet, overrides: Partial<WhrOptio
   const dayIndex: Map<number, number>[] = new Array(playerCount);
   const ratings: Float64Array[] = new Array(playerCount);
   const sigmas: Float64Array[] = new Array(playerCount);
+  // Per-player prior on the first rating. With no override these are the global
+  // mean 0 and the global precision for everyone, which is the pre-existing
+  // model exactly.
+  const priorMean = new Float64Array(playerCount);
+  const priorPrecision = new Float64Array(playerCount);
   let maxPoints = 1;
   for (let p = 0; p < playerCount; p++) {
     const sorted = daySets[p] ? [...daySets[p]!].sort((a, b) => a - b) : [];
@@ -404,6 +470,13 @@ export function fitWhr(observations: ObservationSet, overrides: Partial<WhrOptio
     dayIndex[p] = index;
     ratings[p] = new Float64Array(sorted.length);
     sigmas[p] = new Float64Array(sorted.length);
+    const own = priorFor(playerPrior, p, priorSigma);
+    priorMean[p] = own.mean;
+    priorPrecision[p] = 1 / (own.sigma * own.sigma);
+    // Start the curve at its own prior mean. For the global prior that is 0 and
+    // nothing changes; for a carried one it is the right starting point, and it
+    // is also the answer for a player whose every match carried zero weight.
+    if (own.mean !== 0) ratings[p].fill(own.mean);
     if (sorted.length > maxPoints) maxPoints = sorted.length;
     daySets[p] = null; // release
   }
@@ -468,9 +541,9 @@ export function fitWhr(observations: ObservationSet, overrides: Partial<WhrOptio
         diag[term.timeIndex] += total * pWin * (1 - pWin);
       }
 
-      // Global prior on the first point.
-      grad[0] -= r[0] * priorPrecision;
-      diag[0] += priorPrecision;
+      // Prior on the first point: the global one, or this player's carried one.
+      grad[0] -= (r[0] - priorMean[p]) * priorPrecision[p];
+      diag[0] += priorPrecision[p];
 
       // Wiener prior between consecutive play days.
       for (let k = 0; k + 1 < n; k++) {
@@ -519,7 +592,7 @@ export function fitWhr(observations: ObservationSet, overrides: Partial<WhrOptio
       const pWin = sigmoid(d);
       diag[term.timeIndex] += (term.winWeight + term.loseWeight) * pWin * (1 - pWin);
     }
-    diag[0] += priorPrecision;
+    diag[0] += priorPrecision[p];
     for (let k = 0; k + 1 < n; k++) {
       const dt = days[p][k + 1] - days[p][k];
       const precision = 1 / (driftVariancePerDay * Math.max(1, dt));
@@ -551,13 +624,20 @@ export function fitWhr(observations: ObservationSet, overrides: Partial<WhrOptio
     maxDelta,
     options,
     priorSigma,
+    playerPrior,
   };
 }
 
 /** A player's rating and uncertainty at their last recorded time point. */
 export function latestRating(fit: WhrFit, player: number): { rating: number; sigma: number; day: number | null } {
   const n = fit.days[player]?.length ?? 0;
-  if (n === 0) return { rating: 0, sigma: fit.priorSigma, day: null };
+  if (n === 0) {
+    // No games in this slice: the prior *is* the answer. With the global prior
+    // that is (0, sigma0) as before; with a carried one it is where the player
+    // finished the previous era, at the widened width.
+    const own = priorFor(fit.playerPrior, player, fit.priorSigma);
+    return { rating: own.mean, sigma: own.sigma, day: null };
+  }
   return { rating: fit.ratings[player][n - 1], sigma: fit.sigmas[player][n - 1], day: fit.days[player][n - 1] };
 }
 
@@ -570,7 +650,9 @@ export function latestRating(fit: WhrFit, player: number): { rating: number; sig
  */
 export function ratingOnDay(fit: WhrFit, player: number, day: number): number {
   const points = fit.days[player];
-  if (!points || points.length === 0) return 0;
+  // A player this slice never saw sits at their prior mean - 0 under the global
+  // prior, the carried closing rating under a carried one.
+  if (!points || points.length === 0) return priorFor(fit.playerPrior, player, fit.priorSigma).mean;
   if (day <= points[0]) return fit.ratings[player][0];
   for (let i = points.length - 1; i >= 0; i--) {
     if (points[i] <= day) return fit.ratings[player][i];
