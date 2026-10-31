@@ -20,6 +20,8 @@ import {
   sceneBounds,
   sceneCoverageSentence,
   sceneFocusBounds,
+  sceneLadderNote,
+  scenePurityHint,
   sceneScope,
   filterScenes,
   formatSpread,
@@ -27,14 +29,20 @@ import {
 } from '../sceneMap';
 import type { SceneMapEntry } from '../../types/ranking';
 
-function scene(overrides: Partial<SceneMapEntry> & { componentId: string }): SceneMapEntry {
+function scene(overrides: Partial<SceneMapEntry> & { sceneId: string }): SceneMapEntry {
   return {
-    regionLabel: 'Martinez, CA',
+    label: 'Martinez, CA',
     playerCount: 40,
     ratedPlayers: 12,
     matchCount: 300,
     venueCount: 4,
+    medianPurity: 1,
     isGiant: false,
+    // Distinct from `sceneId`, because a scene is not a rating scale and the
+    // two ids must never be interchangeable in a fixture either.
+    componentId: 'c-pool',
+    componentSize: 400,
+    componentCount: 1,
     comparable: true,
     latitude: 38.0194,
     longitude: -122.1341,
@@ -80,40 +88,45 @@ describe('the two radii are different quantities', () => {
   });
 
   it('draws the ground disc at the spread, in metres', () => {
-    expect(sceneSpreadRadiusMeters(scene({ componentId: 'c', spreadKm: 12.5 }))).toBe(12_500);
+    expect(sceneSpreadRadiusMeters(scene({ sceneId: 'c', spreadKm: 12.5 }))).toBe(12_500);
     // The 133km corridor measured on the California sample: a real distance,
     // drawn as one, rather than a dot pretending to be a city.
-    expect(sceneSpreadRadiusMeters(scene({ componentId: 'c', spreadKm: 133.4 }))).toBe(133_400);
+    expect(sceneSpreadRadiusMeters(scene({ sceneId: 'c', spreadKm: 133.4 }))).toBe(133_400);
   });
 
   it('draws no disc where there is no extent', () => {
     // A single-store scene really is a point. An arbitrary minimum radius
     // would assert a spread it does not have.
-    expect(sceneSpreadRadiusMeters(scene({ componentId: 'c', spreadKm: 0 }))).toBeNull();
-    expect(sceneSpreadRadiusMeters(scene({ componentId: 'c', spreadKm: null }))).toBeNull();
-    expect(sceneSpreadRadiusMeters(scene({ componentId: 'c', spreadKm: -1 }))).toBeNull();
+    expect(sceneSpreadRadiusMeters(scene({ sceneId: 'c', spreadKm: 0 }))).toBeNull();
+    expect(sceneSpreadRadiusMeters(scene({ sceneId: 'c', spreadKm: null }))).toBeNull();
+    expect(sceneSpreadRadiusMeters(scene({ sceneId: 'c', spreadKm: -1 }))).toBeNull();
   });
 });
 
 describe('labels and copy', () => {
-  it('never renders a blank name', () => {
-    expect(sceneLabel(scene({ componentId: 'c', regionLabel: 'Singapore' }))).toBe('Singapore');
-    expect(sceneLabel(scene({ componentId: 'c', regionLabel: null }))).toBe(UNNAMED_SCENE_LABEL);
-    expect(sceneLabel(scene({ componentId: 'c', regionLabel: '   ' }))).toBe(UNNAMED_SCENE_LABEL);
+  it('never renders a blank name, and falls back to the id rather than a word', () => {
+    expect(sceneLabel(scene({ sceneId: 'c', label: 'Singapore' }))).toBe('Singapore');
+    // `Scene <id>`, matching the ladder's picker: an id is a handle a reader
+    // can share and search for, where "Unnamed scene" repeated down a list is
+    // indistinguishable from a bug. `UNNAMED_SCENE_LABEL` is still exported
+    // for copy that talks *about* unnamed scenes.
+    expect(sceneLabel(scene({ sceneId: 's94af82a16f', label: null }))).toBe('Scene s94af82a16f');
+    expect(sceneLabel(scene({ sceneId: 'c', label: '   ' }))).toBe('Scene c');
+    expect(UNNAMED_SCENE_LABEL).toBe('Unnamed scene');
   });
 
   it('summarises players, rated players and venues, with plurals', () => {
-    expect(sceneSummary(scene({ componentId: 'c', playerCount: 4654, ratedPlayers: 1203, venueCount: 211 }))).toBe(
+    expect(sceneSummary(scene({ sceneId: 'c', playerCount: 4654, ratedPlayers: 1203, venueCount: 211 }))).toBe(
       '4,654 players · 1,203 rated · 211 venues'
     );
     // The one-of-everything case, which is the common shape of a tiny scene.
-    expect(sceneSummary(scene({ componentId: 'c', playerCount: 1, ratedPlayers: 0, venueCount: 1 }))).toBe(
+    expect(sceneSummary(scene({ sceneId: 'c', playerCount: 1, ratedPlayers: 0, venueCount: 1 }))).toBe(
       '1 player · 0 rated · 1 venue'
     );
   });
 
   it('says a pin is weighted by play, and what it was computed from', () => {
-    const hint = scenePlaceHint(scene({ componentId: 'c', venueCount: 4, locatedVenues: 4, spreadKm: 12.5 }));
+    const hint = scenePlaceHint(scene({ sceneId: 'c', venueCount: 4, locatedVenues: 4, spreadKm: 12.5 }));
     expect(hint).toContain('weighted by matches played');
     expect(hint).toContain('all 4 of its venues');
     // Rounded past 10km, where the decimal stops carrying information.
@@ -123,31 +136,91 @@ describe('labels and copy', () => {
   it('says when a pin describes only part of its scene', () => {
     // The case a reader could not otherwise see: a pin derived from 2 of 40
     // stores describes a corner of the scene, not the scene.
-    const hint = scenePlaceHint(scene({ componentId: 'c', venueCount: 40, locatedVenues: 2 }));
+    const hint = scenePlaceHint(scene({ sceneId: 'c', venueCount: 40, locatedVenues: 2 }));
     expect(hint).toContain('2 of its 40 venues');
   });
 
   it('says a single-location scene has no spread rather than printing 0 km', () => {
-    const hint = scenePlaceHint(scene({ componentId: 'c', spreadKm: 0, venueCount: 1, locatedVenues: 1 }));
+    const hint = scenePlaceHint(scene({ sceneId: 'c', spreadKm: 0, venueCount: 1, locatedVenues: 1 }));
     expect(hint).toContain('single location');
     expect(hint).not.toContain('0 km');
   });
 
   it('explains an unlocated scene without blaming the ladder', () => {
-    const hint = scenePlaceHint(scene({ componentId: 'c', latitude: null, longitude: null, spreadKm: null }));
+    const hint = scenePlaceHint(scene({ sceneId: 'c', latitude: null, longitude: null, spreadKm: null }));
     expect(hint).toContain('geocoded');
     expect(hint).not.toContain('weighted');
   });
 
-  it('explains a scene too small to order, and that its ratings still exist', () => {
-    expect(sceneComparableHint(scene({ componentId: 'c', comparable: true }), 8)).toBeNull();
+  it('explains a board too small to order, and that its ratings still exist', () => {
+    expect(sceneComparableHint(scene({ sceneId: 'c', comparable: true }), 8)).toBeNull();
 
-    const hint = sceneComparableHint(scene({ componentId: 'c', comparable: false, playerCount: 3 }), 8);
-    expect(hint).toContain('at least 8 players');
-    expect(hint).toContain('3');
+    // **It quotes the pool's size, not the scene's.** This used to read "a
+    // position needs a scene of at least 8 players, and this one has 3",
+    // measuring the scene against a threshold the scene is not measured by - a
+    // 3-store scene inside a 2,000-player pool orders perfectly well. The
+    // depth a position is earned among is the pool's.
+    const hint = sceneComparableHint(
+      scene({ sceneId: 'c', comparable: false, playerCount: 40, componentId: 'c-tiny', componentSize: 4 }),
+      8
+    );
+    expect(hint).toContain('a pool of at least 8 players');
+    expect(hint).toContain('has 4');
+    expect(hint).not.toContain('40');
     // The distinction the ladder already draws: a comparison problem is not an
     // evidence problem, and the number is published either way.
     expect(hint).toContain('still published');
+
+    // No pool at all is a third answer, and it is not "too small".
+    const orphan = sceneComparableHint(
+      scene({ sceneId: 'c', comparable: false, componentId: null, componentSize: null }),
+      8
+    );
+    expect(orphan).toContain('No positions yet');
+    expect(orphan).not.toContain('Too small');
+  });
+
+  it("never calls the pool's ladder the scene's own", () => {
+    // The rule the whole conversion turns on: a scene has no ladder. The
+    // ladder's scope is `component:<id>`, there is no `scene:` scope, and one
+    // pool covers several scenes - so the copy beside the link has to say what
+    // it opens rather than promise a board that does not exist.
+    const note = sceneLadderNote(scene({ sceneId: 's-pen', componentId: 'c-bay', componentSize: 1688 }));
+    expect(note).toContain('A scene is not a ranking');
+    expect(note).toContain('covers other scenes too');
+    expect(note).toContain('1,688 players');
+    expect(note).not.toContain("this scene's ladder");
+  });
+
+  it("says when a scene's players are not even on one scale", () => {
+    // Reachable: an event's pairings connect the players they pair, and the
+    // engine places a player from the history it last replayed. It is a fact
+    // about the pools, not about the scene, which cannot be split.
+    const note = sceneLadderNote(
+      scene({ sceneId: 's', componentId: 'c', componentSize: 90, componentCount: 3 })
+    );
+    expect(note).toContain('3 separate pools');
+    expect(note).toContain('not all on one scale');
+  });
+
+  it('offers no ladder, and no excuse, for a scene with no pool', () => {
+    const note = sceneLadderNote(
+      scene({ sceneId: 's', componentId: null, componentSize: null, componentCount: 0 })
+    );
+    expect(note).toContain('No ladder yet');
+    // And it does not read as a defect in the scene: the stores are still
+    // where they are.
+    expect(note).toContain('still where these stores are');
+  });
+
+  it('stays quiet about purity unless the scene is genuinely split', () => {
+    // The median venue plays 100% of its games inside its scene, so a line
+    // about it on every scene would be furniture.
+    expect(scenePurityHint(scene({ sceneId: 's', medianPurity: 1 }))).toBeNull();
+    expect(scenePurityHint(scene({ sceneId: 's', medianPurity: null }))).toBeNull();
+    const hint = scenePurityHint(scene({ sceneId: 's', medianPurity: 0.76 }));
+    expect(hint).toContain('76%');
+    expect(hint).toContain('rather than a mistake');
   });
 
   it('formats a spread at the precision it carries', () => {
@@ -164,15 +237,17 @@ describe('links to the ladder', () => {
     // /api/rankings has always accepted. Spelled in one place so the map and
     // the ladder cannot drift. The *paths* are tested in ranking.test.ts,
     // beside the module they live in.
+    // The argument is a **componentId** - a scene's `componentId`, which is
+    // the pool it leads to - and never a `sceneId`. A scene is not a scope.
     expect(sceneScope('c00a489935b')).toBe('component:c00a489935b');
   });
 });
 
 describe('filterScenes', () => {
   const scenes = [
-    scene({ componentId: 'c-sing', regionLabel: 'Singapore' }),
-    scene({ componentId: 'c-bay', regionLabel: 'Martinez, CA' }),
-    scene({ componentId: 'c-blank', regionLabel: null }),
+    scene({ sceneId: 'c-sing', label: 'Singapore' }),
+    scene({ sceneId: 'c-bay', label: 'Martinez, CA' }),
+    scene({ sceneId: 'c-blank', label: null }),
   ];
 
   it('returns everything for an empty query', () => {
@@ -181,13 +256,13 @@ describe('filterScenes', () => {
   });
 
   it('matches the label, case- and whitespace-insensitively', () => {
-    expect(filterScenes(scenes, '  SINGA ').map((s) => s.componentId)).toEqual(['c-sing']);
-    expect(filterScenes(scenes, '  singa  ').map((s) => s.componentId)).toEqual(['c-sing']);
-    expect(filterScenes(scenes, 'ca').map((s) => s.componentId)).toEqual(['c-bay']);
+    expect(filterScenes(scenes, '  SINGA ').map((s) => s.sceneId)).toEqual(['c-sing']);
+    expect(filterScenes(scenes, '  singa  ').map((s) => s.sceneId)).toEqual(['c-sing']);
+    expect(filterScenes(scenes, 'ca').map((s) => s.sceneId)).toEqual(['c-bay']);
   });
 
-  it('matches the component id, so a shared link can be found', () => {
-    expect(filterScenes(scenes, 'c-blank').map((s) => s.componentId)).toEqual(['c-blank']);
+  it('matches the scene id, so a shared ?scene= link can be found by paste', () => {
+    expect(filterScenes(scenes, 'c-blank').map((s) => s.sceneId)).toEqual(['c-blank']);
   });
 });
 
@@ -195,9 +270,9 @@ describe('sceneBounds', () => {
   it('fits the located pins', () => {
     expect(
       sceneBounds([
-        scene({ componentId: 'a', latitude: 37.77, longitude: -122.41 }),
-        scene({ componentId: 'b', latitude: 1.35, longitude: 103.82 }),
-        scene({ componentId: 'c', latitude: -33.87, longitude: 151.21 }),
+        scene({ sceneId: 'a', latitude: 37.77, longitude: -122.41 }),
+        scene({ sceneId: 'b', latitude: 1.35, longitude: 103.82 }),
+        scene({ sceneId: 'c', latitude: -33.87, longitude: 151.21 }),
       ])
     ).toEqual([
       [-33.87, -122.41],
@@ -206,8 +281,8 @@ describe('sceneBounds', () => {
   });
 
   it('ignores unlocated scenes rather than folding 0,0 into the box', () => {
-    const london = scene({ componentId: 'a', latitude: 51.5, longitude: -0.12, spreadKm: 0 });
-    const box = sceneBounds([london, scene({ componentId: 'b', latitude: null, longitude: null })]);
+    const london = scene({ sceneId: 'a', latitude: 51.5, longitude: -0.12, spreadKm: 0 });
+    const box = sceneBounds([london, scene({ sceneId: 'b', latitude: null, longitude: null })]);
     // Centred on the one located pin, not on the midpoint between it and the
     // Gulf of Guinea.
     expect(box).not.toBeNull();
@@ -225,13 +300,13 @@ describe('sceneBounds', () => {
    * figure was measured for.
    */
   it('frames a single pin at the same scale as framing that scene', () => {
-    const only = scene({ componentId: 'a', latitude: 10, longitude: 20, spreadKm: 0 });
+    const only = scene({ sceneId: 'a', latitude: 10, longitude: 20, spreadKm: 0 });
     expect(sceneBounds([only])).toEqual(sceneFocusBounds(only));
   });
 
   it('has nothing to fit when nothing is located', () => {
     expect(sceneBounds([])).toBeNull();
-    expect(sceneBounds([scene({ componentId: 'a', latitude: null, longitude: null })])).toBeNull();
+    expect(sceneBounds([scene({ sceneId: 'a', latitude: null, longitude: null })])).toBeNull();
   });
 });
 
@@ -245,6 +320,7 @@ describe('sceneCoverageSentence', () => {
       locatedScenes: 0,
       dispersedScenes: 0,
       locatedPlayers: 0,
+      unassignedVenues: null,
       totalPlayers: 0,
       catalogueUnavailable: true,
     });
@@ -253,12 +329,13 @@ describe('sceneCoverageSentence', () => {
       locatedScenes: 0,
       dispersedScenes: 0,
       locatedPlayers: 0,
+      unassignedVenues: null,
       totalPlayers: 27318,
       catalogueUnavailable: false,
     });
 
     expect(cannotTell).not.toBe(noneLocated);
-    expect(cannotTell).toContain('has not published');
+    expect(cannotTell).toContain('no store has been placed in a scene');
     // And it never claims there are no scenes, which "0 scenes" would.
     expect(cannotTell).not.toContain('0 scenes');
     expect(noneLocated).toContain('1,235 scenes');
@@ -272,6 +349,7 @@ describe('sceneCoverageSentence', () => {
         locatedScenes: 1180,
         dispersedScenes: 0,
         locatedPlayers: 26500,
+        unassignedVenues: null,
         totalPlayers: 27318,
         catalogueUnavailable: false,
       })
@@ -288,12 +366,56 @@ describe('sceneCoverageSentence', () => {
       locatedScenes: 1282,
       dispersedScenes: 20,
       locatedPlayers: 19038,
+      unassignedVenues: null,
       totalPlayers: 31893,
       catalogueUnavailable: false,
     });
     expect(sentence).toContain('1,282 of 1,302 scenes');
     expect(sentence).toContain('60%');
     expect(sentence).toContain('20 more play across too many regions to pin');
+  });
+
+  it('counts the stores in no scene, because nothing else on the page can', () => {
+    // A store that failed the rankability gate is absent from a catalogue of
+    // scenes by construction, so it cannot be listed. If this line does not
+    // count it, nothing does, and a reader looking for Palo Alto concludes the
+    // map lost it. 38 venues on the live production assignment.
+    const sentence = sceneCoverageSentence({
+      totalScenes: 1123,
+      locatedScenes: 1123,
+      dispersedScenes: 0,
+      unassignedVenues: 38,
+      locatedPlayers: 33737,
+      totalPlayers: 33737,
+      catalogueUnavailable: false,
+    });
+    expect(sentence).toContain('38 stores are in no scene yet');
+
+    // One store reads as one store.
+    expect(
+      sceneCoverageSentence({
+        totalScenes: 5,
+        locatedScenes: 5,
+        dispersedScenes: 0,
+        unassignedVenues: 1,
+        locatedPlayers: 10,
+        totalPlayers: 10,
+        catalogueUnavailable: false,
+      })
+    ).toContain('1 store is in no scene yet');
+
+    // And an engine that does not publish the figure says nothing, rather than
+    // claiming every store is placed.
+    const silent = sceneCoverageSentence({
+      totalScenes: 5,
+      locatedScenes: 5,
+      dispersedScenes: 0,
+      unassignedVenues: null,
+      locatedPlayers: 10,
+      totalPlayers: 10,
+      catalogueUnavailable: false,
+    });
+    expect(silent).not.toContain('no scene');
   });
 
   it('does not divide by zero on an empty but readable catalogue', () => {
@@ -303,6 +425,7 @@ describe('sceneCoverageSentence', () => {
         locatedScenes: 1,
         dispersedScenes: 0,
         locatedPlayers: 0,
+        unassignedVenues: null,
         totalPlayers: 0,
         catalogueUnavailable: false,
       })
@@ -317,7 +440,7 @@ describe('a dispersed scene', () => {
     // number is a fact a reader can weigh.
     const hint = scenePlaceHint(
       scene({
-        componentId: 'c-pacific',
+        sceneId: 'c-pacific',
         dispersed: true,
         latitude: null,
         longitude: null,
@@ -337,7 +460,7 @@ describe('a dispersed scene', () => {
 
   it('still explains itself when the distance is missing', () => {
     const hint = scenePlaceHint(
-      scene({ componentId: 'c', dispersed: true, latitude: null, longitude: null, nearestVenueKm: null })
+      scene({ sceneId: 'c', dispersed: true, latitude: null, longitude: null, nearestVenueKm: null })
     );
     expect(hint).toContain('too far apart');
     expect(hint).not.toContain('null');
@@ -345,10 +468,10 @@ describe('a dispersed scene', () => {
 
   it('is told apart from a scene with no geography at all', () => {
     const dispersed = scenePlaceHint(
-      scene({ componentId: 'a', dispersed: true, latitude: null, longitude: null, nearestVenueKm: 900 })
+      scene({ sceneId: 'a', dispersed: true, latitude: null, longitude: null, nearestVenueKm: 900 })
     );
     const ungeocoded = scenePlaceHint(
-      scene({ componentId: 'b', dispersed: false, latitude: null, longitude: null, nearestVenueKm: null })
+      scene({ sceneId: 'b', dispersed: false, latitude: null, longitude: null, nearestVenueKm: null })
     );
     expect(dispersed).not.toBe(ungeocoded);
     expect(ungeocoded).toContain('geocoded');
@@ -365,7 +488,7 @@ describe('a dispersed scene', () => {
 describe('sceneFocusBounds', () => {
   it('frames a located scene on its pin, padded by its own spread', () => {
     const bounds = sceneFocusBounds(
-      scene({ componentId: 'a', latitude: 0, longitude: 0, spreadKm: 111 })
+      scene({ sceneId: 'a', latitude: 0, longitude: 0, spreadKm: 111 })
     );
     // On the equator a degree is ~111km each way, so a 111km spread is ~1deg.
     expect(bounds).not.toBeNull();
@@ -380,7 +503,7 @@ describe('sceneFocusBounds', () => {
     // No extent at all: the floor is what stops `fitBounds` zooming to a
     // basemap of one road, where a single building is less use than a city.
     const bounds = sceneFocusBounds(
-      scene({ componentId: 'a', latitude: 10, longitude: 20, spreadKm: null })
+      scene({ sceneId: 'a', latitude: 10, longitude: 20, spreadKm: null })
     );
     const [[south, west], [north, east]] = bounds!;
     expect(north - south).toBeGreaterThan(0.05);
@@ -393,7 +516,7 @@ describe('sceneFocusBounds', () => {
     // draws for such a scene.
     const bounds = sceneFocusBounds(
       scene({
-        componentId: 'c-tor',
+        sceneId: 'c-tor',
         dispersed: true,
         latitude: null,
         longitude: null,
@@ -417,17 +540,17 @@ describe('sceneFocusBounds', () => {
   it('has nothing to frame for a scene with neither pin nor venue', () => {
     expect(
       sceneFocusBounds(
-        scene({ componentId: 'a', latitude: null, longitude: null, topVenues: [] })
+        scene({ sceneId: 'a', latitude: null, longitude: null, topVenues: [] })
       )
     ).toBeNull();
   });
 
   it('pads longitude by more degrees at high latitude, since degrees shrink', () => {
     const equator = sceneFocusBounds(
-      scene({ componentId: 'a', latitude: 0, longitude: 0, spreadKm: 50 })
+      scene({ sceneId: 'a', latitude: 0, longitude: 0, spreadKm: 50 })
     )!;
     const arctic = sceneFocusBounds(
-      scene({ componentId: 'b', latitude: 70, longitude: 0, spreadKm: 50 })
+      scene({ sceneId: 'b', latitude: 70, longitude: 0, spreadKm: 50 })
     )!;
     expect(arctic[1][1] - arctic[0][1]).toBeGreaterThan(equator[1][1] - equator[0][1]);
   });

@@ -404,11 +404,14 @@ function EventScene({
           mostly
         </span>
       )}
-      {componentId !== null && (
-        <Link className="event-scene-map" to={carryPreview(sceneMapPath(componentId), search)}>
-          Map
-        </Link>
-      )}
+      {/* The map link is the **scene's**, not the pool's. It used to be the
+          pool's, because the map drew components - so this control next to
+          `Peninsula` opened a map and selected nothing. The ladder link above
+          is still the pool's, and the two ids are deliberately not
+          interchangeable. */}
+      <Link className="event-scene-map" to={carryPreview(sceneMapPath(line.sceneId), search)}>
+        Map
+      </Link>
     </p>
   );
 }

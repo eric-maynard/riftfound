@@ -72,7 +72,9 @@ import { carryPreview } from '../lib/preview';
 /** Hover/focus copy for the concepts the page cannot avoid naming. */
 const HINTS = {
   scene:
-    'A scene is a group of players who have played each other. A rating is only really earned against them, so pick a scene for positions that are. Global ranks every scene at once.',
+    'A scene is a group of stores close enough together that the players at them really play each other. Pick the one you play in. The board it opens is the wider pool those players are ranked in, which usually covers a few neighbouring scenes.',
+  pool:
+    'This board is a rating pool: every player whose recorded games chain together, which is the only group two ratings can be compared inside. A pool usually covers several scenes, so it is named after the pool rather than after the scene you picked.',
   rating:
     'Worked out from games recorded at events. The ± is the margin of uncertainty around the number.',
   margin:
@@ -80,7 +82,17 @@ const HINTS = {
 } as const;
 
 const PAGE_SIZE = 25;
-const URL_PARAMS = { SET: 'set', REGION: 'region' } as const;
+/**
+ * `region` is the **ladder scope** - a `componentId`, which is the only thing a
+ * rating scale can be - and `scene` is the **place the reader picked**, which is
+ * what the picker's field shows and what the map highlights.
+ *
+ * Two parameters because they are two facts, and because a shared `?region=`
+ * link handed out before this existed has to keep working unchanged: the scope
+ * is read from `region` alone and nothing infers one from the other. `scene` is
+ * presentation - drop it and the board is identical.
+ */
+const URL_PARAMS = { SET: 'set', REGION: 'region', SCENE: 'scene' } as const;
 
 interface RankingState {
   entries: LeaderboardEntry[];
@@ -104,6 +116,7 @@ function RankingPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const setId = searchParams.get(URL_PARAMS.SET) ?? ALL_SETS;
   const regionParam = searchParams.get(URL_PARAMS.REGION);
+  const sceneParam = searchParams.get(URL_PARAMS.SCENE);
 
   const [state, setState] = useState<RankingState>(EMPTY_STATE);
   const [sets, setSets] = useState<SetInfo[]>([]);
@@ -173,9 +186,24 @@ function RankingPage() {
   }, [scope, state.cursor]);
 
   const updateParam = (key: string, value: string | null) => {
+    updateParams([[key, value]]);
+  };
+
+  /**
+   * Several parameters in one write, because the scene and the scope have to
+   * move together.
+   *
+   * Two `updateParam` calls would each build their patch from the same stale
+   * `searchParams`, so the second would drop the first - the classic form of
+   * this bug, and here it would leave a scene selected with the previous
+   * scene's board under it.
+   */
+  const updateParams = (patch: [string, string | null][]) => {
     const next = new URLSearchParams(searchParams);
-    if (value === null) next.delete(key);
-    else next.set(key, value);
+    for (const [key, value] of patch) {
+      if (value === null) next.delete(key);
+      else next.set(key, value);
+    }
     setSearchParams(next);
   };
 
@@ -206,7 +234,21 @@ function RankingPage() {
       <div className="ranking-head">
         <h1>Rankings</h1>
         <p className="ranking-head-sub">
-          {componentLabel(selectedComponent)} &middot; {scopeLabel}
+          {/* The heading names the **pool**, which is what this board is, and
+              the picker's field names the **scene**, which is where the reader
+              plays. Those are two different strings for one selection and the
+              mismatch is real rather than a bug - a pool covers several scenes
+              - so the hint says it here, beside the name that differs, in the
+              page's existing idiom. Nothing is renamed to make them agree:
+              that would mean one of the two names was wrong. */}
+          {selectedComponent ? (
+            <abbr className="col-hint" title={HINTS.pool}>
+              {componentLabel(selectedComponent)}
+            </abbr>
+          ) : (
+            componentLabel(selectedComponent)
+          )}{' '}
+          &middot; {scopeLabel}
         </p>
       </div>
 
@@ -230,13 +272,25 @@ function RankingPage() {
 
         <SceneSelect
           components={state.components}
-          value={regionParam}
-          onChange={(componentId) => updateParam(URL_PARAMS.REGION, componentId)}
+          // The scene when one was picked, else the scope - which is what the
+          // fallback rows are keyed on, so a bare `?region=` link still marks
+          // its row while the directory is in flight.
+          value={sceneParam ?? regionParam}
+          // Both at once. A scene whose players are in no rating pool yields a
+          // scene and a **null** scope, which clears `?region=` and puts the
+          // board back to Global - the honest result, because there is no
+          // board for that scene to show and inventing one would be worse.
+          onChange={(sceneId, nextScope) =>
+            updateParams([
+              [URL_PARAMS.SCENE, sceneId],
+              [URL_PARAMS.REGION, nextScope],
+            ])
+          }
           hint={HINTS.scene}
-          // The API's own name for the scope it just served, for the scenes
-          // `components` does not carry - which is most of them: that list is
-          // 41 scenes of 1,307, so a scene picked on the map or arriving in a
-          // shared link would otherwise leave the closed field blank.
+          // The API's own name for the scope it just served, for the field
+          // before the scene directory lands. It is the **pool's** name, which
+          // is a different thing from the scene's and is why the heading above
+          // carries a hint saying so.
           selectedLabel={selectedComponent?.regionLabel ?? null}
         />
 

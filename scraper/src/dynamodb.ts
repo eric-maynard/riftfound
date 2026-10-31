@@ -1969,6 +1969,21 @@ export async function saveRankingSnapshotDynamoDB(
       venueIds: [...currentVenues],
       sceneIds: [...currentScenes],
       searchShards: searchIndexItems.length,
+      // What is **not** in a scene, so a reader of the scene map can be told
+      // rather than left to infer it from a count that does not add up. A
+      // geographic cluster is only published as a scene when its players play
+      // each other enough to rank anybody, so a store whose regulars only ever
+      // play visitors keeps no scene - 38 venues and 172 players on the live
+      // assignment. Derived from the snapshot being written, here rather than
+      // in the builder, so the figure and the items it describes cannot drift.
+      unassignedVenues: snapshot.venues.filter(venue => venue.sceneId === null).length,
+      // A player belongs to a scene through their home store, so this counts
+      // the players who **have** a home store that is in no scene. A player
+      // with no resolved home store at all is a different absence and is not
+      // folded in with it.
+      unassignedPlayers: snapshot.profiles.filter(
+        profile => profile.homeVenueId !== null && profile.sceneId === null
+      ).length,
       generatedAt: now,
     },
   }));

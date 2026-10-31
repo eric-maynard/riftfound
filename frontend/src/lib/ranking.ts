@@ -111,9 +111,15 @@ export const SCENE_MAP_PARAM = 'scene';
  * The map's selection lives in its URL precisely so a view of one scene is
  * shareable, so linking to it from elsewhere is reuse rather than a second
  * mechanism.
+ *
+ * **The argument is a `sceneId`.** It used to be a `componentId`, because the
+ * map read the component catalogue - so a `?scene=` link built from a real
+ * scene id (the only kind an event page has) selected nothing and the reader
+ * got the unfiltered world view. The parameter name was right all along; the
+ * ids under it were not.
  */
-export function sceneMapPath(componentId: string): string {
-  return `/rankings/map?${SCENE_MAP_PARAM}=${encodeURIComponent(componentId)}`;
+export function sceneMapPath(sceneId: string): string {
+  return `/rankings/map?${SCENE_MAP_PARAM}=${encodeURIComponent(sceneId)}`;
 }
 
 export function parseScope(raw: string | null | undefined): { setId: string | null; componentId: string | null } {
@@ -152,8 +158,23 @@ export const GLOBAL_SCENE_LABEL = 'Global';
  * and the list only grows.
  */
 export interface SceneOption {
-  /** null is the Global pseudo-scene: every scene at once, and never `comparable`. */
+  /**
+   * The row's identity: a `sceneId` from the catalogue, or null for Global.
+   *
+   * **Not a ladder scope.** See `scope` below - the two were one field while
+   * the picker listed components, and separating them is what lets the control
+   * offer `Peninsula` at all.
+   */
   id: string | null;
+  /**
+   * The `componentId` the ladder is scoped to when this row is chosen.
+   *
+   * Null for Global (no scope) and null for a scene whose players have not
+   * been placed in a pool (no board to open). Undefined on a row built from
+   * the ladder's own `components`, where the id *is* a component already -
+   * `sceneOptionScope` resolves all three cases in one place.
+   */
+  scope?: string | null;
   label: string;
   /** Secondary line: rated count, and whether the scene is big enough to order. */
   meta: string;
@@ -228,6 +249,22 @@ export function findSceneOption(options: SceneOption[], id: string | null): Scen
 }
 
 /**
+ * The ladder scope a row leads to, in one place.
+ *
+ * Three cases, and the fallback is the load-bearing one: a row built from the
+ * ladder's `components` has no `scope` because its `id` already *is* a
+ * component id, and that is the list the picker shows for the few hundred
+ * milliseconds before the scene catalogue lands. So `undefined` means "the id
+ * is the scope" and an explicit `null` means "there is no scope" - which a
+ * `scope ?? id` would get exactly backwards for a scene with no pool, sending
+ * the ladder off to `component:<a scene id>` and getting an empty board.
+ */
+export function sceneOptionScope(option: SceneOption | null): string | null {
+  if (option === null) return null;
+  return option.scope === undefined ? option.id : option.scope;
+}
+
+/**
  * The picker's rows, built from the **scene catalogue** rather than from the
  * ladder's `components`.
  *
@@ -255,17 +292,50 @@ export function findSceneOption(options: SceneOption[], id: string | null): Scen
  */
 export function sceneCatalogueOptions(scenes: SceneCatalogueRow[]): SceneOption[] {
   const ordered = [...scenes].sort((a, b) => b.playerCount - a.playerCount);
+  // Two scenes in one pool is the normal case - the engine's own fixture has
+  // two, and on production a component spans several scenes - so the rows have
+  // to say when picking a different place lands on the same board. Counted
+  // over the whole catalogue once rather than per row.
+  const scenesPerPool = new Map<string, number>();
+  for (const scene of scenes) {
+    if (scene.componentId === null) continue;
+    scenesPerPool.set(scene.componentId, (scenesPerPool.get(scene.componentId) ?? 0) + 1);
+  }
+
   return [
     GLOBAL_OPTION,
     ...ordered.map((scene) => ({
-      id: scene.componentId,
-      label: scene.regionLabel?.trim() ? scene.regionLabel : `Scene ${scene.componentId}`,
-      meta: `${scene.playerCount.toLocaleString('en-US')} player${scene.playerCount === 1 ? '' : 's'}`,
+      // **The row's id is the scene's and the scope is the pool's.** They are
+      // different strings and the picker carries both: the id is what a
+      // `?scene=` link and the map's highlight match on, the scope is what the
+      // ladder is actually fetched with. Collapsing them is the bug this
+      // control had - it listed components under the word "scene".
+      id: scene.sceneId,
+      scope: scene.componentId,
+      label: scene.label?.trim() ? scene.label : `Scene ${scene.sceneId}`,
+      meta: sceneOptionMeta(scene, scenesPerPool.get(scene.componentId ?? '') ?? 0),
       comparable: scene.comparable,
       located: scene.latitude !== null && scene.longitude !== null,
       pinHint: scenePinAbsence(scene),
     })),
   ];
+}
+
+/**
+ * The secondary line on a scene row: its size, then what it shares.
+ *
+ * The share is the part that earns its place. A reader who picks `Peninsula`
+ * and lands on a board with South Bay players on it has not been misled if the
+ * row said so, and has been if it did not - and this is the only surface where
+ * that can be said before the click rather than after it.
+ */
+function sceneOptionMeta(scene: SceneCatalogueRow, scenesInPool: number): string {
+  const players = `${scene.playerCount.toLocaleString('en-US')} player${scene.playerCount === 1 ? '' : 's'}`;
+  if (scene.componentId === null) return `${players} · no ladder yet`;
+  if (scenesInPool > 1) {
+    return `${players} · ladder shared with ${(scenesInPool - 1).toLocaleString('en-US')} other scene${scenesInPool === 2 ? '' : 's'}`;
+  }
+  return players;
 }
 
 /**
@@ -276,9 +346,12 @@ export function sceneCatalogueOptions(scenes: SceneCatalogueRow[]): SceneOption[
  * the test for it does not have to construct a whole map entry.
  */
 export interface SceneCatalogueRow {
-  componentId: string;
-  regionLabel: string | null;
+  /** The scene's own id. The row's identity, and what `?scene=` carries. */
+  sceneId: string;
+  label: string | null;
   playerCount: number;
+  /** The rating pool, which is the ladder's scope. Null when there is none. */
+  componentId: string | null;
   comparable: boolean;
   latitude: number | null;
   longitude: number | null;

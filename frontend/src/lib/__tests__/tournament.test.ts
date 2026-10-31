@@ -638,6 +638,18 @@ describe('the scene line', () => {
     expect(line.partial).toBe(false);
   });
 
+  it('links the map at the scene and the ladder at the component', () => {
+    const line = asScene(sceneLine(scene(), 8));
+    // Two links, two ids, and they are not interchangeable. The `Map` link
+    // used to carry the component id, because the map drew components - so the
+    // control beside `Peninsula` opened a map and selected nothing, and a
+    // hand-built `?scene=<sceneId>` found nothing either. The map is keyed on
+    // scenes now and this is the id it gets.
+    expect(line.sceneId).toBe('s4f1c2a0b19');
+    expect(line.componentId).toBe('ce3da9bead6');
+    expect(line.sceneId).not.toBe(line.componentId);
+  });
+
   it('links the ladder at the component, and says that is what it is', () => {
     const line = asScene(sceneLine(scene(), 8));
     // A ladder is only meaningful over one rating scale, and a component is

@@ -198,6 +198,49 @@ export interface RankingStore {
   listSceneCatalogue?(): Promise<SceneCatalogueEntry[]>;
 
   /**
+   * The engine's `SCENE#<sceneId>` catalogue, in full, for the map of scenes
+   * and the scene picker.
+   *
+   * One Query on GSI1's `SCENE` partition, exactly as `listSceneCatalogue` is
+   * one Query on the `COMPONENT` one - the items were given GSI1 keys at the
+   * same time and for the same reason. **This is the one the map reads**, and
+   * `listSceneCatalogue` is kept because `getComponent` shares its mapping and
+   * the ladder still scopes on a component.
+   *
+   * Why the map moved off the component catalogue: a component is a
+   * reachability closure of the co-play graph, so one travelling player welds
+   * two cities into one permanently, and the measured result was a map whose
+   * list read `Karlsruhe, Deutschland` and `Paris, France` while `Peninsula`
+   * and `South Bay` - the names a reader was looking for - were not selectable
+   * anywhere on it. A scene is a cluster of stores, capped at 30km, and its
+   * label is the thing a local would say.
+   *
+   * Optional and allowed to come back empty, on the same terms as every other
+   * catalogue reader here: a `SCENE#` item exists only once an operator has
+   * accepted a re-clustering *and* a refit has run since, so an empty answer is
+   * "nothing assigned yet" and a thrown Query is "cannot tell". The service
+   * tells those apart; neither is a 500.
+   */
+  listSceneDirectory?(): Promise<SceneDirectoryEntry[]>;
+
+  /**
+   * What the engine's last refit left out of every scene.
+   *
+   * One GetItem on the scope directory the refit already writes, ~1 read unit,
+   * and it answers the one question the scene catalogue structurally cannot:
+   * **how much is in no scene at all.** The catalogue is a list of scenes, so a
+   * store that failed the rankability gate is simply absent from it, and an
+   * absence cannot be rendered. 38 venues and 172 players on the live
+   * assignment - small, real, and the kind of figure a map has to print rather
+   * than let a reader discover by looking for Palo Alto and finding nothing.
+   *
+   * Optional, and null is a legitimate answer meaning "this engine does not
+   * publish the figure". The service carries that through as null in
+   * `coverage`, which is not the same claim as zero.
+   */
+  getSceneCoverage?(): Promise<SceneCoverageCounts | null>;
+
+  /**
    * One scene's catalogue item, by id, or null when there is none.
    *
    * The same items `listSceneCatalogue` enumerates, read one at a time - and
@@ -287,7 +330,32 @@ export interface VenueCatalogueEntry {
   generatedAt: string | null;
 }
 
-/** One `SCENE#<sceneId>` item: the scene directory's own row. */
+/**
+ * One `SCENE#<sceneId>` item: the scene directory's own row.
+ *
+ * The place fields are the same five `SceneCatalogueEntry` carries, written by
+ * the same `scenePlace` derivation in the engine - a scene and a component are
+ * different partitions of the same venue tallies, and the arithmetic does not
+ * care which. All of them are nullable because **null is the normal value**: a
+ * scene whose stores have never been geocoded has no centroid, and an item
+ * written by an engine that predates the fields carries none.
+ *
+ * `componentId` / `componentSize` / `componentCount` are the **rating pool**
+ * this scene's players sit on. They are not the scene's identity and must never
+ * be read as it: a scene has no ladder of its own, the ladder's scope is
+ * `component:<id>`, and this is how a reader who found their scene is pointed
+ * at the board their rating is actually on.
+ */
+/**
+ * The corpus-level figures the scene catalogue cannot carry, off the engine's
+ * scope directory. Both null-safe: an older refit wrote neither.
+ */
+export interface SceneCoverageCounts {
+  unassignedVenues: number | null;
+  unassignedPlayers: number | null;
+  generatedAt: string | null;
+}
+
 export interface SceneDirectoryEntry {
   sceneId: string;
   label: string | null;
@@ -299,6 +367,27 @@ export interface SceneDirectoryEntry {
   medianPurity: number | null;
   /** When the **assignment** was made, which is not the refit time. */
   assignedAt: string | null;
+
+  /** Match-weighted spherical centroid of the scene's located venues, or null. */
+  latitude: number | null;
+  longitude: number | null;
+  /** Match-weighted mean distance from that centroid, km. */
+  spreadKm: number | null;
+  /** Distance from the centroid to the scene's nearest own venue, km. */
+  nearestVenueKm: number | null;
+  locatedVenues: number | null;
+  locatedMatches: number | null;
+  topVenues: SceneCatalogueVenue[];
+
+  /** The connected component holding most of this scene's home players. */
+  componentId: string | null;
+  /** That component's player count, so a caller can say whether it orders. */
+  componentSize: number | null;
+  /** Distinct components the scene's home players are spread over. */
+  componentCount: number | null;
+
+  /** When the engine last wrote this item. Not `assignedAt`. */
+  generatedAt: string | null;
 }
 
 /**

@@ -34,7 +34,7 @@
  */
 
 import { MatchResult, sliceMatches, type ObservationSet } from './observations.js';
-import { findComponents, venueKey, type ComponentAssignment } from './graph.js';
+import { findComponents, venueKey, type ComponentAssignment, type ComponentVenue } from './graph.js';
 import { fitWhr, latestRating, natToElo, ELO_PER_NAT, type WhrFit, type WhrOptions } from './whr.js';
 import { sceneLookup, type SceneAssignment } from './scenes.js';
 import { scenePlace, DEFAULT_SCENE_MAP_TOP_VENUES } from './sceneMap.js';
@@ -706,6 +706,10 @@ export function buildSnapshot(
     );
   }
 
+  // Component sizes by id, so a scene can publish the size of the pool it
+  // points at without re-deriving it. The component walk already has it.
+  const componentSizeById = new Map(components.components.map(component => [component.id, component.size]));
+
   // Component directory, so the region selector and the scene map are one
   // Query each rather than a scan. The place comes off the venue tallies the
   // component walk already collected - see ranking/sceneMap.ts for why that
@@ -810,7 +814,22 @@ export function buildSnapshot(
   }
 
   const venueProfiles: VenueProfile[] = [];
-  const sceneTotals = new Map<string, { venues: number; players: Set<number>; rated: number; matches: number; purities: number[] }>();
+  // Per-scene tallies, including the venue rows `scenePlace` needs. They are
+  // the same rows `findComponents` hands out for a component - `scenePlace`
+  // takes venue tallies and knows nothing about which partition produced them,
+  // so a scene's pin is the component derivation applied verbatim rather than a
+  // second implementation of a spherical mean.
+  interface SceneAccumulator {
+    venues: number;
+    players: Set<number>;
+    rated: number;
+    matches: number;
+    purities: number[];
+    places: ComponentVenue[];
+    /** Home players per connected component, for the pool this scene links to. */
+    componentPlayers: Map<string, number>;
+  }
+  const sceneTotals = new Map<string, SceneAccumulator>();
   for (const [key, row] of [...venueRows.entries()].sort((a, b) => (a[0] < b[0] ? -1 : 1))) {
     const sceneId = scenes.sceneOfVenue.get(key) ?? null;
     const scenePurity = sceneId ? scenes.purityOfVenue.get(key) ?? null : null;
@@ -854,11 +873,29 @@ export function buildSnapshot(
     if (sceneId) {
       let totals = sceneTotals.get(sceneId);
       if (!totals) {
-        sceneTotals.set(sceneId, (totals = { venues: 0, players: new Set(), rated: 0, matches: 0, purities: [] }));
+        sceneTotals.set(sceneId, (totals = {
+          venues: 0,
+          players: new Set(),
+          rated: 0,
+          matches: 0,
+          purities: [],
+          places: [],
+          componentPlayers: new Map(),
+        }));
       }
       totals.venues++;
       totals.matches += row.matches;
       if (scenePurity !== null) totals.purities.push(scenePurity);
+      // The **mean** of this store's events' coordinates, for the reason
+      // `VENUE#` uses one: the two sources geocode a store ~20m apart, so
+      // "whichever event was read last" wobbles where a mean is stable.
+      totals.places.push({
+        venue: key,
+        shopExternalId: row.shopExternalId,
+        matchCount: row.matches,
+        latitude: row.coordCount > 0 ? row.latSum / row.coordCount : null,
+        longitude: row.coordCount > 0 ? row.lonSum / row.coordCount : null,
+      });
     }
   }
 
@@ -874,6 +911,14 @@ export function buildSnapshot(
     if (!totals) continue;
     totals.players.add(p);
     if (ratedPlayer[p] === 1) totals.rated++;
+    // Which rating pool this scene's players are actually on. A scene is not a
+    // rating scale - the ladder's scope is `component:<id>` and there is no
+    // `scene:` scope - so the item has to carry the board a reader should be
+    // sent to, rather than let a UI imply the scene has one of its own.
+    const componentId = components.componentIds[p];
+    if (componentId) {
+      totals.componentPlayers.set(componentId, (totals.componentPlayers.get(componentId) ?? 0) + 1);
+    }
   }
 
   // Scene directory. Built from the *stored* assignment, so every scene it
@@ -886,7 +931,22 @@ export function buildSnapshot(
       const totals = sceneTotals.get(scene.sceneId)!;
       const purities = [...totals.purities].sort((a, b) => a - b);
       const mid = purities.length >> 1;
+      // The modal pool, ties broken on the id so the answer does not depend on
+      // Map iteration order between refits.
+      let pool: { id: string; players: number } | null = null;
+      for (const [id, players] of totals.componentPlayers) {
+        if (pool === null || players > pool.players || (players === pool.players && id < pool.id)) {
+          pool = { id, players };
+        }
+      }
+      // Descending by matches, venue key as the tiebreak, so `topVenues` is the
+      // busiest few and the order is deterministic - the same contract
+      // `Component.venues` carries.
+      const places = [...totals.places].sort(
+        (a, b) => b.matchCount - a.matchCount || (a.venue < b.venue ? -1 : a.venue > b.venue ? 1 : 0)
+      );
       return sanitizeSceneProfile({
+        ...scenePlace(places, { topVenues: options.sceneMapTopVenues }),
         sceneId: scene.sceneId,
         label: scene.label,
         venueCount: totals.venues,
@@ -899,6 +959,9 @@ export function buildSnapshot(
             : purities.length % 2 === 1
               ? purities[mid]
               : (purities[mid - 1] + purities[mid]) / 2,
+        componentId: pool?.id ?? null,
+        componentSize: pool === null ? null : componentSizeById.get(pool.id) ?? null,
+        componentCount: totals.componentPlayers.size,
         assignedAt,
         generatedAt,
       });

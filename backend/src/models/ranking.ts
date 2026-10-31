@@ -525,35 +525,118 @@ export interface SceneMapVenue {
 export const SCENE_CENTROID_MAX_KM = 100;
 
 /**
+ * Why the gate above still exists now that the map reads scenes.
+ *
+ * The whole distribution it was measured on is a distribution over **connected
+ * components**, and the pathological entries in it - a pin 360km into the Gulf
+ * of Thailand, one 2,080km into the Pacific - are pathological because a
+ * component is a reachability closure with no geometric bound at all.
+ *
+ * A scene has one. The geographic clustering agglomerates only while a
+ * cluster's **diameter** stays inside `--max-diameter` (30km), so every store in
+ * a scene is within 30km of every other, and a weighted mean of points that are
+ * all mutually within 30km lies within 30km of each of them. The centroid is
+ * therefore at most ~30km from the scene's nearest own venue, against a 100km
+ * gate: `dispersed` cannot be true for a scene produced at the default cap.
+ * Measured on the 2026-10-31 production proposal, the largest scene extent in
+ * the whole corpus is **29.9km**, and 0 of 1,432 scenes come anywhere near it.
+ *
+ * It is kept rather than deleted for two reasons. The cap is a **knob**
+ * (`--max-diameter`), so an operator who raises it past 200km re-creates
+ * exactly the failure the gate was measured for; and the Louvain method is
+ * still the default for `--method`, and a Louvain community has no diameter
+ * bound either. A gate that never fires is cheap; a pin in the Pacific is not.
+ */
+export const SCENE_CENTROID_GATE_NOTE =
+  'A scene is diameter-capped, so its centroid is near its own stores by construction.';
+
+/**
  * One scene on the map.
+ *
+ * **A scene, not a connected component.** It is a cluster of *stores* - close
+ * enough together that their players really play each other - published by the
+ * engine as `SCENE#<sceneId>` from an assignment an operator accepted. The
+ * endpoint read the `COMPONENT#` catalogue before, which is a reachability
+ * closure of the co-play graph: one travelling player welds two cities into one
+ * permanently, so a Redwood City store sat in a 1,688-player component labelled
+ * `New York, New York`. A scene is diameter-capped and cannot do that.
  *
  * A **located** scene (`latitude`/`longitude` non-null) is one whose venues
  * carried coordinates *and* whose centroid is near enough to one of them to be
  * a place (`SCENE_CENTROID_MAX_KM`). An **unlocated** one is not an error and
  * not a gap in the data model - it is a scene none of whose stores has been
- * geocoded, one written by an engine that predates the place fields, or one
- * too dispersed to have a centre at all. The two are served in separate lists
- * (`SceneMapResult`) precisely so a caller cannot render an unlocated scene by
- * forgetting a null check.
+ * geocoded, or one written by an engine that predates the place fields. The two
+ * are served in separate lists (`SceneMapResult`) precisely so a caller cannot
+ * render an unlocated scene by forgetting a null check.
+ *
+ * `dispersed` is kept and is expected to be **false for every scene** under the
+ * default 30km diameter cap - see `SCENE_CENTROID_MAX_KM` for why the gate
+ * cannot fire on a capped cluster, and why it stays anyway.
  *
  * Why there is no fallback coordinate: the honest answers available for an
- * unlocated scene are its region label's city centre (a different and weaker
- * precision claim, and a Mapbox call per scene) or `0, 0` (a lie). Neither is
- * published. See `services/rankingService.ts`.
+ * unlocated scene are its label's city centre (a different and weaker precision
+ * claim, and a Mapbox call per scene) or `0, 0` (a lie). Neither is published.
+ * See `services/rankingService.ts`.
  */
 export interface SceneMapEntry {
-  componentId: string;
-  /** Modal city of the scene's venues, from the engine. Null until geocoded. */
-  regionLabel: string | null;
-  /** Players with at least one recorded match in this scene. */
+  /**
+   * The engine's `sceneId`, and the id a `?scene=` link carries.
+   *
+   * **It is not a `componentId` and the two must never be swapped.** This
+   * endpoint used to serve the component catalogue under this name, which is
+   * why the map's list read `Karlsruhe, Deutschland` and `Paris, France` while
+   * `Peninsula` and `South Bay` were not selectable anywhere on it.
+   */
+  sceneId: string;
+  /**
+   * What a local calls this scene, from the engine's assignment - the
+   * match-weighted modal city of its stores, or a curated override. Null when
+   * no store in it is geocoded yet.
+   */
+  label: string | null;
+  /** Players whose **home** venue is in this scene, so scenes partition them. */
   playerCount: number;
   /** Of those, the ones whose rating clears the publishing bar. */
   ratedPlayers: number;
   matchCount: number;
   venueCount: number;
-  /** True for the largest scene in the corpus. */
+  /** How true "this store belongs to one scene" is, across the scene's stores. */
+  medianPurity: number | null;
+  /** True for the scene holding the most recorded players. */
   isGiant: boolean;
-  /** Whether a position inside this scene means anything (`isComparable`). */
+
+  /**
+   * The ladder this scene's players are actually ranked on, and nothing more.
+   *
+   * **A scene has no ladder of its own.** The ladder's scope syntax is
+   * `component:<id>`, there is no `scene:` scope, and `componentId` keeps its
+   * meaning permanently because `crossComponentUncertainty` is only correct for
+   * a connected component. So this is the pool holding the largest share of the
+   * scene's home players - the board a reader who found their scene should be
+   * sent to - and a caller must name it as the pool rather than as the scene.
+   * The event page already states the pair this way: *this event was held in
+   * the Peninsula scene*, and *these players' ratings are on one scale with
+   * these others'*.
+   *
+   * Null for a scene none of whose home players has been replayed. That is a
+   * normal state - the scene is still a fact about its stores - and there is
+   * then no board to link at.
+   */
+  componentId: string | null;
+  /** That pool's player count, which is what `comparable` is a statement about. */
+  componentSize: number | null;
+  /**
+   * Distinct pools the scene's home players sit in. Over 1 means they are not
+   * all on one rating scale, which is a fact about the pools, not the scene.
+   */
+  componentCount: number;
+  /**
+   * Whether a position on the **pool's** board means anything (`isComparable`).
+   *
+   * Read off `componentSize`, never off `playerCount`: it is the ladder's gate
+   * and the ladder is the pool's. False with a null `componentId` as well -
+   * there is no board at all then.
+   */
   comparable: boolean;
 
   /** Match-weighted spherical centroid of the located venues, or null. */
@@ -610,6 +693,23 @@ export interface SceneMapResult {
 export interface SceneMapCoverage {
   /** Scenes in the engine's catalogue. */
   totalScenes: number;
+  /**
+   * Stores the engine replayed that are in **no** scene, and the players whose
+   * home store is one of them.
+   *
+   * Not an error and not a rounding remainder: a geographic cluster is only
+   * published as a scene when its players play each other enough to rank
+   * anybody (the intra-scene play-share gate), and a store whose regulars only
+   * ever play visitors fails it. Measured on the live assignment, 38 venues and
+   * 172 of 39,390 players; on the 2026-10-31 proposal, 97 venues and 527 of
+   * 63,951. They must **read**, not vanish: a reader who looks for Palo Alto
+   * and finds nothing has been told the map lost it.
+   *
+   * Null when the reader cannot answer - an older engine that does not publish
+   * the figure - which is a different thing from zero.
+   */
+  unassignedVenues: number | null;
+  unassignedPlayers: number | null;
   /** Of those, the ones with a publishable pin. */
   locatedScenes: number;
   /**
