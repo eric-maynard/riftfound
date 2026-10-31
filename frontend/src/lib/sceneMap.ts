@@ -201,47 +201,55 @@ export function sceneScope(componentId: string): string {
 }
 
 /**
- * What a scene's ladder link actually leads to, in one sentence, or null when
- * there is no link to make.
+ * What this scene's ladder is, and what the pool link beside it is for, in one
+ * sentence. Never null: a scene always has a board now, even an empty one.
  *
- * This exists because the honest answer is two facts and a link can only carry
- * one. *This is the Peninsula scene* and *these players' ratings are on one
- * scale with these others'* are both true and neither implies the other - a
- * component spans several scenes, so the board a Peninsula player is on is
- * shared with South Bay and everyone else their games chain to. The event page
- * already states it as a pair for the same reason; this is that sentence at a
- * panel's length.
+ * **This used to be an apology for the link, and it is a description of it.**
+ * The panel's button opened `component:<the pool these players sit in>`,
+ * because a scene had no board - so the note had to say, before the click,
+ * that `Peninsula` would land on a ladder named after somewhere else. The
+ * ladder has a `scene:<id>` scope now: it is the pool's board filtered to this
+ * scene's rows and re-ranked among them, so the link goes where the name says.
  *
- * Three answers, and the first two are the common ones:
+ * The pair is still two facts and still has to be stated as two - *this is the
+ * Peninsula scene* and *these players' ratings are on one scale with these
+ * others'* - but the second is now the **second link** rather than a caveat on
+ * the first, which is the right shape for it: a reader who wants to know who
+ * else is on this scale can go and look.
  *
- * - **a pool with an orderable board** - say how big it is, so the reader knows
- *   the positions are not a position among six;
- * - **a pool too small to order** - the board exists and the ratings are
- *   published; the ranks are not positions;
- * - **no pool** - nobody who plays here has been replayed yet, so there is no
- *   board to link at. Not an error, and not a statement about the scene, which
- *   is a fact about its stores either way.
+ * Three answers, and the middle one is the common one:
+ *
+ * - **no pool** - nobody who plays here has been replayed yet. The board exists
+ *   and is empty, which says so better than a withheld link did;
+ * - **one pool** - say how big it is, so "see the whole rating pool" is a
+ *   known quantity before the click;
+ * - **more than one pool** - the honest caveat of the whole design. A scene
+ *   board is comparable internally *because* the scene sits inside one pool,
+ *   and this is the case where it does not: the board is the largest of them,
+ *   so some of the scene's own players are on another one.
  */
-export function sceneLadderNote(scene: SceneMapEntry): string | null {
+export function sceneLadderNote(scene: SceneMapEntry): string {
   if (scene.componentId === null) {
     return (
-      'No ladder yet: none of the players who play here has been placed in a rating pool, ' +
-      'so there is no board to open. The scene is still where these stores are.'
+      'Nobody who plays here has been placed in a rating pool yet, so this scene’s board is empty ' +
+      'for now. The scene is still where these stores are.'
     );
   }
-  const shared =
-    scene.componentCount > 1
-      ? ` The players here sit in ${formatCount(scene.componentCount)} separate pools, so they are not all on one scale.`
-      : '';
   const size =
     scene.componentSize === null
       ? ''
-      : ` That pool holds ${formatCount(scene.componentSize)} player${scene.componentSize === 1 ? '' : 's'}.`;
+      : ` It holds ${formatCount(scene.componentSize)} player${scene.componentSize === 1 ? '' : 's'}.`;
+  if (scene.componentCount > 1) {
+    return (
+      `The players here sit in ${formatCount(scene.componentCount)} separate rating pools, so they are not ` +
+      'all on one scale: this scene’s board shows the largest of them, and the rest of its players are ' +
+      `on another.${size}`
+    );
+  }
   return (
-    'A scene is not a ranking: ratings are only comparable between players whose games chain together, ' +
-    'so this opens the ladder for the pool these players are in, which covers other scenes too.' +
-    size +
-    shared
+    'Ratings are only comparable between players whose games chain together, and everyone here is in one ' +
+    'such pool - which covers other scenes too, so this scene’s board is that pool filtered to the ' +
+    `players who play here.${size}`
   );
 }
 

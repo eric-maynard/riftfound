@@ -9,7 +9,7 @@ import {
   sceneCatalogueOptions,
   sceneCountSummary,
   sceneMapPath,
-  sceneOptionScope,
+  sceneOptionSelection,
   sceneOptions,
 } from '../lib/ranking';
 import { carryPreview } from '../lib/preview';
@@ -49,19 +49,23 @@ import { carryPreview } from '../lib/preview';
  *
  * ## Two ids, and the whole point of this control
  *
- * **A row is a scene; the ladder it opens is a pool.** They are different
- * things with different ids and the rows carry both: `option.id` is the engine's
- * `sceneId` - what the map highlights, what `?scene=` records - and
- * `option.scope` is the `componentId` the board is actually fetched with,
- * because `crossComponentUncertainty` is only correct for a connected component
- * and there is no `scene:` scope.
+ * **A row is a scene, and now it opens that scene's board.** `option.id` is the
+ * engine's `sceneId` - what the map highlights and what `?scene=` records - and
+ * `option.scope` is the `componentId` of the pool those players are rated in.
+ * Picking a row writes the **scene**: the ladder has a `scene:<id>` scope now,
+ * which is that pool's board filtered to this scene's rows and re-ranked among
+ * them.
  *
- * This control used to list components under the word "scene", which is why
- * `Peninsula` and `South Bay` - the names a reader was looking for - were not
- * offered anywhere, and why the list read `Karlsruhe, Deutschland` and
- * `Paris, France`. One pool covers several scenes, so two rows can lead to one
- * board; the row's `meta` says so ("ladder shared with 3 other scenes") rather
- * than letting a reader discover it after the click.
+ * It used to write the pool, because a scene had no board to open - and that is
+ * the reported bug, because a pool is named after the modal city of a
+ * reachability closure: picking `Peninsula` landed on a ladder headed `North
+ * West Community Development Council`, a Singapore CDC label. The row's `meta`
+ * still says which other scenes share the pool, because that is what the "see
+ * the whole rating pool" link on the board leads to.
+ *
+ * This control also used to *list* components under the word "scene", which is
+ * why `Peninsula` and `South Bay` were not offered anywhere and why the list
+ * read `Karlsruhe, Deutschland` and `Paris, France`.
  *
  * ## Where the rows come from, and why not from the ladder
  *
@@ -75,10 +79,13 @@ import { carryPreview } from '../lib/preview';
  * `components` is still used, as the **rows shown while the directory is in
  * flight**: a list that works immediately beats a correct list that appears a
  * moment later, and the footer says what is happening. Those fallback rows are
- * pools, so their `id` *is* their scope and they carry no `scope` field at all -
- * `sceneOptionScope` resolves that, and the distinction matters: an explicit
- * `null` scope means "this scene has no board", which is not the same as "the
- * id is the scope".
+ * pools, so their `id` *is* a `componentId` and they carry no `scope` field at
+ * all - they therefore write `?region=`, where a catalogue row writes
+ * `?scene=`. `sceneOptionSelection` resolves that, and the distinction is
+ * load-bearing: writing a pool's id under `?scene=` would be an id from the
+ * wrong partition under the right parameter name, which is the shape of the bug
+ * this release fixes. An explicit `null` scope means "this scene has no pool",
+ * which is not the same as "the id is a pool" and still writes `?scene=`.
  *
  * ## What stays out of the bundle
  *
@@ -163,15 +170,17 @@ interface SceneSelectProps {
    */
   value: string | null;
   /**
-   * Both halves of the choice, because they are two facts.
+   * The two URL parameters this choice sets, because they are two facts and
+   * exactly one of them is written per row.
    *
-   * `sceneId` is where the reader plays and goes in `?scene=`; `scope` is the
-   * `componentId` the ladder is fetched with and goes in `?region=`. A scene
-   * with no pool yields a non-null `sceneId` and a null `scope` - the reader
-   * picked a real place whose players are not on a board yet, and the page has
-   * to be able to say that rather than silently fetch Global.
+   * `sceneId` goes in `?scene=` and `region` in `?region=`; the page reads the
+   * first in preference to the second, so a scene row sets the scene and
+   * clears the pool, while a fallback pool row does the reverse. A scene with
+   * no pool still sets the scene - the board answers "no pool yet" honestly,
+   * which it could not do when the picker fell back to Global.
+   * `sceneOptionSelection` decides which, in one place.
    */
-  onChange: (sceneId: string | null, scope: string | null) => void;
+  onChange: (sceneId: string | null, region: string | null) => void;
   /** Hover/focus text for the label - the picker explains itself here. */
   hint?: string;
   /**
@@ -329,30 +338,33 @@ function SceneSelect({ components, value, onChange, hint, selectedLabel }: Scene
   function chooseIndex(index: number) {
     const option = visible[index];
     if (!option) return;
-    onChange(option.id, sceneOptionScope(option));
+    const { sceneId, region } = sceneOptionSelection(option);
+    onChange(sceneId, region);
     closeAndFocus();
   }
 
   /**
    * A click on the map half.
    *
-   * A pin is a choice, so it behaves like a row: it sets the scope and closes.
-   * A click on the basemap arrives as `null` - `SceneMap` reads that as "clear
-   * the selection" for the map *page*, where there is no list to go back to -
-   * and is ignored here, because this pane has a visible `Global` row at the
-   * top of its list and clearing by clicking the sea is an affordance nobody
-   * can see.
+   * A pin is a choice, so it behaves like a row: it picks the scene and
+   * closes. A click on the basemap arrives as `null` - `SceneMap` reads that as
+   * "clear the selection" for the map *page*, where there is no list to go back
+   * to - and is ignored here, because this pane has a visible `Global` row at
+   * the top of its list and clearing by clicking the sea is an affordance
+   * nobody can see.
+   *
+   * A pin is always a scene, never a pool, so no directory lookup is needed any
+   * more: it writes `?scene=` and clears `?region=` exactly as its row does. It
+   * used to have to find the pin's `componentId` on the directory precisely
+   * because the pool was the only thing the ladder could be scoped to.
    */
   const selectFromMap = useCallback(
     (sceneId: string | null) => {
       if (sceneId === null) return;
-      // A pin carries a scene id; its scope has to be looked up on the
-      // directory the pin came from, because a pin is not a scope.
-      const scene = catalogue?.all.find((entry) => entry.sceneId === sceneId) ?? null;
-      onChange(sceneId, scene?.componentId ?? null);
+      onChange(sceneId, null);
       closeAndFocus();
     },
-    [catalogue, onChange, closeAndFocus]
+    [onChange, closeAndFocus]
   );
 
   function handleKeyDown(event: React.KeyboardEvent<HTMLInputElement>) {

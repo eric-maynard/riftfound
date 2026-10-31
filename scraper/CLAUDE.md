@@ -2439,6 +2439,18 @@ Scenes do **not** add a scope: the player profile and every ladder row carry
 ladder, and whether scenes deserve ladders of their own is a decision to take
 with the API rather than by writing them.
 
+**That decision has since been taken, and the answer was the filter.** The API
+serves `scope=scene:<id>` by reading one pool's board and keeping the rows whose
+`sceneId` matches, re-ranked densely among themselves - so this engine still
+writes four scope kinds and `RANKING#scene:<id>` does not exist. The alternative
+was costed: one row per rated player per scene plus a header per scene is ~6,100
+rows and ~1,123 headers, about **7,200 extra items on a refit that already
+writes ~27,000 profiles and ~17,000 rating points** (~15% more write traffic).
+It was declined because the read is behind an hour of edge cache and the filter
+needs no refit to take effect. Revisit it if the API's `SCENE_BOARD_MAX_ROWS`
+ever binds; backend/CLAUDE.md, "A scene board is a filter, not a fit", holds
+both sides.
+
 - **A player page is one Query** on `PLAYER#<uuid>`: profile, chart and match log
   arrive together, separated by their SK prefixes.
 - **A leaderboard is one item per player**, not a page of entries, so an
@@ -2715,28 +2727,52 @@ the failure it was measured for; and `--method louvain` is still the default,
 and a Louvain community has no diameter bound at all. A gate that never fires
 costs a comparison; a pin in the Pacific costs the map's credibility.
 
-#### What a scene's pin links to, which is not a scene ladder
+#### What a scene's pin links to: the scene's board, which this engine does not write
 
-`componentId` keeps its meaning permanently, and the map is where that rule
-earns its keep. The ladder's scope syntax is `all`, `set:<id>`,
-`component:<id>` or `set:<id>#component:<id>`; **there is no `scene:` scope**,
-because `crossComponentUncertainty` is only valid for a connected component and
-a scene is additive. So a `SCENE#` item carries the pool its home players sit
-on - `componentId`, `componentSize` and `componentCount`, the modal component of
-the players whose home venue is in the scene - and the UI is required to present
-them as two facts:
+**A scene's pin links at the scene now**, and the reason the paragraph that
+used to sit here was wrong is worth keeping. It said the pin had to link at
+`component:<id>` because there was no `scene:` scope, and the owner reported
+the consequence in one sentence: *"when i click peninsula in the map i expect
+it to go to that scene but its on like northw est community ..."*. A pool's
+`regionLabel` is the modal city name of a reachability closure, so a San
+Francisco scene opened a ladder headed `North West Community Development
+Council` - a **Singapore** CDC label. Both halves were honest; the pair was not
+defensible.
+
+**Nothing in this engine changed to fix it, and that is the point.**
+`componentId` keeps its meaning permanently, `crossComponentUncertainty` is
+still valid only for a connected component, a scene is still additive, and
+there is still no `RANKING#scene:<id>` item. The API's `scene:<id>` scope is a
+**filter** over a pool's board - the scene's own rows, re-ranked among
+themselves - and what makes it possible is already in the storage contract:
+every `RankingRow` carries `sceneId`, "denormalised so a board can be filtered
+without profile fetches". It is statistically sound in a way a cross-component
+board is not, because a scene's players are a subset of one component and were
+therefore already on one scale.
+
+So a `SCENE#` item still carries the pool its home players sit on -
+`componentId`, `componentSize` and `componentCount`, the modal component of the
+players whose home venue is in the scene - and this is now the field that tells
+the API **which pool to filter**, as well as the second of the two facts the UI
+presents:
 
 > *this is the Peninsula scene*, and *these players' ratings are on one scale
 > with these others'*.
 
-That is the pairing the event page's scene line already publishes. The frontend
-says it in `sceneLadderNote` and the picker's row meta ("ladder shared with 3
-other scenes"), and the one thing neither may do is call it "this scene's
-ladder". A scene with no pool - nobody who plays there has been replayed - gets
-no link at all rather than a dead one.
+The frontend says the second in `sceneLadderNote`, in the picker's row meta
+("ladder shared with 3 other scenes") and as the board's own "see the whole
+rating pool" link. What it no longer has to do is withhold the first. A scene
+with no pool - nobody who plays there has been replayed - still gets a link:
+its board comes back named and empty, which says so better than a missing link
+did.
 
-`componentCount` is free: the loop that attributes players to scenes by home
-venue already has `components.componentIds[p]` in hand.
+`componentCount` was already free - the loop that attributes players to scenes
+by home venue has `components.componentIds[p]` in hand - and it is now
+load-bearing: over 1 means the scene's players are not all on one scale, so the
+API publishes the modal pool's rows and says how many it left out. See
+backend/CLAUDE.md, "A scene board is a filter, not a fit", for the read cost
+and for the per-refit price of writing these boards here instead (~7,200 extra
+items, declined for now).
 
 #### Why the derivation lives here and not in the API
 

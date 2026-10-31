@@ -66,17 +66,62 @@ export function shouldUseSetPills(setCount: number): boolean {
   return setCount + 1 <= SET_PILL_LIMIT;
 }
 
-/** Build the scope string the API expects from the two selectors. */
-export function buildScope(setId: string | null, componentId: string | null): string {
+/**
+ * Build the scope string the API expects from the page's selectors.
+ *
+ * **A scene outranks a pool, and both are kept.** `?scene=` is the place the
+ * reader picked and `?region=` is a pool id, and the two parameters have both
+ * been handed out as links: every `?region=` link predates the scene scope and
+ * has to keep meaning exactly what it meant, while a `?scene=` link - which
+ * the map, the picker and the event page all build - now has a board of its
+ * own to open. So a scene wins when both are present, which is also the only
+ * reading that fixes the reported bug: the picker used to write *both*, with
+ * the scene as decoration over the pool's board.
+ *
+ * A scene is never sent as `component:<sceneId>`. That was the shape of the
+ * bug one layer down - an id from the wrong partition under the right
+ * parameter name - and the API rejects `component:` and `scene:` together for
+ * the same reason.
+ */
+export function buildScope(
+  setId: string | null,
+  componentId: string | null,
+  sceneId?: string | null
+): string {
   const parts = [
     setId && setId !== ALL_SETS ? `set:${setId}` : null,
-    componentId ? `component:${componentId}` : null,
+    sceneId ? `scene:${sceneId}` : componentId ? `component:${componentId}` : null,
   ].filter(Boolean);
   return parts.length === 0 ? ALL_SETS : parts.join('#');
 }
 
 /**
- * The ladder path for one scene. The preview flag is added by the caller.
+ * The ladder path for one **scene** - what a scene's name, pin and picker row
+ * all link to now. The preview flag is added by the caller.
+ *
+ * This is the fix, in one function. The three surfaces used to link at
+ * `scenePath(scene.componentId)`, which is a *pool*, and a pool is named after
+ * the modal city of a reachability closure - so clicking `Peninsula` opened a
+ * board headed `North West Community Development Council`, which is a
+ * Singapore CDC label on a ladder reached from a San Francisco scene.
+ *
+ * `?scene=` rather than `?region=` because they are two different ids and this
+ * section has been bitten twice by letting one stand in for the other. The
+ * page reads a scene first and a pool second (see `buildScope`), so a link
+ * built here can never be served the pool's board by accident.
+ */
+export function sceneLadderPath(sceneId: string): string {
+  return `/rankings?scene=${encodeURIComponent(sceneId)}`;
+}
+
+/**
+ * The ladder path for one rating **pool**. The preview flag is added by the
+ * caller.
+ *
+ * Still here, and still correct: a pool board is the honest answer to "who
+ * else is on this scale", and a scene board carries a link to it for exactly
+ * that question. What changed is that it is no longer what a *scene* link
+ * lands on - see `sceneLadderPath`.
  *
  * This and `sceneMapPath` below are the two links into a scene, and they live
  * here rather than in `lib/sceneMap.ts` - which is the page that uses them
@@ -122,8 +167,14 @@ export function sceneMapPath(sceneId: string): string {
   return `/rankings/map?${SCENE_MAP_PARAM}=${encodeURIComponent(sceneId)}`;
 }
 
-export function parseScope(raw: string | null | undefined): { setId: string | null; componentId: string | null } {
-  const out: { setId: string | null; componentId: string | null } = { setId: null, componentId: null };
+export function parseScope(
+  raw: string | null | undefined
+): { setId: string | null; componentId: string | null; sceneId: string | null } {
+  const out: { setId: string | null; componentId: string | null; sceneId: string | null } = {
+    setId: null,
+    componentId: null,
+    sceneId: null,
+  };
   if (!raw || raw === ALL_SETS) return out;
   for (const part of raw.split('#')) {
     const [kind, ...rest] = part.split(':');
@@ -131,6 +182,7 @@ export function parseScope(raw: string | null | undefined): { setId: string | nu
     if (!value) continue;
     if (kind === 'set') out.setId = value;
     if (kind === 'component') out.componentId = value;
+    if (kind === 'scene') out.sceneId = value;
   }
   return out;
 }
@@ -172,7 +224,9 @@ export interface SceneOption {
    * Null for Global (no scope) and null for a scene whose players have not
    * been placed in a pool (no board to open). Undefined on a row built from
    * the ladder's own `components`, where the id *is* a component already -
-   * `sceneOptionScope` resolves all three cases in one place.
+   * `sceneOptionSelection` resolves all three cases in one place, and the
+   * `undefined`/`null` distinction is what tells "the id is a pool" from "this
+   * scene has no pool".
    */
   scope?: string | null;
   label: string;
@@ -260,19 +314,35 @@ export function findSceneOption(options: SceneOption[], id: string | null): Scen
 }
 
 /**
- * The ladder scope a row leads to, in one place.
+ * The two URL parameters a picker row sets, in one place.
  *
- * Three cases, and the fallback is the load-bearing one: a row built from the
- * ladder's `components` has no `scope` because its `id` already *is* a
- * component id, and that is the list the picker shows for the few hundred
- * milliseconds before the scene catalogue lands. So `undefined` means "the id
- * is the scope" and an explicit `null` means "there is no scope" - which a
- * `scope ?? id` would get exactly backwards for a scene with no pool, sending
- * the ladder off to `component:<a scene id>` and getting an empty board.
+ * `scene` is the place and `region` is a pool, and the page reads the first in
+ * preference to the second (see `buildScope`), so which of the two a row
+ * writes decides which board the reader gets. Three cases:
+ *
+ * - **a scene row**, from the catalogue - it carries a `scope` field, even when
+ *   that field is `null`. It writes `scene` and clears `region`, because a
+ *   scene has a board of its own now. That holds for `scope: null` too, a
+ *   scene whose players are in no pool: the API answers an empty board that
+ *   says so, which is a better answer than the old behaviour of clearing the
+ *   scope and silently serving Global.
+ * - **a pool row**, the fallback built from the ladder's own `components` for
+ *   the few hundred milliseconds before the catalogue lands. Its `id` *is* a
+ *   `componentId` and it carries no `scope` field at all, so it writes `region`
+ *   and clears `scene`. This is the load-bearing case: writing its id as a
+ *   scene would be an id from the wrong partition under the right parameter
+ *   name, which is the exact shape of the bug this release fixes.
+ * - **Global** - clears both.
+ *
+ * So the test is `scope === undefined`, never `scope ?? id`, which would get a
+ * pool-less scene exactly backwards.
  */
-export function sceneOptionScope(option: SceneOption | null): string | null {
-  if (option === null) return null;
-  return option.scope === undefined ? option.id : option.scope;
+export function sceneOptionSelection(
+  option: SceneOption | null
+): { sceneId: string | null; region: string | null } {
+  if (option === null || option.id === null) return { sceneId: null, region: null };
+  if (option.scope === undefined) return { sceneId: null, region: option.id };
+  return { sceneId: option.id, region: null };
 }
 
 /**
@@ -595,6 +665,120 @@ export const GLOBAL_POSITION_HINT =
  * asserting it. The banner now fires only where there is no `#` column to
  * hang a hint on.
  */
+
+/**
+ * What a scene board's `#` column means, as its hover hint.
+ *
+ * The one thing it has to say is that the number is a place **here** and not a
+ * place in the wider pool, because both are published and a reader who assumes
+ * the wrong one has been misled by a column rather than by prose. The second
+ * half is why it is safe to say at all: the scene's players are a subset of one
+ * pool, so the order is a restriction of the pool's rather than a new ranking,
+ * and `Pool` beside it is the same player's position there.
+ */
+export const SCENE_POSITION_HINT =
+  'Position within this scene. These players are all in one rating pool, so the order here is the ' +
+  'pool’s order with the other scenes taken out - not a separate ranking. The Pool column is the ' +
+  'same player’s place on the whole pool’s board.';
+
+/** The hint on a scene board's `Pool` column. */
+export const POOL_POSITION_HINT =
+  'Place on the wider rating pool’s board - every player whose recorded games chain together with ' +
+  'these, which usually covers a few neighbouring scenes. It is the only group two of these ratings ' +
+  'can be compared inside, which is why the pool has a board of its own.';
+
+/**
+ * The one line a scene board leads with, or null when there is nothing to say.
+ *
+ * Three states, and they are genuinely different answers rather than degrees
+ * of one:
+ *
+ * - **a pool too small to order anybody** - the ratings are published and no
+ *   position is, and the number quoted is the *pool's* size because that is
+ *   what the threshold measures. A reader whose own scene has forty players in
+ *   it would otherwise read this as arithmetic about the wrong set.
+ * - **a scene whose players sit in more than one pool** - the board is one
+ *   pool's, so some of the scene's own rated players are not on it. This is
+ *   the honest caveat the whole design needs: a scene is comparable
+ *   *internally* only because it sits inside one pool, and this is the case
+ *   where it does not. It is reachable - an event's pairings connect the
+ *   players they pair rather than all of them - and `componentCount` is on the
+ *   `SCENE#` item precisely so it can be told.
+ * - **everything in order** - no line. A banner that always shows is
+ *   furniture.
+ *
+ * Note which of the two the multi-pool line is *not* about: comparability
+ * inside the board. The rows shown are all in one pool, so their order is
+ * real. What is incomplete is the board's coverage of the scene.
+ */
+export function sceneBoardNotice(
+  scene: { componentCount: number; singlePool: boolean; omittedPoolRows: number; comparable: boolean },
+  minPoolSize: number,
+  poolSize: number | null
+): string | null {
+  if (!scene.comparable) {
+    const size = poolSize === null ? 'fewer' : poolSize.toLocaleString('en-US');
+    return (
+      `No positions yet — a place needs a pool of at least ${minPoolSize} players who have played each ` +
+      `other, and this scene’s pool has ${size}.`
+    );
+  }
+  if (!scene.singlePool) {
+    const missing = scene.omittedPoolRows;
+    const tail =
+      missing > 0
+        ? ` ${missing.toLocaleString('en-US')} rated player${missing === 1 ? ' is' : 's are'} on another board.`
+        : '';
+    return (
+      `These players sit in ${scene.componentCount.toLocaleString('en-US')} rating pools, so this board is ` +
+      `the largest one.${tail}`
+    );
+  }
+  return null;
+}
+
+/** The hover hint behind `sceneBoardNotice`'s multi-pool line. */
+export const SCENE_SPLIT_POOL_HINT =
+  'Ratings are only comparable between players whose recorded games chain together. Almost every scene ' +
+  'sits inside one such pool, and this one does not yet - an event’s pairings connect the players they ' +
+  'pair rather than all of them, so a refit can still join them. The players shown are all in one pool, ' +
+  'so the order here is real; what is incomplete is how much of the scene it covers.';
+
+/**
+ * What to call the pool link under a scene board, and what it is for.
+ *
+ * The pool board must stay reachable: it is the honest answer to "who else is
+ * on this scale", and the scene board is deliberately a narrower question. The
+ * label names the pool rather than the scene, because a control reading
+ * "the whole ladder" would claim the scene board was a partial one.
+ */
+export const POOL_LINK_LABEL = 'See the whole rating pool';
+export const POOL_LINK_HINT =
+  'Every player whose recorded games chain together with this scene’s, which usually covers a few ' +
+  'neighbouring scenes. It is the group these ratings were earned among, so it is the widest board on ' +
+  'which a position still means something.';
+
+/** A scene's display name on the ladder: the engine's label, else its id. */
+export function sceneBoardLabel(scene: { sceneId: string; label: string | null }): string {
+  const label = scene.label?.trim();
+  return label && label.length > 0 ? label : `Scene ${scene.sceneId}`;
+}
+
+/**
+ * The line for a scene the engine has no item for, or null when it has one.
+ *
+ * `known: false` is not an error and must not read as one: it is the state of
+ * every scene id until a refit has run with an accepted assignment, so this is
+ * also what a reader sees for up to a day after a deploy. The sentence says
+ * what is missing rather than that the scene is wrong.
+ */
+export function sceneUnknownNotice(scene: { known: boolean; sceneId: string }): string | null {
+  if (scene.known) return null;
+  return (
+    `No scene on file for ${scene.sceneId} yet — the ladder places stores into scenes when it refits, ` +
+    'so this link will resolve once it has.'
+  );
+}
 
 /**
  * What to say under the player search box, given what the API says it

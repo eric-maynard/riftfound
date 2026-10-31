@@ -13,6 +13,14 @@ export type Scope = {
   raw: string;
   setId: string | null;
   componentId: string | null;
+  /**
+   * The scene a board is filtered down to, or null.
+   *
+   * Optional only for the deploy window: an API that predates the scene scope
+   * does not send it, and a reader that treated its absence as a scope change
+   * would be reading a field rather than the one it asked for.
+   */
+  sceneId?: string | null;
 };
 
 export interface SetRating {
@@ -82,6 +90,27 @@ export interface LeaderboardEntry {
   componentSize: number | null;
   regionLabel: string | null;
   /**
+   * This player's position on the **pool's** board, on a scene scope only.
+   *
+   * `rank` there is the dense position inside the scene and this is the one it
+   * was cut out of - "2nd in Peninsula, 37th in the pool". Two numbers rather
+   * than one because the scene's order is a restriction of the pool's, so a
+   * reader can check one against the other and they can never disagree about
+   * who is ahead of whom. Null on every stored scope, where `rank` already
+   * *is* the board's own position, and null for a row that holds no position.
+   */
+  poolRank?: number | null;
+  /**
+   * The scene this player's home store is in, from the engine's own row.
+   *
+   * Null is a normal value - a store in no rankable scene, or a player the
+   * engine has never placed - and a consumer must **not** fall back to
+   * `regionLabel`, which is a home city and a different one per member of one
+   * scene. The event page's roster column has already been caught doing that.
+   */
+  sceneId?: string | null;
+  sceneLabel?: string | null;
+  /**
    * Is this row's scene big enough for a position inside it to mean anything?
    *
    * The API's verdict, not ours - the threshold is the engine's measured one.
@@ -119,11 +148,55 @@ export interface ComponentSummary {
   comparable: boolean;
 }
 
+/**
+ * The header of a **scene** board, on a `scene:<id>` scope only.
+ *
+ * It arrives beside `component` rather than instead of it, because the two are
+ * the pair this section has always had to state as two facts: *this is the
+ * Peninsula scene*, and *these players' ratings are on one scale with these
+ * others'*. What changed is only which of the two a scene link lands on.
+ *
+ * The whole interface is optional on the response, because an API deployed
+ * before it sends nothing - and a page that read a missing `scene` as "this
+ * scene does not exist" would be worse than one that falls back to the pool.
+ */
+export interface SceneBoardInfo {
+  sceneId: string;
+  /** The engine's label, or null when no store in the scene is geocoded yet. */
+  label: string | null;
+  /**
+   * False when the engine has no `SCENE#<id>` item for this id.
+   *
+   * Not an error: it is also the state of every scene id until a refit runs
+   * with an accepted assignment, so a shared `?scene=` link survives a deploy
+   * order rather than 404ing through it.
+   */
+  known: boolean;
+  /** Players whose home store is in the scene, rated or not. */
+  playerCount: number | null;
+  ratedPlayers: number | null;
+  venueCount: number | null;
+  /** The pool the board was filtered out of. Null when the scene has none. */
+  componentId: string | null;
+  componentSize: number | null;
+  /** Distinct pools the scene's players sit in; over 1 means the board is partial. */
+  componentCount: number;
+  singlePool: boolean;
+  /** Rated rows of the scene that are in another pool and so not on this board. */
+  omittedPoolRows: number;
+  /** `isComparable` on the **pool's** size, never on the scene's own count. */
+  comparable: boolean;
+  poolScope: string | null;
+  poolRowsRead: number;
+  poolComplete: boolean;
+}
+
 export interface RankingsResponse {
   data: {
     scope: Scope;
     entries: LeaderboardEntry[];
     coverage: RankingCoverage;
+    scene?: SceneBoardInfo | null;
     component: {
       componentId: string | null;
       componentSize: number | null;
@@ -284,13 +357,14 @@ export interface SceneMapEntry {
   /** True for the scene holding the most recorded players. */
   isGiant: boolean;
   /**
-   * The ladder this scene's players are ranked on - **not** the scene's own.
+   * The rating **pool** this scene's players sit in - not the scene's board.
    *
-   * A scene has no ladder: the ladder's scope is `component:<id>` and there is
-   * no `scene:` scope, because `componentId` answers "are these two ratings on
-   * one scale" and nothing else does. So this is the pool holding most of the
-   * scene's players, and the UI must present it as the pool. Null when none of
-   * the scene's players has been replayed, in which case there is no board.
+   * `componentId` answers "are these two ratings on one scale" and nothing else
+   * does. The scene's own board (`?scene=`, `scene:<id>`) is this pool's board
+   * **filtered** to the scene and re-ranked, which is why the field keeps its
+   * meaning exactly. The UI presents it as the pool - "see the whole rating
+   * pool" - and never as the scene. Null when none of the scene's players has
+   * been replayed; the scene's board is then named and empty.
    */
   componentId: string | null;
   /** That pool's player count - what `comparable` is a statement about. */

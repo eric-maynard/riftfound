@@ -644,26 +644,30 @@ describe('the scene line', () => {
     expect(line.partial).toBe(false);
   });
 
-  it('links the map at the scene and the ladder at the component', () => {
+  it('carries both ids, and they are not interchangeable', () => {
     const line = asScene(sceneLine(scene(), 8));
-    // Two links, two ids, and they are not interchangeable. The `Map` link
-    // used to carry the component id, because the map drew components - so the
-    // control beside `Peninsula` opened a map and selected nothing, and a
-    // hand-built `?scene=<sceneId>` found nothing either. The map is keyed on
-    // scenes now and this is the id it gets.
+    // Both links are built from `sceneId` now - the map's, and the ladder's,
+    // which used to be built from `componentId` and so opened a board named
+    // after the modal city of a reachability closure. `componentId` stays on
+    // the line for the hint, which still has to state the pair.
     expect(line.sceneId).toBe('s4f1c2a0b19');
     expect(line.componentId).toBe('ce3da9bead6');
     expect(line.sceneId).not.toBe(line.componentId);
   });
 
-  it('links the ladder at the component, and says that is what it is', () => {
+  it("says the ladder is this scene's own, and still names the pool behind it", () => {
     const line = asScene(sceneLine(scene(), 8));
-    // A ladder is only meaningful over one rating scale, and a component is
-    // what defines one, so the link stays component-scoped. The hint has to
-    // carry that, or the link silently asserts the scene and the pool are the
-    // same set of people.
-    expect(line.componentId).toBe('ce3da9bead6');
+    // The hint used to open "The ladder it links to is the wider pool of
+    // 1,688 players", which was an honest warning that the link went somewhere
+    // else. It does not any more, so the sentence describes what the link
+    // opens - and still names the pool, because *this is the scene* and *these
+    // ratings are on one scale with these others'* are two facts and the
+    // second has not stopped being true.
+    // The copy pass dropped the 'This store belongs to...' preamble; what the
+    // hint has to keep saying is that the link opens *this scene's* board.
     expect(line.hint).toContain('nearby stores whose players play each other');
+    expect(line.hint).toContain("Its ladder is these players' own");
+    expect(line.hint).toContain("Its ladder is these players' own");
     expect(line.hint).toContain('wider pool of 1,688 players');
   });
 
@@ -704,7 +708,9 @@ describe('the scene line', () => {
     );
     expect(line.name).toBe('Peninsula');
     expect(line.componentId).toBeNull();
-    expect(line.hint).toContain('Nobody who played here is placed on a ladder yet');
+    // There *is* a board now - it comes back named and empty - so the hint says
+    // nobody has been placed, not that there is nowhere to link to.
+    expect(line.hint).toContain('has not placed anybody who played here yet');
     // And no size caveat: there is no pool for one to be about.
     expect(line.hint).not.toContain('too small to order');
   });

@@ -3,8 +3,10 @@ import { useDynamoDB } from '../config/database.js';
 import { dynamoRankingStore } from '../adapters/rankingDynamoAdapter.js';
 import { fixtureRankingStore } from '../adapters/rankingFixtureAdapter.js';
 import type {
+  LeaderboardRecord,
   PlayerRecord,
   RankingStore,
+  SceneBoardRead,
   SceneCoverageCounts,
   SetRatingRecord,
 } from '../adapters/rankingStore.js';
@@ -12,11 +14,14 @@ import {
   resolveVerdict,
   earnsPosition,
   isComparable,
+  poolScope,
   publishesRating,
   CONFIDENCE,
+  SCENE_BOARD_MAX_ROWS,
   SCENE_CENTROID_MAX_KM,
   type ComponentSummary,
   type LeaderboardEntry,
+  type SceneBoardInfo,
   type PlayerMatch,
   type PlayerProfile,
   type RankingCoverage,
@@ -110,24 +115,44 @@ export interface RankingResult {
     regionLabel: string | null;
     comparable: boolean;
   } | null;
+  /**
+   * The scene header, on a `scene:<id>` scope only, and null on every other.
+   *
+   * It travels beside `component` rather than instead of it, because the two
+   * are the pair this section has always had to state as two facts: *this is
+   * the Peninsula scene*, and *these players' ratings are on one scale with
+   * these others'*. The difference from before is only which of them the link
+   * lands on.
+   */
+  scene: SceneBoardInfo | null;
   components: ComponentSummary[];
   pagination: { limit: number; cursor: string | null; hasMore: boolean };
 }
 
-export async function getRankings(scope: Scope, limit: number, cursor?: string): Promise<RankingResult> {
-  const store = getRankingStore();
+/** One leaderboard row with its rating still on it; see `rowMerger`. */
+type MergedRow = ReturnType<Awaited<ReturnType<typeof rowMerger>>>;
 
-  const [page, sample] = await Promise.all([
-    store.getLeaderboard(scope, limit, cursor),
-    store.getLeaderboard(scope, COVERAGE_LIMIT),
-  ]);
-
+/**
+ * Fill the gaps in a batch of leaderboard rows from the players' profiles, and
+ * hand back the function that reads one.
+ *
+ * Shared by the board paths - the stored-scope one and the scene filter - so
+ * the two can never disagree about what a row carries or which verdict applies
+ * to it. One `getPlayers` for the whole batch, as before.
+ *
+ * The returned rows keep their ratings: ordering, ranks and coverage are worked
+ * out over them and the withheld numbers are stripped afterwards in `publish`.
+ * The sequence is the point - a rank or an average that came out differently
+ * because a number was withheld would be a different answer rather than a
+ * safer one.
+ */
+async function rowMerger(store: RankingStore, scope: Scope, records: LeaderboardRecord[]) {
   // The contract does not pin down what a leaderboard row carries, so fill any
   // gap from the player's PROFILE rather than reporting a null we can avoid.
   // `uncertainty == null` is in here deliberately: the margin is now what makes
   // a rating publishable, so a row that arrives without one would lose its
   // number rather than merely lose a detail. Fill it from the profile first.
-  const needsHydration = [...page.items, ...sample.items]
+  const needsHydration = records
     .filter(
       (entry) =>
         entry.displayName == null ||
@@ -136,17 +161,10 @@ export async function getRankings(scope: Scope, limit: number, cursor?: string):
         entry.componentId == null
     )
     .map((entry) => entry.playerId);
-  const profiles = needsHydration.length > 0 ? await store.getPlayers(needsHydration) : new Map<string, PlayerRecord>();
+  const profiles =
+    needsHydration.length > 0 ? await store.getPlayers(needsHydration) : new Map<string, PlayerRecord>();
 
-  /**
-   * One row with its rating still on it.
-   *
-   * Ordering, ranks and coverage are worked out over these, and the withheld
-   * numbers are stripped afterwards in `publish`. The sequence is the point: a
-   * rank or an average that came out differently because a number was withheld
-   * would be a different answer rather than a safer one.
-   */
-  const merge = (entry: (typeof page.items)[number]) => {
+  return (entry: LeaderboardRecord) => {
     const profile = profiles.get(entry.playerId);
     const setRating = scope.setId
       ? profile?.setRatings.find((candidate) => candidate.setId === scope.setId)
@@ -181,9 +199,86 @@ export async function getRankings(scope: Scope, limit: number, cursor?: string):
       componentId: entry.componentId ?? profile?.componentId ?? null,
       componentSize: entry.componentSize ?? profile?.componentSize ?? null,
       regionLabel: entry.regionLabel ?? profile?.regionLabel ?? null,
+      // The row's own scene, else the profile's. Both are written by the
+      // engine off the player's *home* store, so they are the same fact read
+      // from two items rather than two facts.
+      sceneId: entry.sceneId ?? profile?.sceneId ?? null,
+      sceneLabel: entry.sceneLabel ?? profile?.sceneLabel ?? null,
+      // The engine's own rank on the board this row came off. Carried through
+      // untouched and published as `poolRank` on a scene board only; `rank` is
+      // always re-derived here, never read from this.
+      storedRank: entry.rank ?? null,
       ...verdict,
     };
   };
+}
+
+/**
+ * Positions, densely, over the rows that earn one.
+ *
+ * Shared by both paths so "dense over `earnsPosition`" has exactly one
+ * implementation. On a stored scope the population is the coverage sample; on
+ * a scene scope it is the scene's own rows, which is what makes a scene board's
+ * `#1` mean "first here" rather than "the highest-placed of the pool's rows we
+ * kept".
+ */
+/**
+ * The row as published: the rating travels with its margin, and the rank is
+ * the thing a provisional player does not get.
+ *
+ * Note what has *already* happened before this step and does not depend on it:
+ * the rated count, the placings and every coverage figure are computed over
+ * rows with their ratings intact. The sequence is the point - a rank or an
+ * average that came out differently because of a display rule would be a
+ * different answer rather than a safer one.
+ */
+function publishRow(
+  entry: MergedRow,
+  rankByPlayer: Map<string, number>,
+  options: { poolRank: boolean }
+): LeaderboardEntry {
+  const { storedRank, ...rest } = entry;
+  const rank = rankByPlayer.get(entry.playerId) ?? null;
+  return {
+    ...rest,
+    rating: publishableRating(entry.rating, entry.gamesPlayed, entry.uncertainty),
+    rank,
+    // Only on a scene board, and only for a row that holds a position: the
+    // pool's own number, exactly as the engine wrote it on the row. A row with
+    // no position in the scene has none in the pool either - the gate is the
+    // pool's `componentSize` in both cases - so publishing one here would be a
+    // placement this API has just declined to give.
+    poolRank: options.poolRank && rank !== null ? storedRank : null,
+    sceneComparable: isComparable(entry.componentSize),
+  };
+}
+
+function densePositions(rows: MergedRow[]): Map<string, number> {
+  const placed = rows
+    .filter((entry) => earnsPosition(entry))
+    .sort((a, b) => (b.rating ?? 0) - (a.rating ?? 0));
+  const rankByPlayer = new Map<string, number>();
+  placed.forEach((entry, index) => rankByPlayer.set(entry.playerId, index + 1));
+  return rankByPlayer;
+}
+
+export async function getRankings(scope: Scope, limit: number, cursor?: string): Promise<RankingResult> {
+  // A scene is a filter over one pool's board, not a stored partition, so it
+  // takes a different read. Branched here rather than inside the read, because
+  // what differs is the whole shape: no cursor on the way in, no `Limit` at
+  // all, and the ranks mean something else when it comes back.
+  if (scope.sceneId !== null) {
+    return getSceneRankings(scope, scope.sceneId, limit, cursor);
+  }
+
+  const store = getRankingStore();
+
+  const [page, sample] = await Promise.all([
+    store.getLeaderboard(scope, limit, cursor),
+    store.getLeaderboard(scope, COVERAGE_LIMIT),
+  ]);
+
+  const merge = await rowMerger(store, scope, [...page.items, ...sample.items]);
 
   const sampleEntries = sample.items.map(merge);
 
@@ -218,30 +313,14 @@ export async function getRankings(scope: Scope, limit: number, cursor?: string):
    * Ranks come from the whole coverage sample, not the page, so they stay right
    * across pages.
    */
-  const placed = sampleEntries
-    .filter((entry) => earnsPosition(entry))
-    .sort((a, b) => (b.rating ?? 0) - (a.rating ?? 0));
-  const rankByPlayer = new Map<string, number>();
-  placed.forEach((entry, index) => rankByPlayer.set(entry.playerId, index + 1));
+  const rankByPlayer = densePositions(sampleEntries);
 
-  /**
-   * The row as published: the rating travels with its margin, and the rank is
-   * the thing a provisional player does not get.
-   *
-   * Note what has *already* happened above and does not depend on this step:
-   * `rated`, `placed`, `rankByPlayer` and every count below are computed over
-   * `sampleEntries` with their ratings intact. The sequence is still the point
-   * - a rank or an average that came out differently because of a display rule
-   * would be a different answer rather than a safer one.
-   */
-  const publish = (entry: ReturnType<typeof merge>): LeaderboardEntry => ({
-    ...entry,
-    rating: publishableRating(entry.rating, entry.gamesPlayed, entry.uncertainty),
-    rank: rankByPlayer.get(entry.playerId) ?? null,
-    sceneComparable: isComparable(entry.componentSize),
-  });
-
-  const entries: LeaderboardEntry[] = page.items.map(merge).map(publish);
+  const entries: LeaderboardEntry[] = page.items
+    .map(merge)
+    // `poolRank` is a scene-board field: on a stored scope `rank` already *is*
+    // the board's own position, so a second column saying the same number
+    // would be furniture.
+    .map((entry) => publishRow(entry, rankByPlayer, { poolRank: false }));
 
   const ratedPlayers = rated.length;
   const totalPlayers = sample.totalPlayers ?? sampleEntries.length;
@@ -281,6 +360,7 @@ export async function getRankings(scope: Scope, limit: number, cursor?: string):
       lastUpdated: page.updatedAt ?? sample.updatedAt,
       coverageComplete: sampleEntries.length < COVERAGE_LIMIT,
     },
+    scene: null,
     component: scope.componentId
       ? {
           componentId: scope.componentId,
@@ -293,6 +373,263 @@ export async function getRankings(scope: Scope, limit: number, cursor?: string):
     pagination: { limit, cursor: page.cursor, hasMore: page.cursor !== null },
   };
 }
+
+// ---------------------------------------------------------------------------
+// The scene board
+// ---------------------------------------------------------------------------
+
+/**
+ * One scene's ladder: the scene's rows out of one pool's board, re-ranked
+ * among themselves.
+ *
+ * ## The bug this answers
+ *
+ * *"when i click peninsula in the map i expect it to go to that scene but its
+ * on like northw est community ..."* - and that was exactly what the code did.
+ * A scene's pin linked to `component:<the pool those players sit in>`, and a
+ * pool's `regionLabel` is the modal city name of a reachability closure, so a
+ * San Francisco scene opened a board headed `North West Community Development
+ * Council` - a Singapore CDC label. Each half was honest; the pair was not a
+ * product behaviour anybody could defend.
+ *
+ * ## Why a filter and not a fit
+ *
+ * Nothing is re-fitted and nothing is redefined. `componentId` keeps its
+ * meaning permanently, `crossComponentUncertainty` is still claimed only for a
+ * connected component, and the engine writes no `RANKING#scene:<id>` item. The
+ * storage contract is what makes this available: every ladder row already
+ * carries `sceneId`, "denormalised so a board can be filtered without profile
+ * fetches". So the scene's rows come out of its pool's board, and because a
+ * scene's players are a **subset of one component**, they were already on one
+ * scale before the filter - which is the statistical difference between this
+ * and the cross-component board the ladder declines to call a placement.
+ *
+ * ## What it costs, per request
+ *
+ * One `GetItem` on `SCENE#<sceneId>` (~1 read unit) to learn the pool, then the
+ * pool's board **in full**, because a scene board cannot be served by a
+ * `Limit`ed, filtered Query - `Limit` caps items examined before a filter, so
+ * on a rank-ordered board it would return the scene's best players and call it
+ * the scene. See `RankingStore.getSceneBoard`.
+ *
+ * Derived from the two measured figures the repo already holds (6,117 rated
+ * rows on the live global board, 97.4% of them in the giant component; ~305
+ * bytes an item from the 46-read-unit measurement on the 1,235-item
+ * `COMPONENT#` catalogue), that is ~2MB over 2-3 Query pages and **~250
+ * eventually-consistent read units** - against ~46 for the whole scene map and
+ * ~2 for a 25-row page of a stored board. The engine writes at most
+ * `RANKING_MAX_COMPONENT_LADDERS` (50) component boards, so for most of the
+ * 1,235 pools there is no component partition and the read falls back to the
+ * set-wide one, which is why that figure is ~6,000 rows either way rather than
+ * the pool's own size. `SCENE_BOARD_MAX_ROWS` bounds it; `cacheRanking` (one
+ * hour at the edge against a daily refit) is what keeps it to roughly one
+ * origin read per scene per hour.
+ *
+ * Note the one place this is dearer than the rest of the API: **page two of a
+ * scene board costs the same pool read as page one**, because the filtered list
+ * is held in memory for the length of one request and a cursor is an offset
+ * into it. It is left that way rather than papered over, because the alternative
+ * is `Limit` + filter and that is the correctness bug above. In practice it
+ * almost never happens - a scene's rated population is tens of players against
+ * a page size of 25.
+ *
+ * ## What was declined
+ *
+ * A stored `RANKING#scene:<id>` board in the engine would make this ~2 read
+ * units. It costs, per refit: one row per rated player per scene, plus one
+ * `RANKING_META#` header per scene. Scenes partition players by home store, so
+ * that is ~6,100 rows and ~1,123 headers - about **7,200 extra writes on a
+ * refit that already writes ~27,000 profiles and ~17,000 rating points**, i.e.
+ * ~15% more write traffic, and it would need a scraper change plus a refit
+ * before a single scene board existed. The storage contract already says this
+ * is the API's call to make ("whether scenes deserve ladders of their own is a
+ * decision to take with the API rather than by writing them"), and at this read
+ * volume behind an hour of edge cache the filter is the cheaper of the two. If
+ * `SCENE_BOARD_MAX_ROWS` ever binds, that is the trade to revisit - not a
+ * bigger cap.
+ */
+async function getSceneRankings(
+  scope: Scope,
+  sceneId: string,
+  limit: number,
+  cursor?: string
+): Promise<RankingResult> {
+  const store = getRankingStore();
+
+  // Read before anything else, because it names the pool everything else
+  // depends on. A store with no scene reader at all, or an engine that has not
+  // refitted since the assignment was accepted, reports `known: false` - not a
+  // 404, on the same grounds as "Never seen is not absent": that is also the
+  // state of every scene id for up to `RANKING_REFIT_INTERVAL_HOURS` after a
+  // deploy, and a shared `?scene=` link must not die for a deploy order.
+  const scene = store.getScene ? await store.getScene(sceneId).catch(() => null) : null;
+  const componentMap = await store.listComponents();
+  const components: ComponentSummary[] = [...componentMap.entries()]
+    .map(([componentId, info]) => ({
+      componentId,
+      regionLabel: info.regionLabel,
+      componentSize: info.componentSize,
+      ratedPlayers: info.ratedPlayers,
+      comparable: isComparable(info.componentSize),
+    }))
+    .sort((a, b) => (b.componentSize ?? 0) - (a.componentSize ?? 0));
+
+  const poolComponentId = scene?.componentId ?? null;
+  const componentCount = scene?.componentCount ?? 0;
+  const comparable = poolComponentId !== null && isComparable(scene?.componentSize ?? null);
+
+  // Three reasons there is no board to read, and all three are normal states
+  // rather than errors: the engine has no item for this scene, the store
+  // cannot filter a board, or nobody who plays in the scene has been replayed
+  // so there is no pool to filter.
+  let read: SceneBoardRead | null = null;
+  if (scene !== null && poolComponentId !== null && store.getSceneBoard) {
+    const preferred = poolScope(scope, poolComponentId);
+    read = await store.getSceneBoard(preferred, sceneId, poolComponentId, SCENE_BOARD_MAX_ROWS);
+    // The engine publishes a component ladder only for the largest 50 pools of
+    // at least `minComponentSize`, so for most pools `RANKING#component:<id>`
+    // simply does not exist - and an empty partition is told from an empty
+    // *scene* by whether anything was read at all, not by the row count. The
+    // set-wide board always exists and carries every component, which is why
+    // `getSceneBoard` filters on the pool as well as on the scene.
+    if (read.poolRowsRead === 0 && preferred.componentId !== null) {
+      read = await store.getSceneBoard(
+        poolScope(scope, null),
+        sceneId,
+        poolComponentId,
+        SCENE_BOARD_MAX_ROWS
+      );
+    }
+  }
+
+  const records = read?.items ?? [];
+  const merge = await rowMerger(store, scope, records);
+  const rows = records.map(merge);
+
+  // "Rated" is a statement about evidence, so it is counted before any
+  // comparability or display rule is applied - exactly as on a stored board.
+  const rated = rows.filter((entry) => !entry.provisional && entry.rating !== null);
+
+  /**
+   * **A scene board's positions are a dense re-rank inside the scene**, 1..N
+   * over its own rows that earn one - not the pool's ranks with the other
+   * scenes' rows cut out, which would open on `#37` and climb in gaps.
+   *
+   * It is the right answer and it is also the only sound one. The restriction
+   * is order-preserving: the scene's rows are a subset of one component, sorted
+   * on the same posterior mean the pool board sorts on, so the scene's order
+   * can never contradict the pool's about who is ahead of whom. `poolRank`
+   * travels beside it so a reader can see both numbers and check one against
+   * the other.
+   *
+   * **The gate is unchanged, and it still measures the component.**
+   * `earnsPosition` tests `isComparable(componentSize)`, and
+   * `CONFIDENCE.minComponentSize` is a threshold on the pool - so a 3-store
+   * scene inside a 2,000-player pool gets positions and a 40-player scene whose
+   * pool is 6 gets none. Re-pointing that threshold at the scene's own
+   * `playerCount` would be a different claim about identifiability, measured
+   * from nothing, and it is not made here.
+   */
+  const rankByPlayer = densePositions(rows);
+
+  const published = rows.map((entry) => publishRow(entry, rankByPlayer, { poolRank: true }));
+  const start = decodeOffset(cursor);
+  const slice = published.slice(start, start + limit);
+  const nextOffset = start + limit;
+
+  const totalPlayers = scene?.playerCount ?? rows.length;
+  const totalGames = rows.reduce<number | null>(
+    (sum, entry) => (entry.gamesPlayed === null ? sum : (sum ?? 0) + entry.gamesPlayed),
+    null
+  );
+
+  const poolInfo = poolComponentId !== null ? componentMap.get(poolComponentId) : undefined;
+  const poolSize = scene?.componentSize ?? poolInfo?.componentSize ?? null;
+
+  return {
+    scope,
+    entries: slice,
+    coverage: {
+      // The scene's **own** population, off its `SCENE#` item: players whose
+      // home store is in it, rated or not. The board itself cannot say this -
+      // the engine writes a row only for a rated player - and it is the figure
+      // the event page's scene line already prints, so the two agree.
+      totalPlayers,
+      ratedPlayers: rated.length,
+      provisionalPlayers: Math.max(0, totalPlayers - rated.length),
+      totalGames,
+      minGamesForRating: CONFIDENCE.minGames,
+      minGamesToPublishRating: minGamesToPublish(),
+      maxUncertaintyForRating: CONFIDENCE.maxUncertainty,
+      // The pool's threshold, published unchanged: it is what gated these rows
+      // and a page quoting it is quoting the right number.
+      minComponentSize: CONFIDENCE.minComponentSize,
+      lastUpdated: read?.updatedAt ?? scene?.generatedAt ?? null,
+      // Two different incompletenesses, reported as one verdict because a page
+      // can only say "these counts are a floor" once: the pool's board was cut
+      // short by the cap, or there is no scene item to count against.
+      coverageComplete: scene !== null && (read?.complete ?? true),
+    },
+    scene: {
+      sceneId,
+      label: scene?.label ?? null,
+      known: scene !== null,
+      playerCount: scene?.playerCount ?? null,
+      ratedPlayers: scene?.ratedCount ?? null,
+      venueCount: scene?.venueCount ?? null,
+      componentId: poolComponentId,
+      componentSize: poolSize,
+      componentCount,
+      // A scene whose players sit in one pool is the normal case and the one
+      // this board is complete for. `componentCount` of 0 is an engine that
+      // does not publish the figure, which is not evidence of a split.
+      singlePool: componentCount <= 1,
+      omittedPoolRows: read?.omittedPoolRows ?? 0,
+      comparable,
+      poolScope: read?.poolScope ?? null,
+      poolRowsRead: read?.poolRowsRead ?? 0,
+      poolComplete: read?.complete ?? true,
+    },
+    // The pool, carried beside the scene rather than instead of it. This is
+    // what keeps the component board reachable - it is still the honest answer
+    // to "who else is on this scale" - without being the thing a scene link
+    // lands on.
+    component:
+      poolComponentId !== null
+        ? {
+            componentId: poolComponentId,
+            componentSize: poolSize,
+            regionLabel: poolInfo?.regionLabel ?? rows[0]?.regionLabel ?? null,
+            comparable,
+          }
+        : null,
+    components,
+    pagination: {
+      limit,
+      // An offset rather than a storage cursor, because the filtered list only
+      // exists for the length of this request. See the cost note above: the
+      // next page re-reads the pool, which is the one place in this API where
+      // a cursor is not cheaper than the first page.
+      cursor: nextOffset < published.length ? encodeOffset(nextOffset) : null,
+      hasMore: nextOffset < published.length,
+    },
+  };
+}
+
+function encodeOffset(offset: number): string {
+  return Buffer.from(`i:${offset}`, 'utf8').toString('base64url');
+}
+
+function decodeOffset(cursor: string | undefined): number {
+  if (!cursor) return 0;
+  try {
+    const match = /^i:(\d+)$/.exec(Buffer.from(cursor, 'base64url').toString('utf8'));
+    return match ? Number(match[1]) : 0;
+  } catch {
+    return 0;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // The scene map
 // ---------------------------------------------------------------------------
@@ -328,12 +665,14 @@ export async function getRankings(scope: Scope, limit: number, cursor?: string):
  *
  * **A scene is not a rating scale, and this endpoint says so in its field
  * names.** `componentId` keeps its meaning permanently: it answers "are these
- * two ratings on one scale", `crossComponentUncertainty` is only correct for a
- * connected component, and the ladder's scope syntax is still `component:<id>`
- * with no `scene:` scope. So a scene entry carries the **pool** its home
- * players sit on as `componentId` / `componentSize` / `componentCount`, and
- * `comparable` is a statement about that pool's board rather than about the
- * scene. A caller must present them as two facts, never as one.
+ * two ratings on one scale", and `crossComponentUncertainty` is only correct
+ * for a connected component. A scene's pin links at `scene:<id>` now, which is
+ * this pool's board *filtered* to the scene and re-ranked - a filter, not a
+ * fit, so nothing here was redefined to allow it (see `getSceneRankings`). The
+ * entry still carries the **pool** its home players sit on as `componentId` /
+ * `componentSize` / `componentCount`, and `comparable` is a statement about
+ * that pool's board rather than about the scene. A caller presents them as two
+ * facts, never as one.
  *
  * **Nothing is placed at a guessed point.** A scene is located only if its own
  * venues carried coordinates, and the two fallbacks that would fill the map in

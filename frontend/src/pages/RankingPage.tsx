@@ -9,6 +9,7 @@ import type {
   PlayerSearchCoverage,
   PlayerSearchHit,
   RankingCoverage,
+  SceneBoardInfo,
   SetInfo,
 } from '../types/ranking';
 import {
@@ -25,10 +26,19 @@ import {
   hasPositions,
   marginBar,
   marginScale,
+  POOL_LINK_HINT,
+  POOL_LINK_LABEL,
+  POOL_POSITION_HINT,
   ratingDisplay,
   ratingExplanation,
+  sceneBoardLabel,
+  sceneBoardNotice,
+  scenePath,
+  SCENE_POSITION_HINT,
+  SCENE_SPLIT_POOL_HINT,
   sceneSizeHint,
   sceneTooSmallExplanation,
+  sceneUnknownNotice,
   searchCaption,
   setLabel,
   splitByRating,
@@ -94,14 +104,27 @@ const COVERAGE_FLOOR_HINT =
 
 const PAGE_SIZE = 25;
 /**
- * `region` is the **ladder scope** - a `componentId`, which is the only thing a
- * rating scale can be - and `scene` is the **place the reader picked**, which is
- * what the picker's field shows and what the map highlights.
+ * Two parameters, still two facts - but `scene` is load-bearing now.
  *
- * Two parameters because they are two facts, and because a shared `?region=`
- * link handed out before this existed has to keep working unchanged: the scope
- * is read from `region` alone and nothing infers one from the other. `scene` is
- * presentation - drop it and the board is identical.
+ * `region` is a **pool** id (`component:<id>`, the only thing a rating scale
+ * can be) and `scene` is the **place** the reader picked. Until now only
+ * `region` chose a board: a `?scene=` link set the picker's caption and left
+ * the pool's ladder underneath it, which is the reported bug - clicking
+ * `Peninsula` landed on a board headed `North West Community Development
+ * Council`, a Singapore CDC label, because that is the modal city of the pool
+ * those players happen to chain into.
+ *
+ * So the scope now reads **scene first, pool second** (`buildScope`):
+ *
+ * - a `?scene=` link - what the map pin, the picker row and the event page all
+ *   build - opens that scene's board;
+ * - every `?region=` link handed out before this is byte-for-byte the page it
+ *   always was, because nothing infers a scene from a pool;
+ * - a link carrying both - which the picker used to write on every choice -
+ *   resolves to the scene, which is what its author meant.
+ *
+ * The pool board is still reachable, and from the scene board itself: see
+ * `POOL_LINK_LABEL`. It is the honest answer to "who else is on this scale".
  */
 const URL_PARAMS = { SET: 'set', REGION: 'region', SCENE: 'scene' } as const;
 
@@ -110,6 +133,9 @@ interface RankingState {
   coverage: RankingCoverage | null;
   components: ComponentSummary[];
   component: { componentId: string | null; componentSize: number | null; regionLabel: string | null; comparable: boolean } | null;
+  /** The scene header, on a scene scope only. Null on every other, and on an
+   * API deploy that predates the scene board. */
+  scene: SceneBoardInfo | null;
   cursor: string | null;
   hasMore: boolean;
 }
@@ -119,11 +145,15 @@ const EMPTY_STATE: RankingState = {
   coverage: null,
   components: [],
   component: null,
+  scene: null,
   cursor: null,
   hasMore: false,
 };
 
 function RankingPage() {
+  // Rankings is unlisted, so every link out of this page has to carry the
+  // preview flag; the pool link under the scene summary is one of them.
+  const { search } = useLocation();
   const [searchParams, setSearchParams] = useSearchParams();
   const setId = searchParams.get(URL_PARAMS.SET) ?? ALL_SETS;
   const regionParam = searchParams.get(URL_PARAMS.REGION);
@@ -135,7 +165,9 @@ function RankingPage() {
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const scope = useMemo(() => buildScope(setId, regionParam), [setId, regionParam]);
+  // Scene first, pool second - see `URL_PARAMS`. A scene is never sent as
+  // `component:<sceneId>`; that was the shape of the bug one layer down.
+  const scope = useMemo(() => buildScope(setId, regionParam, sceneParam), [setId, regionParam, sceneParam]);
 
   useEffect(() => {
     let cancelled = false;
@@ -164,6 +196,11 @@ function RankingPage() {
           coverage: response.data.coverage,
           components: response.data.components,
           component: response.data.component,
+          // `?? null` rather than a default object: an API deployed before the
+          // scene board sends nothing, and an invented header would claim the
+          // scene does not exist. Without one the page falls back to naming
+          // the pool, which is exactly what it did before.
+          scene: response.data.scene ?? null,
           cursor: response.pagination.cursor,
           hasMore: response.pagination.hasMore,
         });
@@ -223,8 +260,23 @@ function RankingPage() {
   const { scored, unscored } = splitByRating(state.entries);
   const coverage = state.coverage;
   const selectedComponent = state.component;
-  // Global is the scope that mixes scenes; a `?region=` scope is one scene.
+  // The scene header, when this board is a scene's. It is what the page is
+  // named after now; `selectedComponent` is still carried beside it, because
+  // the pool is the second of the two facts and the link out to it.
+  const selectedScene = state.scene;
+  // Global is the scope that mixes pools; a scene or a `?region=` scope is one.
   const mixesScenes = !selectedComponent;
+  // The `Pool` column exists only where it is a **second** number.
+  //
+  // On a scene that is most of its pool - which is the common shape, since the
+  // engine writes a component ladder only for the largest pools and a small
+  // pool is often one scene - every row's pool position equals its scene
+  // position, and a column repeating the one beside it is furniture. The same
+  // rule the `#` column itself follows (`hasPositions`): ask the data, not the
+  // scope. It appears the moment one row differs, which is exactly when the
+  // reader needs to know the two are not the same question.
+  const showsPoolRank =
+    selectedScene !== null && scored.some((entry) => entry.poolRank != null && entry.poolRank !== entry.rank);
   // Whether to draw the `#` column, asked of the data rather than of the
   // scope: a column of nothing but dashes is furniture, and anything else is
   // an order that exists and should be shown. See `hasPositions`.
@@ -239,20 +291,39 @@ function RankingPage() {
   // Published alongside, so the "too small to order" sentence quotes the
   // server's threshold rather than a constant guessed here.
   const minSceneSize = coverage?.minComponentSize ?? 8;
+  // The scene board's own caveat, or null when there is nothing to caveat. It
+  // quotes the **pool's** size for the too-small case, because that is what
+  // the threshold measures - a scene of forty whose pool is six still has no
+  // orderable board, and the arithmetic has to be about the right set.
+  const sceneNotice = selectedScene
+    ? sceneBoardNotice(selectedScene, minSceneSize, selectedScene.componentSize)
+    : null;
+  const sceneUnknown = selectedScene ? sceneUnknownNotice(selectedScene) : null;
 
   return (
     <div className="ranking-page">
       <div className="ranking-head">
         <h1>Rankings</h1>
         <p className="ranking-head-sub">
-          {/* The heading names the **pool**, which is what this board is, and
-              the picker's field names the **scene**, which is where the reader
-              plays. Those are two different strings for one selection and the
-              mismatch is real rather than a bug - a pool covers several scenes
-              - so the hint says it here, beside the name that differs, in the
-              page's existing idiom. Nothing is renamed to make them agree:
-              that would mean one of the two names was wrong. */}
-          {selectedComponent ? (
+          {/* **The heading names what the reader picked.**
+
+              On a scene board that is the scene, and that is the whole repair:
+              it used to name the *pool*, because a scene link had nowhere else
+              to land, and a pool is named after the modal city of a
+              reachability closure - so `Peninsula` in the picker sat under
+              `North West Community Development Council` in the heading, a
+              Singapore CDC label. The pool has not been hidden; it is one line
+              down, under its own name, as the board a reader can widen to.
+
+              On a pool board (a shared `?region=` link) the heading is the
+              pool's, as it always was, and the hint still says why that name
+              can differ from the picker's - one pool covers several scenes.
+              Nothing is renamed to make two true names agree. */}
+          {selectedScene ? (
+            <abbr className="col-hint" title={HINTS.scene}>
+              {sceneBoardLabel(selectedScene)}
+            </abbr>
+          ) : selectedComponent ? (
             <abbr className="col-hint" title={HINTS.pool}>
               {componentLabel(selectedComponent)}
             </abbr>
@@ -287,10 +358,20 @@ function RankingPage() {
           // fallback rows are keyed on, so a bare `?region=` link still marks
           // its row while the directory is in flight.
           value={sceneParam ?? regionParam}
-          // Both at once. A scene whose players are in no rating pool yields a
-          // scene and a **null** scope, which clears `?region=` and puts the
-          // board back to Global - the honest result, because there is no
-          // board for that scene to show and inventing one would be worse.
+          /* Both at once, and which of the two is written decides which board
+             the reader gets.
+
+             A **catalogue row** is a scene, so it writes `?scene=` and clears
+             `?region=`: the scene now has a board of its own, so there is no
+             longer any reason to send the reader to the pool's. That holds even
+             for a scene with no pool - the API answers an empty board that says
+             so, which is a better answer than silently falling back to Global,
+             and that fallback is what the old `null` scope did.
+
+             A **fallback row** - one built from the ladder's own `components`
+             for the few hundred milliseconds before the directory lands - *is*
+             a pool, so it writes `?region=`. `SceneSelect` tells the two apart;
+             see its `onChange`. */
           onChange={(sceneId, nextScope) =>
             updateParams([
               [URL_PARAMS.SCENE, sceneId],
@@ -298,11 +379,13 @@ function RankingPage() {
             ])
           }
           hint={HINTS.scene}
-          // The API's own name for the scope it just served, for the field
-          // before the scene directory lands. It is the **pool's** name, which
-          // is a different thing from the scene's and is why the heading above
-          // carries a hint saying so.
-          selectedLabel={selectedComponent?.regionLabel ?? null}
+          // The API's own name for what it just served, for the field before
+          // the scene directory lands. The scene's own label when there is one;
+          // otherwise the pool's, which is a different kind of name and is why
+          // the heading above carries a hint saying so.
+          selectedLabel={
+            selectedScene ? sceneBoardLabel(selectedScene) : selectedComponent?.regionLabel ?? null
+          }
         />
 
         <PlayerSearch />
@@ -317,24 +400,42 @@ function RankingPage() {
           <SceneSummary
             coverage={coverage}
             component={selectedComponent}
+            scene={selectedScene}
             scopeLabel={scopeLabel}
+            search={search}
           />
 
-          {/* Only when there is no `#` column to hang a hint on. On Global
-              there is one, and it carries `GLOBAL_POSITION_HINT` - so the
-              caveat sits on the number it qualifies instead of standing as a
-              line every reader reads before seeing anything it is about. */}
-          {(scored.length > 0 || unscored.length > 0) && !laddered && (
-            <div
-              className="notice-banner"
-              title={`Positions need at least ${coverage?.minComponentSize ?? minSceneSize} players who have played each other.`}
-            >
-              Too few players for positions
-              {selectedComponent?.componentSize != null
-                ? ` \u2014 ${selectedComponent.componentSize} in this scene.`
-                : '.'}
-            </div>
-          )}
+          {/* A scene the engine has no item for. Not an error and not an empty
+              board's fault: it is the state of every scene id until a refit has
+              run with an accepted assignment, so a shared link lands here for
+              up to a day after a deploy rather than 404ing through it. */}
+          {sceneUnknown && <div className="notice-banner">{sceneUnknown}</div>}
+
+          {/* One line. Why lives in the hover hint, like every other
+              explanation on this page - the banner reports, it does not teach.
+
+              Three facts now, and the scene one is the honest caveat this
+              board needs: a scene is comparable *internally* because it sits
+              inside one pool, and `componentCount > 1` is the case where it
+              does not. See `sceneBoardNotice`, which also keeps the too-small
+              line quoting the **pool's** size rather than the scene's. */}
+          {(scored.length > 0 || unscored.length > 0) &&
+            (selectedScene ? sceneNotice !== null : !laddered) && (
+              <div
+                className="notice-banner"
+                title={
+                  selectedScene
+                    ? selectedScene.comparable
+                      ? SCENE_SPLIT_POOL_HINT
+                      : `Positions need at least ${minSceneSize} players who have played each other.`
+                    : `Positions need at least ${coverage?.minComponentSize ?? minSceneSize} players who have played each other.`
+                }
+              >
+                {selectedScene
+                  ? sceneNotice
+                  : `Too few players for positions \u2014 ${selectedComponent?.componentSize ?? 'a few'} in this scene.`}
+              </div>
+            )}
 
           {scored.length === 0 ? (
             <NobodyRatedYet hasPlayers={unscored.length > 0} />
@@ -355,15 +456,33 @@ function RankingPage() {
                     <tr>
                       {laddered && (
                         <th scope="col" className="numeric">
-                          {/* On Global the `#` is the one thing on the page
-                              that needs qualifying, so it carries the dotted
-                              underline the Rating and Margin headers use. In
-                              one scene the order is earned and needs nothing. */}
+                          {/* On Global the `#` needs qualifying because the
+                              order spans pools; on a scene board it needs
+                              qualifying for the opposite reason - the number
+                              is a place *here*, and the `Pool` column beside
+                              it is the same player somewhere wider, so a
+                              reader has to be told which is which. Both carry
+                              the dotted underline the Rating and Margin
+                              headers use. On a pool board the order is earned
+                              over the whole board and needs nothing. */}
                           {mixesScenes ? (
                             <abbr className="col-hint" title={GLOBAL_POSITION_HINT}>#</abbr>
+                          ) : selectedScene ? (
+                            <abbr className="col-hint" title={SCENE_POSITION_HINT}>#</abbr>
                           ) : (
                             '#'
                           )}
+                        </th>
+                      )}
+                      {/* The same player's place on the wider pool's board.
+                          It earns a column because the two numbers answer two
+                          questions - "where do I stand among the people I
+                          play" and "where do I stand among everyone my games
+                          chain to" - and because seeing #2 here beside #37
+                          there is what makes the pool link below legible. */}
+                      {showsPoolRank && (
+                        <th scope="col" className="numeric">
+                          <abbr className="col-hint" title={POOL_POSITION_HINT}>Pool</abbr>
                         </th>
                       )}
                       <th scope="col">Player</th>
@@ -427,6 +546,16 @@ function RankingPage() {
                                   {entry.rank}
                                 </span>
                               )}
+                            </td>
+                          )}
+                          {showsPoolRank && (
+                            <td className="numeric muted" title={POOL_POSITION_HINT}>
+                              {/* A dash, not a blank: a row with no place in
+                                  the scene has none in the pool either - the
+                                  gate is the pool's size in both cases - and
+                                  the cell has to read as "no position" rather
+                                  than as missing data. */}
+                              {entry.poolRank ?? '--'}
                             </td>
                           )}
                           <td>
@@ -570,17 +699,27 @@ function PlayerLink({ entry }: { entry: LeaderboardEntry | PlayerSearchHit }) {
 function SceneSummary({
   coverage,
   component,
+  scene,
   scopeLabel,
+  search,
 }: {
   coverage: RankingCoverage | null;
-  component: { componentSize: number | null; regionLabel: string | null; comparable: boolean } | null;
+  component: { componentId?: string | null; componentSize: number | null; regionLabel: string | null; comparable: boolean } | null;
+  /** The scene header, on a scene board only. */
+  scene: SceneBoardInfo | null;
   scopeLabel: string;
+  search: string;
 }) {
   if (!coverage) return null;
 
-  const where = component?.regionLabel ?? GLOBAL_SCENE_LABEL;
+  // The block is named after what the reader picked, like the heading above
+  // it: the scene on a scene board, the pool on a pool board, Global on
+  // neither. It used to be the pool's name unconditionally, which is how a
+  // Singapore label came to sit over a San Francisco scene.
+  const where = scene ? sceneBoardLabel(scene) : component?.regionLabel ?? GLOBAL_SCENE_LABEL;
   const seen = coverage.totalPlayers;
   const ratedPercent = seen > 0 ? (coverage.ratedPlayers / seen) * 100 : 0;
+  const poolId = scene?.componentId ?? null;
 
   return (
     <section className="panel scene-summary" aria-label="Rating coverage">
@@ -588,11 +727,51 @@ function SceneSummary({
         <h2 className="scene-name">{where}</h2>
         <p className="scene-meta">
           <span className="scope-chip">{scopeLabel}</span>
-          {component?.componentSize !== null && component?.componentSize !== undefined && (
-            <span>{component.componentSize} players in the co-play graph</span>
+          {/* On a scene board the size shown is the **scene's** - its own
+              stores and its own players - and the pool's size travels on the
+              link out to it instead. Printing the pool's figure here is what
+              overstated a scene by an order of magnitude on the event page
+              before the scene line was fixed. */}
+          {scene ? (
+            <>
+              {scene.venueCount !== null && (
+                <span>
+                  {scene.venueCount.toLocaleString('en-US')} store{scene.venueCount === 1 ? '' : 's'}
+                </span>
+              )}
+              {!scene.comparable && <span>too small for places</span>}
+            </>
+          ) : (
+            <>
+              {component?.componentSize !== null && component?.componentSize !== undefined && (
+                <span>{component.componentSize} players in the co-play graph</span>
+              )}
+              {component && !component.comparable && <span>too small for places</span>}
+            </>
           )}
-          {component && !component.comparable && <span>too small for places</span>}
         </p>
+        {/* **The pool board stays reachable, and this is the way to it.** It
+            is the honest answer to "who else is on this scale", and the scene
+            board is deliberately the narrower question - so the link is here
+            rather than the destination. Named after the pool, with its size,
+            because a control reading "the whole ladder" would imply the scene
+            board was a partial one. `carryPreview`, like every internal link
+            on this page: the section is unlisted and a bare href strands the
+            reader. */}
+        {scene && poolId !== null && (
+          <p className="scene-meta">
+            <Link
+              className="scene-pool-link"
+              to={carryPreview(scenePath(poolId), search)}
+              title={POOL_LINK_HINT}
+            >
+              {POOL_LINK_LABEL}
+            </Link>
+            {scene.componentSize !== null && (
+              <span>{scene.componentSize.toLocaleString('en-US')} players on it</span>
+            )}
+          </p>
+        )}
       </div>
 
       <div className="scene-coverage">

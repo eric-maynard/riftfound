@@ -556,14 +556,16 @@ export interface SceneProfile extends ScenePlace {
    * The rating pool this scene's players are on, and how many pools they are
    * spread over.
    *
-   * **A scene is not a rating scale and this is how that is said.** A ladder is
-   * scoped `component:<id>` because `crossComponentUncertainty` is only correct
-   * for a connected component; a scene is additive and has no scope of its own.
-   * So a reader who has found their scene on the map needs to be pointed at the
-   * board their ratings actually live on, which is the component holding the
-   * largest share of the scene's home players - the same pairing the event page
-   * already publishes ("this event was held in the Peninsula scene" beside
-   * "these players' ratings are on one scale with these others'").
+   * **A scene is not a rating scale and this is how that is said.** Only a
+   * connected component names one, because `crossComponentUncertainty` is only
+   * correct for a connected component; a scene is additive. The engine
+   * therefore writes no `RANKING#scene:<id>` board, and the API's `scene:<id>`
+   * scope is a **filter** over this pool's board - the scene's own rows, which
+   * every `RankingRow` carries a `sceneId` for, re-ranked among themselves.
+   * This field is what tells it which pool to filter, and it is the second half
+   * of the pairing the event page publishes ("this event was held in the
+   * Peninsula scene" beside "these players' ratings are on one scale with
+   * these others'").
    *
    * `componentId` is the modal component, `componentSize` its player count (so
    * a reader can be told whether that board can be ordered at all), and

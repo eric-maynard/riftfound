@@ -37,6 +37,7 @@ import type {
   PlayerRecord,
   PlayerSearchResult,
   RankingStore,
+  SceneBoardRead,
   SceneCatalogueEntry,
   SceneCatalogueVenue,
   SceneCoverageCounts,
@@ -221,6 +222,14 @@ function toLeaderboardRecord(item: Item): LeaderboardRecord | null {
     componentId: readString(item, ['componentId', 'component']),
     componentSize: readNumber(item, ['componentSize']),
     regionLabel: readString(item, ['regionLabel', 'region']),
+    // The engine writes both onto every ladder row of a player it has placed
+    // in a scene (`RankingRow` in scraper/src/ranking/items.ts, "denormalised
+    // so a board can be filtered without profile fetches"). They were not
+    // being read, which is why the only route from a scene to a board went via
+    // the pool - and why clicking `Peninsula` opened a Singapore label. They
+    // cost nothing: this is the same item the board Query already returns.
+    sceneId: readString(item, ['sceneId']),
+    sceneLabel: readString(item, ['sceneLabel']),
     ...readVerdict(item),
   };
 }
@@ -527,6 +536,83 @@ export const dynamoRankingStore: RankingStore = {
     };
   },
 
+  /**
+   * One scene's rows out of one pool's board. See `RankingStore.getSceneBoard`
+   * for why this is a whole-partition read and not a `Limit`ed, filtered one.
+   *
+   * No `Limit` and no `FilterExpression` on the Query, both deliberately:
+   *
+   * - **`Limit` caps items examined before a filter, not matches.** On a board
+   *   in rank order that returns the scene's best players and calls it the
+   *   scene. The same misreading of `Limit` is what made name search answer
+   *   "no player by that name" for players on the ladder beside it.
+   * - **A `FilterExpression` saves no capacity** - DynamoDB charges for items
+   *   read, not items returned - and `RANKING#<scope>` is allowed to be a page
+   *   item holding an `entries` array, which carries no top-level `sceneId`,
+   *   so `sceneId = :id` would discard a whole board. The filter runs in
+   *   memory over the expanded records instead, where both item shapes have
+   *   already been flattened.
+   *
+   * The cap is on **rows examined**, not pages: the scene's own rows are a
+   * small subset, so stopping on a page boundary would make the answer depend
+   * on how DynamoDB happened to split 1MB.
+   */
+  async getSceneBoard(
+    pool: Scope,
+    sceneId: string,
+    componentId: string,
+    maxRows: number
+  ): Promise<SceneBoardRead> {
+    const client = getDynamoClient();
+    const items: LeaderboardRecord[] = [];
+    let poolRowsRead = 0;
+    let omittedPoolRows = 0;
+    let updatedAt: string | null = null;
+    let startKey: Record<string, unknown> | undefined = undefined;
+    let complete = true;
+
+    do {
+      const result = await client.send(
+        new QueryCommand({
+          TableName: getTableName(),
+          KeyConditionExpression: 'PK = :pk',
+          ExpressionAttributeValues: { ':pk': rankingPK(pool.raw) },
+          ExclusiveStartKey: startKey,
+        })
+      );
+
+      const page = (result.Items ?? []) as Item[];
+      const nextKey = result.LastEvaluatedKey as Record<string, unknown> | undefined;
+      if (page.length > 0) {
+        updatedAt = readString(page[page.length - 1], ['updatedAt', 'computedAt']) ?? updatedAt;
+      }
+
+      for (const record of page.flatMap(expandRankingItem)) {
+        poolRowsRead += 1;
+        if (record.sceneId !== sceneId) continue;
+        // A scene whose players straddle two pools would otherwise arrive here
+        // from both at once, off a set-wide or global partition - which is the
+        // cross-scale board the whole design exists to avoid. Dropped, and
+        // counted, because the count is what the caveat is made of.
+        if (record.componentId != null && record.componentId !== componentId) {
+          omittedPoolRows += 1;
+          continue;
+        }
+        items.push(record);
+      }
+
+      startKey = nextKey;
+      if (startKey && poolRowsRead >= maxRows) {
+        // Reported rather than silently truncated: the partition is in rank
+        // order, so what is missing is the low-rated tail of the scene.
+        complete = false;
+        break;
+      }
+    } while (startKey);
+
+    return { items, poolScope: pool.raw, poolRowsRead, complete, omittedPoolRows, updatedAt };
+  },
+
   async getPlayer(playerId: string): Promise<PlayerRecord | null> {
     const result = await getDynamoClient().send(
       new GetCommand({ TableName: getTableName(), Key: playerProfileKeys(playerId) })
@@ -703,7 +789,7 @@ export const dynamoRankingStore: RankingStore = {
     // Set ids are discovered from the scopes the engine has written. There is
     // no SET# item in the contract and no index over scope keys, so this reads
     // the global board and unions the per-set maps of the players on it.
-    const board = await dynamoRankingStore.getLeaderboard({ raw: 'all', setId: null, componentId: null }, 100);
+    const board = await dynamoRankingStore.getLeaderboard({ raw: 'all', setId: null, componentId: null, sceneId: null }, 100);
     const ids = new Set<string>();
 
     const known = board.items
@@ -948,7 +1034,7 @@ export const dynamoRankingStore: RankingStore = {
   },
 
   async listComponents() {
-    const board = await dynamoRankingStore.getLeaderboard({ raw: 'all', setId: null, componentId: null }, 100);
+    const board = await dynamoRankingStore.getLeaderboard({ raw: 'all', setId: null, componentId: null, sceneId: null }, 100);
 
     // Only the rows that cannot answer for themselves. The engine denormalises
     // componentId, componentSize, regionLabel and the rating triple onto every

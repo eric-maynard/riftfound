@@ -550,15 +550,16 @@ export type SceneLine =
   | {
       kind: 'scene';
       /**
-       * The **component** to link the *ladder* at, or null when the engine has
+       * The rating **pool** those players sit in, or null when the engine has
        * placed nobody who played here.
        *
-       * Deliberately not the scene id, and the distinction is the whole point
-       * of this type. The name above is the scene's; this is the rating pool
-       * those players sit in, which is what a ladder is scoped to - there is
-       * no scene-scoped ladder to link at, because a scene does not define a
-       * rating scale and `componentId` does. The hint says so in words rather
-       * than letting the link imply the two are one thing.
+       * No longer what the ladder link is built from - that is `sceneId` now,
+       * because the ladder has a `scene:<id>` scope - but still carried,
+       * because it is the second fact the hint has to state: *this store is in
+       * this scene*, and *these ratings are on one scale with N others'*. A
+       * scene does not define a rating scale and `componentId` does, which is
+       * exactly why the scene's board is this pool's board filtered rather than
+       * a fit of its own.
        */
       componentId: string | null;
       /**
@@ -605,16 +606,21 @@ export type SceneLine =
  *
  * ## Two links, two ids, and the hint says why
  *
- * The **ladder** is scoped to a `componentId`, because a component is what makes
- * two ratings comparable - a scene does not define a rating scale, so there is
- * no scene-scoped ladder to link at. The name is therefore the scene's and the
- * ladder link is the rating pool's, which is two facts rather than one, so the
- * hint states both instead of letting the link imply they are the same thing.
+ * **Both links carry the `sceneId` now**, and that is new. The ladder used to
+ * be scoped to the `componentId`, because a component is what makes two ratings
+ * comparable and a scene defined no rating scale - so the name was the scene's
+ * and the link was the pool's, and clicking `Peninsula` opened a board headed
+ * `North West Community Development Council`, a Singapore CDC label. The ladder
+ * has a `scene:<id>` scope now: the pool's board filtered to this scene's rows
+ * and re-ranked among them. Nothing about comparability changed - the filtered
+ * rows are a subset of one pool, so they were already on one scale - and the
+ * pool is reachable from the board itself, under its own name.
  *
- * The **map** link is keyed on the `sceneId`, which it was not: the map used to
- * draw components, so this line sent it a component id and the reader got a map
- * with nothing selected. Both ids therefore travel on the line, and neither
- * stands in for the other.
+ * `componentId` therefore stays on the line for the **hint**, which still has
+ * to state the pair: *this store is in this scene*, and *the ratings here are
+ * on one scale with N others'*. It is no longer what either link is built
+ * from, so there is one id to get right instead of two to keep apart.
+ *
  * `partial` keeps its old meaning: the placed players do not all share one
  * component, which happens when an event's pairings did not connect everyone,
  * or when the engine has not replayed this event yet.
@@ -684,14 +690,18 @@ export function sceneLine(scene: TournamentScene, minComponentSize: number): Sce
   const partial = scene.componentCount > 1;
   const basis =
     'A group of nearby stores whose players play each other. ' +
+    // The link opens this scene's own board now, so this says what it leads
+    // to rather than warning that it leads somewhere else. The pool is still
+    // named: *this is the scene*, and *these ratings are on one scale with
+    // these others'*.
     (scene.placedPlayers > 0
-      ? `The ladder is the wider pool of ${
+      ? `Its ladder is these players' own, taken from the wider pool of ${
           scene.componentSize === null
             ? 'players'
             : `${scene.componentSize.toLocaleString()} players`
         } on one scale with the ${scene.matchPlayers.toLocaleString()} ` +
         `${plural(scene.matchPlayers, 'player')} who played here.`
-      : 'Nobody who played here is placed on a ladder yet, so there is no pool to link to.');
+      : 'The ladder has not placed anybody who played here yet.');
 
   // The size caveat, in the ladder's own words, and still about the component:
   // it is the component's size that decides whether an order is a placement.

@@ -2297,7 +2297,11 @@ select:disabled {
 
 .scene-meta > span + span::before,
 .player-meta > span + span::before,
-.event-meta > span + span::before {
+.event-meta > span + span::before,
+/* A meta row can lead with a link now - the scene board's way out to its
+   rating pool - and the figure after it needs the same separator a second
+   span would get. Scoped to `a + span` so an all-span row is untouched. */
+.scene-meta > a + span::before {
   content: '\00b7';
   margin-right: 0.5rem;
   color: var(--color-text-muted);
@@ -4542,6 +4546,28 @@ td.is-unsettled .rating-value,
 
 .scene-ladder-link:hover,
 .scene-ladder-link:focus-visible {
+  text-decoration: underline;
+}
+
+/* The pool, under the scene's own board.
+
+   Secondary **by weight and size**, not by colour: it keeps the measured cyan
+   on this panel (11.41:1, the same ink as the scene link above it) and drops
+   the 600 weight and a step of size instead. A quieter hue would need its own
+   measurement and would say "less important" where what is true is "wider
+   question" - and this file's rule is that a link nobody can see is not a
+   link. Blocked rather than inline so the two links stack as two choices at
+   390px instead of wrapping into one sentence. */
+.scene-pool-link {
+  display: inline-block;
+  margin-top: 0.2rem;
+  font-size: var(--t-meta);
+  color: var(--color-cyan);
+  text-decoration: none;
+}
+
+.scene-pool-link:hover,
+.scene-pool-link:focus-visible {
   text-decoration: underline;
 }
 

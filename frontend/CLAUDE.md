@@ -133,19 +133,71 @@ shared calendar URL and the Rankings set/scene selection both survive the
 round trip.
 
 ### Rankings
-- **Two URL parameters, because they are two facts.** `?region=` is the ladder
-  **scope** - a `componentId`, the only thing a rating scale can be - and
-  `?scene=` is the **place** the reader picked, which is what the picker's field
-  shows and what the map highlights. The scope is read from `region` alone, so
-  every `?region=` link handed out before `?scene=` existed is the same page it
-  always was; dropping `?scene=` changes nothing about the board. They are
-  written in one `setSearchParams` call, because two `updateParam` calls would
-  each patch the same stale `searchParams` and the second would drop the first.
-- **The heading names the pool and the picker names the scene, and they differ.**
-  That is not a bug to rename away - a pool covers several scenes, so "Peninsula"
-  in the field beside "New York, New York" in the heading is two true statements
-  - so the heading's pool name is a dotted-underlined `abbr` carrying
-  `HINTS.pool`, beside the name that differs, in the page's existing idiom.
+- **Clicking a scene opens that scene's board**, and that is the whole of this
+  release. `?scene=` used to be decoration over the *pool's* ladder, and the
+  owner reported what that looked like: *"when i click peninsula in the map i
+  expect it to go to that scene but its on like northw est community ..."*. A
+  pool is named after the modal city of a reachability closure, so a San
+  Francisco scene opened a board headed `North West Community Development
+  Council` - a Singapore CDC label. The API has a `scene:<id>` scope now: that
+  pool's board filtered to the scene's rows and re-ranked among them. Nothing
+  about comparability moved to allow it (backend/CLAUDE.md, "A scene board is a
+  filter, not a fit").
+- **Two URL parameters, because they are two facts - and `?scene=` outranks
+  `?region=`.** `?region=` is a **pool** id (`component:<id>`, the only thing a
+  rating scale can be) and `?scene=` is the **place** the reader picked.
+  `buildScope` reads the scene first, so: a `?scene=` link - what the map pin,
+  the picker row and the event page all build - opens that scene's board; every
+  `?region=` link handed out before this is byte-for-byte the page it always
+  was, because nothing infers a scene from a pool; and a link carrying **both**,
+  which the picker used to write on every choice, resolves to the scene, which
+  is what its author meant. A scene is never sent as `component:<sceneId>` - the
+  API rejects `component:` and `scene:` together for the same reason. They are
+  still written in one `setSearchParams` call, because two `updateParam` calls
+  would each patch the same stale `searchParams` and the second would drop the
+  first.
+- **The heading names what the reader picked, and the pool is one line down.**
+  On a scene board that is the scene (`sceneBoardLabel`), with `HINTS.scene` on
+  it; the summary block beneath carries **"See the whole rating pool"**
+  (`POOL_LINK_LABEL`, `scenePath`, `carryPreview`) with the pool's size beside
+  it, because the pool board is still the honest answer to "who else is on this
+  scale" - it is simply no longer the thing a scene link lands on. On a pool
+  board (a shared `?region=` link) the heading is the pool's, as it always was,
+  carrying `HINTS.pool`, which still says why that name can differ from the
+  picker's: one pool covers several scenes, so "Peninsula" in the field beside
+  "New York, New York" in the heading is two true statements. Nothing is
+  renamed to make two true names agree.
+- **A scene board's `#` is a position inside the scene**, dense, 1..N - not the
+  pool's number with the other scenes cut out, which would open on `#37` and
+  climb in gaps. A `Pool` column carries the same player's place on the wider
+  board (`poolRank`), so the row reads "2nd in Peninsula, 37th in the pool" and
+  a reader can check one against the other; the two can never disagree about
+  who is ahead of whom, because the scene's order is a *restriction* of the
+  pool's. Both headers are dotted-underlined `abbr`s (`SCENE_POSITION_HINT`,
+  `POOL_POSITION_HINT`). The `Pool` column is drawn only when some row's two
+  numbers **differ** - on a scene that is most of its own pool they are equal
+  all the way down, and a column repeating the one beside it is furniture, the
+  same rule `hasPositions` follows for `#` itself.
+- **The position gate still measures the pool, and the copy says so.**
+  `sceneBoardNotice` quotes the **pool's** size against `minComponentSize`, not
+  the scene's: "a place needs a pool of at least 8 players who have played each
+  other, and this scene's pool has 6". The wording this replaces -
+  "a position needs a scene of at least 8 players, and this one has 3" - did
+  arithmetic about the wrong set, and a 3-store scene inside a 2,000-player
+  pool orders perfectly well.
+- **A scene whose players span two pools gets a line, not a smoothing-over.**
+  `componentCount > 1` prints "These players sit in 3 rating pools, so this
+  board is the largest one. 4 rated players are on another board."
+  (`SCENE_SPLIT_POOL_HINT` on hover). Be precise about what that qualifies: the
+  rows shown are all in one pool, so **their order is real** - what is
+  incomplete is the board's coverage of the scene, and those are different
+  claims.
+- **A scene the engine has no item for is not a broken link.**
+  `sceneUnknownNotice` prints one line saying the ladder places stores into
+  scenes when it refits. That is the state of every scene id for up to
+  `RANKING_REFIT_INTERVAL_HOURS` after a deploy, so a shared `?scene=` link
+  lands softly rather than 404ing through a deploy order - the same discipline
+  as `profile.known`.
 - **Opens on `Global`** - the scope that mixes every pool - and the reader
   picks a scene when they want positions. It used to auto-select the biggest
   comparable component by rewriting the URL; it does not any more, so a bare
@@ -295,27 +347,25 @@ round trip.
   connected components under the word "scene", so the list read
   `Karlsruhe, Deutschland` and `Paris, France` and a reader could not pick
   `Peninsula` or `South Bay` anywhere. A row carries **two ids**: `option.id` is
-  the engine's `sceneId` - what the map highlights and what `?scene=` records -
-  and `option.scope` is the `componentId` the board is fetched with, resolved by
-  `sceneOptionScope`. They are separate because a scene is not a rating scale:
-  the ladder's scope is `component:<id>`, there is no `scene:` scope, and one
-  pool covers several scenes, so two rows can lead to one board. The row's
-  `meta` says so before the click (`shared ladder`), and a
-  scene whose players are in no pool reads `no ladder yet` and yields a **null**
-  scope - which puts the board back to Global rather than fetching
-  `component:<a scene id>` and getting nothing.
-  - **The share clause states the fact, not the figure, and the figure is why.**
-    It read `ladder shared with N other scenes`, written when a pool covered two
-    or three scenes. On the live 1,453-scene catalogue the Bay Area's pool
-    (`c19644e617f`, 25,210 players) covers **296**, so nearly every row carried
-    `ladder shared with 295 other scenes` - 34 characters of a number nobody can
-    act on, repeated down the whole list. `sceneOptionMetaHint` keeps the count
-    as the line's hover hint, in the `no pin` flag's own
-    word-on-the-row/reason-in-a-title idiom.
-  - `sceneOptionScope` distinguishes `undefined` from `null` on purpose. The
-    fallback rows built from the ladder's `components` *are* pools, so their id
-    is their scope and they carry no `scope` field; an explicit `null` means
-    "there is no board". A `scope ?? id` would get that exactly backwards.
+  the engine's `sceneId` - what the map highlights, what `?scene=` records, and
+  **what picking the row now writes** - and `option.scope` is the `componentId`
+  of the pool those players are rated in, which the board's "see the whole
+  rating pool" link leads to. Picking a row used to write the *pool*, because a
+  scene had no board, and that is the reported bug: picking `Peninsula` landed
+  on a ladder headed `North West Community Development Council`, a Singapore
+  CDC label. The row's `meta` still says which other scenes share the pool
+  ("ladder shared with 3 other scenes"), and a scene whose players are in no
+  pool reads `no ladder yet` and is still picked as a scene - its board comes
+  back named and empty, which says so where the old fallback to Global said
+  nothing.
+  - `sceneOptionSelection` decides which of the two parameters a row writes,
+    and distinguishes `undefined` from `null` on purpose. The fallback rows
+    built from the ladder's `components` *are* pools, so their id is a
+    `componentId` and they carry no `scope` field - they write `?region=`.
+    A catalogue row writes `?scene=`, including one whose `scope` is an
+    explicit `null`. Writing a pool's id under `?scene=` would be an id from
+    the wrong partition under the right parameter name, which is the shape of
+    the bug one layer down.
 - **The rows come from the scene directory, not from the ladder.**
   `sceneCatalogueOptions` builds them from `/api/rankings/map`, because
   `/api/rankings`' `components` is **41 of 1,307** - whatever the global
@@ -547,32 +597,26 @@ arrived looks, and at the foot under 60 rows of list.
   unfiltered world - the ids under the parameter came from another partition.
   A scene is a cluster of **stores** within 30km of each other, named the way a
   local names it, and the engine publishes it as `SCENE#<sceneId>`.
-- **A scene has no ladder, and the page must not imply one.** The ladder's scope
-  is `component:<id>`; there is no `scene:` scope, because
-  `crossComponentUncertainty` is only correct for a connected component. The
-  link is labelled **"Open the ladder for these players"** - not "See this
-  scene's ladder", which asserted something that does not exist - and
-  `sceneLadderNote` ("a scene is not a ranking: this opens the ladder for the
-  pool these players are in, which covers other scenes too", with the pool's
-  size) is that link's **hover hint**. It used to be a paragraph above the
-  button, which every reader read whether they were going to click or not.
-  `sceneComparableHint` quotes the **pool's** size against the gate, not the
-  scene's; it used to say "a position needs a scene of at least 8 players, and
-  this one has 3", which measured the scene against a threshold the scene is not
-  measured by. A scene with `componentId: null` has no link to hang the note on,
-  so there it is still a line.
-- **The detail panel is figures, not prose.** It carried four stacked
-  paragraphs - the pin's basis, the pool-size caveat, the purity line and the
-  ladder note - and three of them are now attached to the thing they qualify:
-  `scenePlaceHint` is the hint on the **Venues** figure it was computed from
-  and only stands as a line when there is **no pin** (the one case nothing else
-  on the page can say); `scenePurityHint` became the **In-scene play** figure
-  (`scenePurityLabel`, e.g. `96%`) with the meaning as its hint, because
-  "almost every scene is 100%" turned out to be false of the big ones -
-  Singapore 96%, Toronto 99% - so that line was under most scenes anybody
-  opens; `sceneLadderNote` moved onto the link above. The pool-size caveat
-  stays a line: it is conditional, rare, and there is no number in the panel
-  that is *about* it.
+- **A scene has a ladder now, and the panel offers two links.** The first is
+  **"Open this scene's ladder"** (`sceneLadderPath`, `?scene=`), the second
+  **"See the whole rating pool"** (`scenePath`, `?region=`), and the row's
+  `Ladder` link is the first of the two. They used to be one link at the
+  *pool's* board, labelled "Open the ladder for these players", with
+  `sceneLadderNote` apologising for it before the click - because
+  `crossComponentUncertainty` is only correct for a connected component and a
+  scene defined no scale. The API's `scene:<id>` scope is that pool's board
+  *filtered* to the scene, so nothing about comparability moved, and
+  `sceneLadderNote` now **describes** what the link opens instead of warning
+  that it goes elsewhere. The pool is the second link rather than a caveat on
+  the first, which is the right shape: a reader who wants to know who else is
+  on this scale can go and look.
+  `sceneComparableHint` still quotes the **pool's** size against the gate, not
+  the scene's; it used to say "a position needs a scene of at least 8 players,
+  and this one has 3", which measured the scene against a threshold the scene
+  is not measured by. A scene with `componentId: null` keeps its scene link -
+  its board comes back named and empty, which says "nobody here has been placed
+  yet" better than a withheld link did - and gets no pool link, because there
+  genuinely is no pool.
 - **Some stores are in no scene at all**, and the coverage line is the only
   place that can say so: a store that failed the engine's intra-scene
   play-share gate is absent from a catalogue of scenes by construction, so there
@@ -872,18 +916,21 @@ arrived looks, and at the foot under 60 rows of list.
   `Unranked`. On a *pairing*, where there is no `known` flag, a name links when
   it carries a rating.
 - **The page names the scene the event belongs to**, under the venue, with the
-  scene's size and a link into its ladder (`component:<id>`, through
-  `scenePath`) plus a `Map` link into `/rankings/map` with that scene already
-  selected (`sceneMapPath`, which shares `ScenesPage`'s own `scene` parameter
-  so one spelling cannot drift from the other).
-  - **The two links carry two different ids**, and sending the wrong one was a
-    reported bug. The ladder link is the **pool's** `componentId`; the map link
-    is the scene's `sceneId`. It used to be the component's, because the map
-    drew components - so the `Map` control beside `Peninsula` opened a map and
-    selected nothing, and a hand-built `?scene=<sceneId>` found nothing either.
-    `SceneLine` carries both and neither stands in for the other. The map link
-    is no longer withheld when there is no rating pool, because the scene is a
-    fact about the store whether or not anybody who played here is placed.
+  scene's size and a link into **that scene's** ladder (`scene:<id>`, through
+  `sceneLadderPath`) plus a `Map` link into `/rankings/map` with that scene
+  already selected (`sceneMapPath`, which shares `ScenesPage`'s own `scene`
+  parameter so one spelling cannot drift from the other).
+  - **Both links now carry the same id, and that is the repair.** The ladder
+    link used to be the **pool's** `componentId` - so the name read `Peninsula`
+    and the board behind it read `North West Community Development Council`, a
+    Singapore CDC label, which is what the owner reported. The API has a
+    `scene:<id>` scope now (that pool's board filtered to the scene), so the
+    name and its destination are the same thing and there is one id to get
+    right instead of two to keep apart. `SceneLine` still carries
+    `componentId`, because the hint still has to state the pair; it is simply
+    no longer what either link is built from. Neither link is withheld when
+    there is no rating pool - the scene is a fact about the store either way,
+    and the scene board answers "nobody here has been placed yet" honestly.
   - **It is the venue's scene, which is a lookup rather than a guess.** The
     engine groups stores that are close enough together for their players to
     really play each other and assigns one scene to each store; this event was
@@ -897,13 +944,14 @@ arrived looks, and at the foot under 60 rows of list.
     was labelled `New York, New York`, and had all five of its busiest stores
     in California, so a shop in Redwood City read **"Scene: New York, New
     York"**. It now reads `Peninsula`.
-  - **The name is the scene's and the link is the component's**, and the hint
-    says both. A ladder is scoped to a `componentId` because that is what makes
-    two ratings comparable; a scene does not define a rating scale, so there is
-    no scene-scoped ladder to link at. Two facts, stated as two, rather than a
-    link quietly asserting they are one. When the engine has placed nobody who
-    played here there is no pool to link at, so the name renders as plain text
-    and the `Map` link is withheld - the scene is still a fact about the store.
+  - **The name and the link are both the scene's, and the hint still names the
+    pool.** Two facts, stated as two: *this store is in this scene*, and *these
+    ratings are on one scale with N others'*. The second used to be carried by
+    the link going somewhere the name did not; it is carried by the hint alone
+    now, and by the board's own "see the whole rating pool" control. A scene
+    does still not define a rating scale - only a connected component does -
+    which is exactly why the scene's board is that pool's board *filtered*
+    rather than a fit of its own.
   - **The roster is not counted** in the component half, by the API and
     therefore here: a player who signed up and never sat down contributed no
     edge. The scene half is immune to it, being a property of the store.

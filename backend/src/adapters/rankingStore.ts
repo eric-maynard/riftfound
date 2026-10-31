@@ -84,6 +84,16 @@ export interface LeaderboardRecord extends EngineVerdict {
   componentId?: string | null;
   componentSize?: number | null;
   regionLabel?: string | null;
+  /**
+   * The player's scene, as the engine denormalised it onto the row.
+   *
+   * This is what makes a scene board possible without a new partition:
+   * `RankingRow.sceneId` exists in the engine's contract precisely "so a board
+   * can be filtered without profile fetches". It was not being read here, so
+   * the only way to the scene was through the pool.
+   */
+  sceneId?: string | null;
+  sceneLabel?: string | null;
 }
 
 export interface Page<T> {
@@ -129,6 +139,35 @@ export interface LeaderboardPage extends Page<LeaderboardRecord> {
 }
 
 /**
+ * One scene's rows, taken out of one pool's board.
+ *
+ * Not a `Page`: there is no cursor, because the whole pool partition has to be
+ * read to answer at all (see `getSceneBoard`). The service paginates the
+ * result in memory.
+ */
+export interface SceneBoardRead {
+  /** The scene's rows, in the pool board's own order (rating-descending). */
+  items: LeaderboardRecord[];
+  /** The stored scope the rows came out of. */
+  poolScope: string;
+  /** Rows of that partition examined, which is what this read cost. */
+  poolRowsRead: number;
+  /** False when the cap stopped the read before the partition ended. */
+  complete: boolean;
+  /**
+   * Rated rows carrying this `sceneId` that were dropped because their
+   * `componentId` is not the pool's.
+   *
+   * Only ever non-zero when the rows came from a set-wide or global partition,
+   * which holds every component - and only then for a scene whose players
+   * straddle two pools. It is the number behind `SceneBoardInfo.componentCount
+   * > 1`, and it is counted here because here is where those rows are seen.
+   */
+  omittedPoolRows: number;
+  updatedAt: string | null;
+}
+
+/**
  * Everything the ranking API needs from storage. The DynamoDB adapter and the
  * fixture adapter implement it identically, so the app behaves the same before
  * and after the rating engine has written any data.
@@ -137,6 +176,47 @@ export interface RankingStore {
   readonly kind: 'dynamodb' | 'fixture';
 
   getLeaderboard(scope: Scope, limit: number, cursor?: string): Promise<LeaderboardPage>;
+
+  /**
+   * One scene's rows, read out of one pool's stored board.
+   *
+   * ## Why this is not `getLeaderboard` with a filter argument
+   *
+   * Because the read is a different shape. A scene board cannot be served by a
+   * `Limit`-ed Query with a `FilterExpression`, and that is not a performance
+   * note - it is the same correctness bug this API has already shipped once.
+   * **`Limit` caps the items examined *before* the filter, not the matches**,
+   * which is exactly how name search came to answer "no player by that name"
+   * for players on the ladder beside it (see "Searching for a player"). On a
+   * board of ~6,000 rows in rank order, a `Limit` of 25 would return only the
+   * scene members who happen to sit in the pool's top 25 - a board that is
+   * silently the scene's best players and nobody else.
+   *
+   * So the whole partition is read, up to `maxRows`, and filtered. Two
+   * consequences the implementation has to own:
+   *
+   * - **A DynamoDB `FilterExpression` would not help and would break a
+   *   shape.** It saves no read units (capacity is charged on items read, not
+   *   items returned), and `RANKING#<scope>` is allowed to be either one item
+   *   per player *or* a page item holding an `entries` array - the second has
+   *   no top-level `sceneId`, so `sceneId = :id` would discard a whole board.
+   *   The filter is therefore in memory, over the expanded records.
+   * - **`componentId` is part of the filter, not just `sceneId`.** When the
+   *   rows come from a set-wide or global partition (the usual case: the
+   *   engine writes at most 50 component ladders, so most pools have none), a
+   *   multi-pool scene's rows would otherwise arrive from two components at
+   *   once, which is the cross-scale board this whole design exists to avoid.
+   *   Rows in another pool are counted into `omittedPoolRows` and dropped.
+   *
+   * Optional, like the catalogue readers, so a store written before this
+   * degrades to "no scene board" rather than to a 500.
+   */
+  getSceneBoard?(
+    poolScope: Scope,
+    sceneId: string,
+    componentId: string,
+    maxRows: number
+  ): Promise<SceneBoardRead>;
 
   getPlayer(playerId: string): Promise<PlayerRecord | null>;
 
@@ -342,9 +422,9 @@ export interface VenueCatalogueEntry {
  *
  * `componentId` / `componentSize` / `componentCount` are the **rating pool**
  * this scene's players sit on. They are not the scene's identity and must never
- * be read as it: a scene has no ladder of its own, the ladder's scope is
- * `component:<id>`, and this is how a reader who found their scene is pointed
- * at the board their rating is actually on.
+ * be read as it: only a connected component names a rating scale, so a
+ * `scene:<id>` board is this pool's board *filtered* to the scene, and this is
+ * the field that says which pool that is.
  */
 /**
  * The corpus-level figures the scene catalogue cannot carry, off the engine's

@@ -11,7 +11,9 @@ import { z } from 'zod';
  *   PLAYER#<uuid> / MATCH#<iso-timestamp>#<matchId> - match log
  *   RANKING#<scope>                                - leaderboard pages
  *
- * `scope` is one of: `all`, `set:<id>`, `component:<id>`, `set:<id>#component:<id>`.
+ * `scope` is one of: `all`, `set:<id>`, `component:<id>`, `set:<id>#component:<id>`,
+ * plus `scene:<id>` and `set:<id>#scene:<id>`, which are **not** stored keys -
+ * see `Scope.sceneId` and `isStoredScope` below.
  *
  * Nothing in this file writes those items - the API only reads them.
  */
@@ -21,28 +23,65 @@ import { z } from 'zod';
 // ---------------------------------------------------------------------------
 
 export interface Scope {
-  /** Canonical string form, exactly as it appears in the item key. */
+  /**
+   * Canonical string form.
+   *
+   * For every scope the engine writes, this is exactly the string in the item
+   * key (`RANKING#<raw>`, `RATING#<raw>#<date>`). For a **scene** scope it is
+   * not a key at all and must never be used as one: see `sceneId`.
+   */
   raw: string;
   setId: string | null;
   componentId: string | null;
+  /**
+   * The scene a board is filtered down to, or null.
+   *
+   * **A scene scope is a filter, not a fit, and that distinction is the whole
+   * design.** `component:<id>` names a rating *scale* - a connected component
+   * of the co-play graph, the only group inside which two of this engine's
+   * ratings are comparable - so the engine fits one and writes a board for it.
+   * A scene is a cluster of **stores** within 30km of each other, and it is
+   * additive: it does not define a scale, nothing about
+   * `crossComponentUncertainty` changes, and the engine writes no
+   * `RANKING#scene:<id>` item.
+   *
+   * What makes it serviceable anyway is the storage contract: every ladder row
+   * already carries `sceneId` (scraper `items.ts`, `RankingRow.sceneId`,
+   * "denormalised so a board can be filtered without profile fetches"). So a
+   * scene board is the scene's rows **out of one pool's board**, re-ranked
+   * densely among themselves - statistically sound in a way a cross-component
+   * board is not, because the scene's players sit (almost entirely) in one
+   * component and are therefore already on one scale.
+   *
+   * Mutually exclusive with `componentId`: a scene resolves its own pool off
+   * the engine's `SCENE#<sceneId>` item, so naming both would be either
+   * redundant or a contradiction, and `parseScope` rejects the pair rather
+   * than silently preferring one.
+   */
+  sceneId: string | null;
 }
 
-/** Set / component ids are opaque to us; keep them to a safe key-ish charset. */
+/** Set / component / scene ids are opaque to us; keep them to a safe key-ish charset. */
 const SCOPE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 
 /**
  * Parse a scope string into its parts. Returns null when the string is not a
  * shape the contract defines, so callers can answer 400 rather than query a
  * key that cannot exist.
+ *
+ * Six shapes: `all`, `set:<id>`, `component:<id>`, `scene:<id>`,
+ * `set:<id>#component:<id>`, `set:<id>#scene:<id>`. `component:` and `scene:`
+ * together is rejected - see `Scope.sceneId`.
  */
 export function parseScope(input: string | undefined | null): Scope | null {
   const raw = (input ?? 'all').trim();
   if (raw === '' || raw === 'all') {
-    return { raw: 'all', setId: null, componentId: null };
+    return { raw: 'all', setId: null, componentId: null, sceneId: null };
   }
 
   let setId: string | null = null;
   let componentId: string | null = null;
+  let sceneId: string | null = null;
 
   for (const part of raw.split('#')) {
     const [kind, ...rest] = part.split(':');
@@ -50,23 +89,97 @@ export function parseScope(input: string | undefined | null): Scope | null {
     if (!SCOPE_ID.test(value)) return null;
     if (kind === 'set' && setId === null) setId = value;
     else if (kind === 'component' && componentId === null) componentId = value;
+    else if (kind === 'scene' && sceneId === null) sceneId = value;
     else return null;
   }
 
-  if (setId === null && componentId === null) return null;
+  if (setId === null && componentId === null && sceneId === null) return null;
+  // A pool and a place are not two coordinates of one selection: the scene
+  // names its own pool, so a caller offering both is either repeating itself
+  // or disagreeing with the engine, and neither is a scope we can serve.
+  if (componentId !== null && sceneId !== null) return null;
 
   // Rebuild rather than trusting the input's ordering: `set:` always first,
   // so one logical scope only ever has one key.
   const canonical = [
     setId !== null ? `set:${setId}` : null,
     componentId !== null ? `component:${componentId}` : null,
+    sceneId !== null ? `scene:${sceneId}` : null,
   ].filter(Boolean).join('#');
 
-  return { raw: canonical, setId, componentId };
+  return { raw: canonical, setId, componentId, sceneId };
+}
+
+/**
+ * Is this scope a partition the engine actually wrote?
+ *
+ * The guard that keeps `Scope.raw` honest. Everything but a scene scope is a
+ * stored key, and a scene scope's `raw` is a request shape rather than an item
+ * id - so a reader that hands it to `RANKING#<raw>` or `RATING#<raw>#<date>`
+ * gets an empty answer that looks like "nobody plays there" instead of
+ * "nothing writes that". Call this before using `raw` as a key.
+ */
+export function isStoredScope(scope: Scope): boolean {
+  return scope.sceneId === null;
+}
+
+/**
+ * The stored board a scene scope's rows are read out of.
+ *
+ * A scene has no board of its own, so its rows come from the board of the pool
+ * its home players sit on - `component:<poolId>` under the same set era, or
+ * the set-wide board when the engine wrote no ladder for that pool (it writes
+ * at most `RANKING_MAX_COMPONENT_LADDERS` of them, 50, and only for components
+ * of at least `minComponentSize`, so for most of the 1,235 components there is
+ * no component partition at all).
+ *
+ * `componentId: null` returns the set-wide scope, which always exists.
+ */
+export function poolScope(scope: Scope, componentId: string | null): Scope {
+  return parseScope(
+    [
+      scope.setId !== null ? `set:${scope.setId}` : null,
+      componentId !== null ? `component:${componentId}` : null,
+    ]
+      .filter(Boolean)
+      .join('#') || 'all'
+  ) as Scope;
 }
 
 /** The scope used for a player's rating history when none is given. */
-export const DEFAULT_SCOPE: Scope = { raw: 'all', setId: null, componentId: null };
+export const DEFAULT_SCOPE: Scope = { raw: 'all', setId: null, componentId: null, sceneId: null };
+
+/**
+ * How many rows of a pool's board a scene board may read before it stops.
+ *
+ * A scene board is a filtered read, so its cost is the **pool's** board rather
+ * than the scene's own size, and this is the bound on that. It is a safety
+ * ceiling on one Lambda invocation, not a product decision - which is why it
+ * is well clear of anything the corpus can produce rather than tuned to it.
+ *
+ * Derived, not measured, from two figures that were:
+ *
+ * - the live global board holds **6,117 rated rows** across 1,235 components,
+ *   with a **97.4%** giant component share (scraper/CLAUDE.md, "the graph is
+ *   far more connected than expected"), so the largest board a scene can send
+ *   us to is ~5,960 rows and `RANKING#all` is 6,117;
+ * - the one read-unit measurement on a comparable partition is **46 units for
+ *   1,235 `COMPONENT#` items**, i.e. ~305 bytes an item, and a `RankingRow`
+ *   carries the same order of short attributes.
+ *
+ * So a scene board today reads ~2MB over 2-3 Query pages, around **250
+ * eventually-consistent read units**, against ~46 for the whole scene map and
+ * ~2 for one 25-row page of a component board. 20,000 rows is 3.2x the current
+ * board - a year or two of growth - and ~800 read units if it is ever reached.
+ * Past it the answer is reported with `coverageComplete: false` rather than
+ * silently truncated, because the partition is in rank order and a cap drops
+ * the low-rated tail.
+ *
+ * If this ever binds, the fix is not a bigger number: it is a stored
+ * `RANKING#scene:<id>` board in the engine. That was costed and declined for
+ * now - see backend/CLAUDE.md, "A scene board is a filter, not a fit".
+ */
+export const SCENE_BOARD_MAX_ROWS = 20_000;
 
 // ---------------------------------------------------------------------------
 // Confidence: when is a rating fit to show?
@@ -386,6 +499,11 @@ export interface LeaderboardEntry extends PlayerIdentity {
    * Dense position among the rows that earn one (`earnsPosition`); null for a
    * provisional player, and null for one whose scene is too small to order.
    *
+   * **On a scene scope it is a position within the scene**, densely, 1..N over
+   * the scene's own rows that earn one - not the pool board's rank with the
+   * other scenes' rows cut out of it. See `poolRank` for that, and
+   * `SceneBoardInfo` for why the re-rank is sound.
+   *
    * **Assigned on every scope, Global included.** It used to be - in effect -
    * withheld there, because the client suppressed the whole column whenever
    * the scope mixed scenes. The suppression was honest about a real weakness
@@ -406,6 +524,36 @@ export interface LeaderboardEntry extends PlayerIdentity {
   componentId: string | null;
   componentSize: number | null;
   regionLabel: string | null;
+  /**
+   * This player's position on the **pool's** board, or null.
+   *
+   * Only sent on a scene scope, where `rank` is the dense position inside the
+   * scene and this is the one it was cut out of - "2nd in Peninsula, 37th in
+   * the pool". Two numbers rather than one because they answer two questions
+   * and a reader can check one against the other: the scene's order is a
+   * restriction of the pool's, so these two columns can never disagree about
+   * who is ahead of whom.
+   *
+   * It is the engine's own `rank` off the row it wrote, not a figure derived
+   * here - the pool board is the thing it is a rank on, so re-deriving it from
+   * a filtered read would be a second answer to a question already answered.
+   * Null when the row earns no position, and null on every non-scene scope,
+   * where `rank` already *is* the board's own position.
+   */
+  poolRank: number | null;
+  /**
+   * The scene this player's home store is in, denormalised onto the row by the
+   * engine, and what a scene scope filters on.
+   *
+   * Null is the normal value, not a gap: a store that failed the engine's
+   * intra-scene play-share gate is in no scene, and 2.6% of sampled production
+   * profiles carry a region and no scene. A consumer must not fall back to
+   * `regionLabel` here - that is a home city, a different one per member of
+   * one scene, and the event page's roster column has already been caught
+   * doing it.
+   */
+  sceneId: string | null;
+  sceneLabel: string | null;
   /**
    * Is this row's scene big enough for a position inside it to mean anything?
    *
@@ -456,6 +604,109 @@ export interface ComponentSummary {
   componentSize: number | null;
   ratedPlayers: number;
   comparable: boolean;
+}
+
+/**
+ * The header for a **scene** board: what the reader picked, and what the board
+ * under it actually is.
+ *
+ * ## A scene board is a filter, not a fit
+ *
+ * Clicking `Peninsula` used to open `component:<the pool those players sit
+ * in>`, and the pool's own `regionLabel` is a modal city name of a
+ * reachability closure - so a San Francisco scene led to a board headed
+ * `North West Community Development Council`, which is a Singapore CDC label.
+ * Both halves were honest and the pair was indefensible.
+ *
+ * What makes the fix available without touching the model: every ladder row
+ * already carries `sceneId`, so the scene's rows can be taken out of one
+ * pool's board and re-ranked among themselves. Nothing is re-fitted, no
+ * rating moves, `componentId` keeps its meaning exactly, and
+ * `crossComponentUncertainty` is still only claimed for a connected component.
+ * The scene's players are a **subset of one component**, so they were already
+ * on one scale before the filter and still are after it - which is the
+ * statistical difference between this and a cross-component board, where the
+ * two scales are pinned only by the 1,200 prior.
+ *
+ * ## What is published, and why each field is here rather than derived
+ *
+ * `componentId` / `componentSize` / `componentCount` are the pool, read off the
+ * engine's `SCENE#<sceneId>` item. They are **not** the scene's identity and a
+ * caller must present them as a second fact, the way the event page's scene
+ * line and the map's `sceneLadderNote` already do.
+ */
+export interface SceneBoardInfo {
+  /** The id the request asked for, echoed even when nothing resolved. */
+  sceneId: string;
+  /**
+   * The engine's own label for it - the match-weighted modal city of its
+   * stores, or a curated override. Null when no store in it is geocoded yet,
+   * in which case a caller falls back to `Scene <id>` rather than borrowing a
+   * city from the pool.
+   */
+  label: string | null;
+  /**
+   * False when the engine has no `SCENE#<sceneId>` item for this id.
+   *
+   * **Not a 404**, on the same grounds as "Never seen is not absent" for a
+   * player: this is also the state of every scene id for up to
+   * `RANKING_REFIT_INTERVAL_HOURS` after a deploy whose engine has not
+   * refitted, and of every id at all before an operator has accepted a
+   * re-clustering. A shared `?scene=` link must not die for a deploy order.
+   */
+  known: boolean;
+  /** Players whose **home** store is in this scene, rated or not, from the item. */
+  playerCount: number | null;
+  /** Of those, the ones the engine rated, from the item. */
+  ratedPlayers: number | null;
+  venueCount: number | null;
+  /** The pool the board was filtered out of. Null when the scene has no pool. */
+  componentId: string | null;
+  componentSize: number | null;
+  /**
+   * Distinct pools this scene's home players sit in.
+   *
+   * 1 is the normal case and the one this board is clean for. **Over 1 means
+   * the scene's players are not all on one rating scale**, which is a fact
+   * about the pools rather than about the scene - an event's pairings connect
+   * the players they pair rather than all of them, so a scene can straddle two
+   * closures until a refit welds them. The board then holds the players in
+   * `componentId` *only*, and `omittedPoolRows` says how many of the scene's
+   * rated rows were left out of it. Comparability inside the board is
+   * untouched; what is incomplete is its coverage of the scene, and those are
+   * different claims.
+   */
+  componentCount: number;
+  /** True when every one of the scene's players sits in `componentId`. */
+  singlePool: boolean;
+  /**
+   * Rated rows of this scene that the board does **not** show, because they
+   * sit in a different pool from `componentId`.
+   *
+   * 0 whenever `singlePool`. Published rather than merely implied by
+   * `componentCount`, because "there are two pools" and "four players are
+   * missing from this board" are what a reader needs in that order.
+   */
+  omittedPoolRows: number;
+  /**
+   * Whether a position on this board means anything: `isComparable` on the
+   * **pool's** size, never on the scene's own `playerCount`.
+   *
+   * `CONFIDENCE.minComponentSize` measures the component and nothing here
+   * changes that. A 3-store scene inside a 2,000-player pool orders fine; a
+   * 40-player scene whose pool is 6 does not.
+   */
+  comparable: boolean;
+  /** The stored board the rows came out of, for a caller that wants the pool. */
+  poolScope: string | null;
+  /** Rows of that board this request read, for the cost it reports. */
+  poolRowsRead: number;
+  /**
+   * False when the pool's board was not read to its end
+   * (`SCENE_BOARD_MAX_ROWS`), so rows below the cut are missing from the
+   * scene board. `RankingCoverage.coverageComplete` carries the same verdict.
+   */
+  poolComplete: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -606,21 +857,25 @@ export interface SceneMapEntry {
   isGiant: boolean;
 
   /**
-   * The ladder this scene's players are actually ranked on, and nothing more.
+   * The rating pool this scene's players sit on, and nothing more.
    *
-   * **A scene has no ladder of its own.** The ladder's scope syntax is
-   * `component:<id>`, there is no `scene:` scope, and `componentId` keeps its
-   * meaning permanently because `crossComponentUncertainty` is only correct for
-   * a connected component. So this is the pool holding the largest share of the
-   * scene's home players - the board a reader who found their scene should be
-   * sent to - and a caller must name it as the pool rather than as the scene.
-   * The event page already states the pair this way: *this event was held in
-   * the Peninsula scene*, and *these players' ratings are on one scale with
+   * **`componentId` keeps its meaning permanently**, and that has not changed
+   * now that a scene has a board: `crossComponentUncertainty` is only correct
+   * for a connected component, so the pool is still the only thing that names
+   * a rating scale. A `scene:<id>` scope is a **filter** over this pool's
+   * board - the scene's own rows, re-ranked among themselves - not a fit of its
+   * own, and nothing about the model moved to make it. See `SceneBoardInfo`.
+   *
+   * So this is the pool holding the largest share of the scene's home players,
+   * and a caller names it as the pool rather than as the scene. The scene's pin
+   * now links at the scene; this is the second link, "who else is on this
+   * scale". The event page states the pair the same way: *this event was held
+   * in the Peninsula scene*, and *these players' ratings are on one scale with
    * these others'*.
    *
    * Null for a scene none of whose home players has been replayed. That is a
-   * normal state - the scene is still a fact about its stores - and there is
-   * then no board to link at.
+   * normal state - the scene is still a fact about its stores, and its board
+   * comes back named and empty rather than missing.
    */
   componentId: string | null;
   /** That pool's player count, which is what `comparable` is a statement about. */

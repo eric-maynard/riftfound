@@ -21,8 +21,8 @@ import {
   ratingDisplay,
   ratingExplanation,
   recordSpoken,
+  sceneLadderPath,
   sceneMapPath,
-  scenePath,
   UNRANKED_LABEL,
 } from '../lib/ranking';
 import {
@@ -330,11 +330,22 @@ function EventWhere({ event }: { event: Event | null }) {
  *
  * ## Two links, because they answer different questions
  *
- * The name goes to the scene's ladder (`component:<id>`, via `scenePath`) -
- * "who is good here". `Map` goes to `/rankings/map` with this scene already
- * selected, which is "where is this scene", and is a link rather than a second
- * ladder because the map's selection lives in its URL precisely so one scene
- * is shareable. Both paths are the ones those pages already define.
+ * The name goes to **this scene's** ladder (`scene:<id>`, via
+ * `sceneLadderPath`) - "who is good here". It used to go to the pool's
+ * (`component:<id>`), because a scene had no board, and that is the reported
+ * bug: a pool is named after the modal city of a reachability closure, so the
+ * link under `Peninsula` opened a ladder headed `North West Community
+ * Development Council`, a Singapore CDC label. The pool is reachable from the
+ * scene board itself, under its own name.
+ *
+ * `Map` goes to `/rankings/map` with this scene already selected, which is
+ * "where is this scene", and is a link rather than a second ladder because the
+ * map's selection lives in its URL precisely so one scene is shareable.
+ *
+ * **Both links now carry the same id**, which is new and is the point: the
+ * ladder link used to take the pool's and the map link the scene's, and sending
+ * the wrong one of the two was itself a reported bug. There is one id to get
+ * right now instead of two to keep apart.
  */
 function EventScene({
   scene,
@@ -372,30 +383,27 @@ function EventScene({
     );
   }
 
-  // The scene is named from the event's **store**; the links are scoped to the
-  // rating pool those players share, because a ladder is only meaningful over
-  // one scale and a scene does not define one (see `sceneLine`). When the
-  // engine has placed nobody who played here there is no pool to link at, so
-  // the name is plain text rather than a link to nowhere - the scene is still
-  // a fact about the store and is still worth printing.
-  const componentId = line.componentId;
+  // The scene is named from the event's **store** and the link is now scoped
+  // to that scene, so the name and its destination are the same thing - which
+  // they were not before, when the link carried the pool's id and the pool's
+  // name was a city somewhere else.
+  //
+  // It is unconditional, including for a store whose players the engine has not
+  // placed: the scene board comes back named and empty for that, and "nobody
+  // who plays here has been placed yet" is a better answer than plain text with
+  // the reason buried in a hover hint. The pool, which genuinely may not exist,
+  // is reached from the board rather than from here.
 
   return (
     <p className="event-scene">
       <span className="event-scene-label">Scene</span>
-      {componentId === null ? (
-        <span className="event-scene-name" title={line.hint}>
-          {line.name}
-        </span>
-      ) : (
-        <Link
-          className="event-scene-name"
-          to={carryPreview(scenePath(componentId), search)}
-          title={line.hint}
-        >
-          {line.name}
-        </Link>
-      )}
+      <Link
+        className="event-scene-name"
+        to={carryPreview(sceneLadderPath(line.sceneId), search)}
+        title={line.hint}
+      >
+        {line.name}
+      </Link>
       {line.summary && <span className="event-scene-summary">{line.summary}</span>}
       {/* The caveat is a word, not a colour, and it carries its own reason -
           the same rule the result pips and the map's flags follow. */}
@@ -404,11 +412,11 @@ function EventScene({
           mostly
         </span>
       )}
-      {/* The map link is the **scene's**, not the pool's. It used to be the
-          pool's, because the map drew components - so this control next to
-          `Peninsula` opened a map and selected nothing. The ladder link above
-          is still the pool's, and the two ids are deliberately not
-          interchangeable. */}
+      {/* The map link is the scene's, as it has been since the map stopped
+          drawing components - and the ladder link above is the scene's now
+          too, so this line carries one id rather than two that must not be
+          swapped. The two links still answer different questions: this one is
+          "where is this scene", the name is "who is good here". */}
       <Link className="event-scene-map" to={carryPreview(sceneMapPath(line.sceneId), search)}>
         Map
       </Link>

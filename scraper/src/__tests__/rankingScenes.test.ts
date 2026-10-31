@@ -390,10 +390,11 @@ describe('the refit reads the assignment, it does not fit one', () => {
   });
 
   it('names the rating pool a scene links to, without becoming one', () => {
-    // A scene is not a rating scale: the ladder's scope is `component:<id>`,
-    // there is no `scene:` scope, and `crossComponentUncertainty` is only
-    // correct for a connected component. So the item carries the pool its home
-    // players sit on, as a separate field, and `componentId` keeps its meaning.
+    // A scene is not a rating scale: only a connected component is one, because
+    // `crossComponentUncertainty` is correct for nothing else. The engine
+    // therefore writes no `RANKING#scene:<id>` board - the API's `scene:<id>`
+    // scope filters this pool's board instead - so the item carries the pool as
+    // a separate field and `componentId` keeps its meaning.
     const assignment = proposeScenes(observations, { venueLabels });
     const { snapshot } = buildSnapshot(observations, { ...base, sceneAssignment: assignment });
 

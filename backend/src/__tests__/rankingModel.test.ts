@@ -5,7 +5,9 @@ import {
   resolveVerdict,
   earnsPosition,
   isComparable,
+  isStoredScope,
   parseScope,
+  poolScope,
   isValidPlayerId,
   normaliseOutcome,
   publishesRating,
@@ -19,28 +21,113 @@ import { isSyntheticByeId } from '../models/tournament.js';
 describe('parseScope', () => {
   it('treats a missing or empty scope as all-sets', () => {
     for (const input of [undefined, '', '  ', 'all']) {
-      expect(parseScope(input)).toEqual({ raw: 'all', setId: null, componentId: null });
+      expect(parseScope(input)).toEqual({ raw: 'all', setId: null, componentId: null, sceneId: null });
     }
   });
 
   it('parses each shape the contract defines', () => {
-    expect(parseScope('set:radiance')).toEqual({ raw: 'set:radiance', setId: 'radiance', componentId: null });
-    expect(parseScope('component:c-bay')).toEqual({ raw: 'component:c-bay', setId: null, componentId: 'c-bay' });
+    expect(parseScope('set:radiance')).toEqual({
+      raw: 'set:radiance',
+      setId: 'radiance',
+      componentId: null,
+      sceneId: null,
+    });
+    expect(parseScope('component:c-bay')).toEqual({
+      raw: 'component:c-bay',
+      setId: null,
+      componentId: 'c-bay',
+      sceneId: null,
+    });
     expect(parseScope('set:radiance#component:c-bay')).toEqual({
       raw: 'set:radiance#component:c-bay',
       setId: 'radiance',
       componentId: 'c-bay',
+      sceneId: null,
+    });
+  });
+
+  it('parses a scene scope, alone and under a set era', () => {
+    expect(parseScope('scene:sf-berkeley')).toEqual({
+      raw: 'scene:sf-berkeley',
+      setId: null,
+      componentId: null,
+      sceneId: 'sf-berkeley',
+    });
+    expect(parseScope('set:radiance#scene:sf-berkeley')).toEqual({
+      raw: 'set:radiance#scene:sf-berkeley',
+      setId: 'radiance',
+      componentId: null,
+      sceneId: 'sf-berkeley',
     });
   });
 
   it('canonicalises part order so one logical scope has one key', () => {
     expect(parseScope('component:c-bay#set:radiance')?.raw).toBe('set:radiance#component:c-bay');
+    expect(parseScope('scene:sf-berkeley#set:radiance')?.raw).toBe('set:radiance#scene:sf-berkeley');
+  });
+
+  /**
+   * A scene resolves its own pool off the engine's `SCENE#` item, so a caller
+   * offering both is either repeating itself or disagreeing with the engine -
+   * and quietly preferring one of the two is how a link ends up on a board
+   * nobody asked for, which is the whole bug this scope exists to fix.
+   */
+  it('rejects a pool and a place in one scope', () => {
+    expect(parseScope('component:c-bay#scene:sf-berkeley')).toBeNull();
+    expect(parseScope('set:radiance#component:c-bay#scene:sf-berkeley')).toBeNull();
   });
 
   it('rejects anything that could not be a key', () => {
-    for (const input of ['set:', 'set', 'nonsense', 'set:a#set:b', 'component:a#component:b', 'set:../../etc']) {
+    for (const input of [
+      'set:',
+      'set',
+      'nonsense',
+      'set:a#set:b',
+      'component:a#component:b',
+      'scene:a#scene:b',
+      'scene:',
+      'set:../../etc',
+    ]) {
       expect(parseScope(input)).toBeNull();
     }
+  });
+});
+
+/**
+ * `Scope.raw` is a DynamoDB key for every shape but one, and the exception is
+ * the dangerous kind: a reader that hands `scene:<id>` to `RANKING#<raw>` gets
+ * an empty answer that reads as "nobody plays there" rather than "nothing
+ * writes that".
+ */
+describe('isStoredScope / poolScope', () => {
+  it('calls every engine-written scope stored, and a scene scope not', () => {
+    for (const raw of ['all', 'set:radiance', 'component:c-bay', 'set:radiance#component:c-bay']) {
+      expect(isStoredScope(parseScope(raw)!)).toBe(true);
+    }
+    expect(isStoredScope(parseScope('scene:sf-berkeley')!)).toBe(false);
+    expect(isStoredScope(parseScope('set:radiance#scene:sf-berkeley')!)).toBe(false);
+  });
+
+  it('resolves the board a scene scope reads out of, keeping the set era', () => {
+    expect(poolScope(parseScope('scene:sf-berkeley')!, 'c-bay').raw).toBe('component:c-bay');
+    expect(poolScope(parseScope('set:radiance#scene:sf-berkeley')!, 'c-bay').raw).toBe(
+      'set:radiance#component:c-bay'
+    );
+  });
+
+  /**
+   * The engine writes at most `RANKING_MAX_COMPONENT_LADDERS` (50) component
+   * boards and only for pools of at least `minComponentSize`, so for most of
+   * the 1,235 pools there is no `component:` partition at all and the fallback
+   * is the set-wide board, which always exists.
+   */
+  it('falls back to the set-wide board when there is no pool partition', () => {
+    expect(poolScope(parseScope('scene:sf-berkeley')!, null).raw).toBe('all');
+    expect(poolScope(parseScope('set:radiance#scene:sf-berkeley')!, null).raw).toBe('set:radiance');
+  });
+
+  it('never leaves a scene in the scope it resolves to a key', () => {
+    expect(poolScope(parseScope('scene:sf-berkeley')!, 'c-bay').sceneId).toBeNull();
   });
 });
 

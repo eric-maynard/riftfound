@@ -181,36 +181,45 @@ describe('labels and copy', () => {
     expect(orphan).not.toContain('Too small');
   });
 
-  it("never calls the pool's ladder the scene's own", () => {
-    // The rule the whole conversion turns on: a scene has no ladder. The
-    // ladder's scope is `component:<id>`, there is no `scene:` scope, and one
-    // pool covers several scenes - so the copy beside the link has to say what
-    // it opens rather than promise a board that does not exist.
+  it("describes this scene's own board, and names the pool as the second link", () => {
+    // This note used to be an *apology* for the link: a scene had no board, so
+    // the panel's button opened the pool's and the copy had to warn, before the
+    // click, that `Peninsula` would land on a ladder named after somewhere
+    // else. The ladder has a `scene:<id>` scope now - the pool's board filtered
+    // to this scene's rows - so the note describes what the link opens, and the
+    // pool is the second link rather than a caveat on the first.
     const note = sceneLadderNote(scene({ sceneId: 's-pen', componentId: 'c-bay', componentSize: 1688 }));
-    expect(note).toContain('A scene is not a ranking');
-    expect(note).toContain('covers other scenes too');
+    expect(note).toContain('this scene’s board is that pool filtered to the players who play here');
     expect(note).toContain('1,688 players');
-    expect(note).not.toContain("this scene's ladder");
+    // The caveat it must not go back to making: a board the reader did not ask
+    // for, presented as the one they clicked.
+    expect(note).not.toContain('covers other scenes too, so this opens');
   });
 
   it("says when a scene's players are not even on one scale", () => {
-    // Reachable: an event's pairings connect the players they pair, and the
-    // engine places a player from the history it last replayed. It is a fact
-    // about the pools, not about the scene, which cannot be split.
+    // The honest caveat of the whole design. A scene board is comparable
+    // *internally* because the scene sits inside one pool; this is the case
+    // where it does not, so the board is the largest pool and some of the
+    // scene's own players are on another. Reachable: an event's pairings
+    // connect the players they pair, and the engine places a player from the
+    // history it last replayed. A fact about the pools, not about the scene,
+    // which cannot be split.
     const note = sceneLadderNote(
       scene({ sceneId: 's', componentId: 'c', componentSize: 90, componentCount: 3 })
     );
-    expect(note).toContain('3 separate pools');
+    expect(note).toContain('3 separate rating pools');
     expect(note).toContain('not all on one scale');
+    expect(note).toContain('largest of them');
   });
 
-  it('offers no ladder, and no excuse, for a scene with no pool', () => {
+  it('says a scene with no pool has an empty board, not a missing one', () => {
+    // The board exists and is empty, which says "nobody who plays here has been
+    // placed yet" better than a withheld link ever did - and the scene is a
+    // fact about its stores either way.
     const note = sceneLadderNote(
       scene({ sceneId: 's', componentId: null, componentSize: null, componentCount: 0 })
     );
-    expect(note).toContain('No ladder yet');
-    // And it does not read as a defect in the scene: the stores are still
-    // where they are.
+    expect(note).toContain('board is empty');
     expect(note).toContain('still where these stores are');
   });
 
