@@ -871,8 +871,10 @@ src/ranking/
 ├── observations.ts  # stored results -> paired comparisons (flat typed arrays)
 ├── graph.ts         # the co-play graph: components, bridging, the measurements
 ├── communities.ts   # Louvain communities on the same graph - measurement
-├── scenes.ts        # venue -> scene, persisted between deliberate re-clusterings
-├── recluster.ts     # the re-clustering CLI: propose, diff, write only when told
+├── regions.ts       # hand-drawn region polygons: format, loader, point-in-polygon
+├── regions/         # the polygons themselves, one JSON file per continent-ish area
+├── scenes.ts        # venue -> scene, by point-in-polygon test against those
+├── regionCoverage.ts  # read-only: what the polygons cover, and what they miss
 ├── whr.ts           # the model: Whole-History Rating with a global prior
 ├── validate.ts      # held-out accuracy against Riot's own tiebreakers
 ├── snapshot.ts      # fit -> the derived items, and the publishing bar
@@ -1044,9 +1046,10 @@ In order of how much the answer is expected to move:
    in one fortnight.
 4. `./ranking-metrics.sh bar --remote`, to confirm the publishing bar still
    admits a sensible share when the event mix is normal.
-5. `./scene-recluster.sh --remote` (dry run). Today it proposes 1,042 scenes of
-   2.1 stores each and the CLI refuses it; a drained backfill should give
-   something like the regional picture (7-8 stores per scene, modularity ~0.83).
+5. `./ranking-metrics.sh communities --remote`, which is the measurement this
+   section is about and which a drained backfill should move most. (It is a
+   *measurement* and nothing reads it: a scene is a drawn polygon now, so there
+   is no clustering to accept. See "Scenes: hand-drawn region polygons".)
 6. `./ranking-metrics.sh validate --remote`'s tier-weight sweep, once any event
    above Nexus Night has finished. Today every tier above it has **zero**
    matches, so the table cannot be evaluated at all.
@@ -1264,390 +1267,321 @@ production is heading through that point, not toward it.
 **All five of those recommendations are now implemented**, with the stability
 mechanism recommendation 3 asked for. See the next section.
 
-### Scenes: the persisted answer to "which store belongs to which scene"
+### Scenes: hand-drawn region polygons, and a point-in-polygon test
 
-`src/ranking/scenes.ts`. A **scene** is a Louvain community of the co-play
-graph, projected onto stores and **persisted between deliberate
-re-clusterings**. It exists because the section above established two things at
-once: communities are the right definition of a scene, and recomputing them
-every refit is unshippable.
+`src/ranking/regions.ts` (the format, the loader, the geometry) and
+`src/ranking/scenes.ts` (the assignment the refit reads). A **scene** is a
+polygon a human drew, checked into the repo, and a store's scene is a
+point-in-polygon test on its coordinates.
 
-The resolution is a product decision the measurement could not make: scenes are
-re-clustered **occasionally and on purpose**, not as a by-product of a refit.
-That single change turns the blocker into a non-issue - between two
-re-clusterings a store's scene cannot move at all, not by a point of modularity
-and not by one travelling player.
+#### Why a drawn polygon replaced a clustering
 
-#### The model, in one line each
+The two previous answers were both clusterings - a Louvain community of the
+co-play graph, then a 30km-diameter complete-linkage cluster of venue
+coordinates - and a clustering has one property no amount of tuning removes:
+**re-running it on more data moves boundaries.** That was not a defect in either
+method. It is what agglomeration does.
 
-- **A scene belongs to the venue, not the player.** Every venue is assigned to
-  the community holding the largest share of its player-match participations,
-  and that share is stored as the venue's `purity`. This is honest rather than
-  convenient: the median venue plays **99.3%** of its matches inside one
-  community (p10 76%), so venue -> community is nearly a function.
-- **A player's scene is their home venue's scene.** One hop, no new inference.
-- **`componentId` is untouched, permanently.** It answers "are these two ratings
-  on the same scale" and `crossComponentUncertainty` is only correct for a
-  connected component. Scenes are an **addition**; redefining the component
-  would silently corrupt that number. The two coexist on every item.
-- **Nothing is clustered during a refit.** The rating pass reads the stored
-  assignment (`loadSceneAssignment`, one `GetItem`) and joins it. A missing,
-  empty or unreadable assignment yields `sceneId: null` everywhere and the
-  ladder is unaffected - scenes are never invented on the fly.
-
-#### How an id survives a re-clustering
-
-This was the actual blocker, and it is not the partition churn: a community id
-derived from its membership is renamed whenever that membership changes, so **id
-churn is strictly worse than partition churn**. Ids are therefore **carried
-forward from the previous assignment by Jaccard overlap**, keeping the old id
-above `carryJaccard` (0.5, the threshold the stability analysis recommended).
-Two proposed scenes cannot both exceed 0.5 against the same previous scene, so
-the carry-over needs no tie-break rule; proposals are matched largest-first, and
-a scene that matches nothing gets a fresh content-derived id rather than
-inheriting a name.
-
-**The overlap is computed on venue sets, not player sets.** A shop id is a
-durable identity that outlives a season; a scene's player population turns over
-continuously. Venues are the more stable signal for the thing being *named*, and
-they are also what the assignment governs. Be precise about what this does and
-does not inherit from the measurements above: the 12-18% figures are **player**
-label churn, from the experiment that motivated this design.
-`diffSceneAssignments` reports **venue** churn. They are different numbers and
-are not quoted as if they were - which is why the operator path leads with the
-diff rather than with a published churn target.
-
-Labels come from geography, as recommendation 4 described: a scene is named from
-the modal city label of its venues, and a carried id keeps its old label when no
-venue in it is geocoded yet, so a name does not flicker to null between runs.
-
-#### What is stored
-
-One row, `SCENE_ASSIGNMENT`, rewritten only by an operator:
-
-```
-version, generatedAt, resolution, carryJaccard,
-venues: [{ venue, shopExternalId, sceneId, purity }],
-scenes: [{ sceneId, label }],
-stats:  { venues, scenes, players, matches, modularity, communities, medianPurity, splitVenues },
-previous: <the assignment this one replaced, one level deep>
-```
-
-Gzipped on DynamoDB, for the reason `SCRAPE_CYCLE` is: the payload scales with
-the number of stores and the uncompressed JSON for a national assignment plus
-one level of rollback history would run at the 400KB item limit. `previous` is
-deliberately **one** level - rollback is one command, and the chain cannot grow
-without bound. SQLite mirrors it as a single-row `ranking_scene_assignment`
-table so `./dev.sh` and the storage tests exercise the real path.
-
-This is **the only cross-refit state the rating pass has**, and it is read-only
-from the pass's point of view. The "batch refit from scratch" premise is intact:
-the refit still derives every number from the facts, and the one thing it does
-not derive is the thing that must not move.
-
-#### The two cautions, honoured
-
-- **A capped roster, not 12,885 relationship rows.** `VENUE#` carries a
-  `topPlayers` list of `RANKING_VENUE_TOP_PLAYERS` (25) entries ordered by
-  matches played at that store, plus `topPlayersTruncated`. 25 covers the median
-  venue's 22 players outright; the maximum is 209 and the rest is the long tail
-  of one-night attendees a drill-down truncates anyway. The alternative -
-  `VENUE#<id>` / `PLAYER#<id>` per pair - would be the first per-relationship
-  item this pass writes, for a list nobody renders in full.
-- **`venueKey`'s `geo:` fallback is never an id.** It rounds coordinates to
-  ~1km, which is right for a graph node and wrong for a durable key: the id
-  would move if the geocode moved. A `VENUE#` item exists only for a real
-  `shopExternalId`, and an unresolved organizer stays off the map until
-  `shopMatch.ts` resolves it. On the California sample this excluded nothing -
-  390 of 390 venues had both a shop id and coordinates.
-
-#### Re-clustering: the operator path
-
-`scripts/metrics/scene-recluster.sh` (CLI: `src/ranking/recluster.ts`). Read-only
-unless `--write`, and the sequence is always **cluster, diff against what is
-live, print the churn and the stores that would move, then write**.
-
-**The diff is the gate; modularity is not.** A partition can have excellent
-modularity and still rename every scene, which is the one failure a reader
-notices. The CLI prints a verdict with explicit stop conditions - venue churn
-over 25%, under 70% of scene ids carried, modularity under 0.3, median purity
-under 0.9 - and the runbook in
-[scripts/metrics/README.md](../scripts/metrics/README.md) says what to look at,
-what a bad result looks like and how to roll back.
-
-The knobs carry over from the measurements above:
-
-| knob | default | why |
-|---|---|---|
-| `--resolution` (`RANKING_SCENE_RESOLUTION`) | **1** | the measured stability optimum: swept against partition churn, 0.5 -> 19.7%, **1 -> 12.1%**, 2 -> 21.8% |
-| `--carry-jaccard` | **0.5** | overlap-carried ids are what keep names stable; 0.5 also makes the match unambiguous |
-| `--days` | 400 | the replay window, as everywhere else |
-
-A written accepted assignment changes nothing immediately: the scene fields on
-the stored items are rewritten by the **next refit**, up to
-`RANKING_REFIT_INTERVAL_HOURS` later. That is a feature - the diff is reviewable
-before anything a reader sees moves.
-
-#### Measured: production is not ready to be clustered yet
-
-The first dry run against production, 2026-10-27, 43-day replay, nothing
-written:
+The cost was measured, and it is the whole argument:
 
 | | |
 |---|---|
-| matches replayed | **56,257** |
-| players | 27,318 |
-| venues with a real shop id | **2,149** |
-| scenes proposed | **1,042** |
-| Louvain communities | 1,257 |
-| **stores per scene** | **2.1** |
-| modularity | **0.9844** |
-| median venue purity | **100.0%** |
-| venues below 60% purity | 43 |
+| shared venues that **moved scene** on the last re-cluster | **308 of 2,518 (12.2%)** |
+| scene ids created | **474** |
+| scene ids retired | **144** |
 
-**Do not accept that assignment, and the CLI now says so.** 2.1 stores per scene
-is not a scene map: a scene is supposed to *pool* several stores - that is what
-makes it a scene rather than a venue - and modularity 0.9844 next to it is the
-same symptom rather than reassurance. The comparison that makes it obvious is
-the complete California sample, where 390 venues gave **51** communities (7.6
-venues each) at modularity 0.83.
+So a reader's scene label changed and their bookmarked `?scene=` link died, for
+no reason they could see and no reason anybody decided. Two mechanisms existed
+only to bound that damage and both were load-bearing in the wrong way:
 
-The cause is coverage, not the method. The results backfill has reached roughly
-2026-10-16 of a window that runs to today, so most of the cross-venue edges that
-join stores into a scene simply have not been captured yet - the same mechanism
-the chronological coverage table measures, one level up. A fragmented co-play
-graph has *more* communities and *higher* modularity, so both numbers move in
-the reassuring direction while the answer gets worse.
+- **`carrySceneIds` / `carryJaccard`** matched each proposed cluster against the
+  previous assignment's venue sets and kept the old id above 0.5 overlap. It
+  worked, in the sense that it limited renaming to the clusters that genuinely
+  changed shape - and the 474/144 above are what it let through.
+- **`sceneNames.ts`** keyed curated names on a cluster's **busiest shop id**,
+  because that was the most durable thing a cluster had. It detaches silently
+  the first time a busier store opens, and it already had: the Macarthur
+  override stopped applying when the cluster's busiest store changed, with no
+  error and no log line.
 
-So `warnings()` gates on stores-per-scene (STOP below 3) ahead of everything
-else, because it is the one check a first run cannot skip - there is no previous
-assignment to compute churn against. The honest state today: **the plumbing is
-in place, nothing is assigned, and every `sceneId` is null.** Re-run the dry run
-once the backfill has drained (~4 days from 2026-10-26) and the national picture
-should look like the regional one.
+A polygon has neither problem, because the thing that must not move is chosen by
+a human rather than derived from membership. **A store's region changes only when
+somebody edits a polygon.** That also means the assignment no longer has to be
+persisted: a point-in-polygon test over files in git is deterministic, so there
+is nothing to store and no stored copy that can disagree with the files.
 
-Re-measured 2026-10-27 with the backfill further along (403 days replayed,
-75,120 matches, 39,390 players, 2,574 venues): **1,123 scenes, 2.3 stores
-each**. Still refused, for the same reason, and the gap is narrowing slowly.
-That is what motivated the second method below.
+#### The format
 
-### Geographic scenes: clustering the stores while the graph fills in
+One JSON file per continent-ish area under `src/ranking/regions/`
+(`americas.json`, `emea.json`, `apac.json`), each an array of:
 
-`src/ranking/geoScenes.ts`, `--method geo` on the re-clustering CLI. **Louvain
-stays the default and the better definition**; this is the answer to the same
-question from the other side, using the input that is already complete.
-
-The asymmetry is the whole argument. Louvain needs cross-venue play, and the
-results backfill has not captured enough of it to clear the gate above.
-Coordinates need nothing: **2,574 of 2,574 production venues have them.** And
-this is what the recommendation at the end of the section above already
-described - "geography as the label, inference as the definition" - with the
-order reversed until the graph catches up.
-
-#### What a scene is, in two properties
-
-Both are load-bearing, and the first method tried satisfied neither:
-
-1. **It is metro-scale.** A city or a district of one, not a region, a corridor
-   or a country.
-2. **Its players play each other enough to be ranked.** That is the *purpose*
-   of pooling stores at all, and it is measurable rather than a matter of
-   taste.
-
-#### Measured: single linkage is categorically the wrong method
-
-The first attempt was single-linkage union-find over great-circle distance,
-swept against the 2,516 `VENUE#` coordinates:
-
-| threshold | scenes | stores/scene | biggest | max extent |
-|---|---|---|---|---|
-| 15 km | 1,278 | 2.0 | 96 | 36 km |
-| 25 km | 987 | 2.5 | 97 | 59 km |
-| 40 km | 754 | 3.3 | 97 | 59 km |
-| 60 km | 538 | 4.7 | 133 | **582 km** |
-| 80 km | 399 | 6.3 | 453 | **1,432 km** |
-
-40km looked like the answer - it cleared the stores-per-scene gate and the
-largest cluster was a compact 59km - and the top of its output gives it away:
-"New York" at **240km**, "Los Angeles" at **205km**, Karlsruhe/Ludwigsburg/
-Darmstadt at **201km**, Brussels/Tilburg at **176km**. Those are not metros.
-
-The defect is not the threshold, it is the linkage. Single linkage joins two
-stores when they are merely *near* each other, and nearness is not transitive
-the way a scene is:
-
-> "i think its reasonable if we end up with a nyc scene but a nassau county
-> scene and a westchester scene. it would probably be odd to link westchester
-> with nassau because they both play in nyc."
-
-Westchester plays in New York and Nassau plays in New York, and they are 60km
-apart with the city in between. Single linkage **cannot express that
-distinction** - it chains through the hub and welds all three - so no threshold
-fixes it. `rankingGeoScenes.test.ts` pins the three-store version of exactly
-that case.
-
-#### Complete linkage, cut at a 30km diameter
-
-So the clustering agglomerates only while the merged cluster's **diameter** -
-its maximum pairwise distance - stays inside the bound. Every member is then
-within the bound of every other member, a finished cluster is a clique in the
-"within-bound" graph, and transitivity through a hub is impossible by
-construction rather than by choice of threshold.
-
-**30km**, measured on the real coordinates, and it reproduces the structure a
-local would draw:
-
-```
-NEW YORK AREA (33 venues) -> 7 scenes at 30km
-   19 stores  754 matches   New York / Flushing NY / Hoboken NJ
-    3 stores  171 matches   Valley Stream / Levittown / Westbury   <- Nassau
-    4 stores   92 matches   Bloomfield / Hackensack / Montclair    <- north Jersey
-    4 stores   82 matches   Edison / South Amboy                   <- central Jersey
-    3 stores   52 matches   Irvington / Cortlandt Manor / New City <- Westchester
-    1 store    45 matches   Boonton NJ
-
-SF BAY AREA (24 venues) -> 8 scenes at 30km
-    8 stores  586 matches   Milpitas / San Jose / Sunnyvale        <- South Bay
-    3 stores  111 matches   Redwood City / San Mateo / San Carlos  <- Peninsula
-    6 stores   93 matches   Martinez / Vallejo / Concord
-    5 stores   78 matches   Union City / Dublin / Castro Valley
+```json
+{
+  "id": "r-bay-peninsula",
+  "name": "Bay Area — Peninsula",
+  "rings": [ [ [lng, lat], [lng, lat], ... ] ],
+  "carriesSceneId": "s94af82a16f"
+}
 ```
 
-At 50km it starts merging across San Francisco Bay (Redwood City with
-Alameda), which is a ferry, not a scene. 30km is the largest bound that does
-not. **Game Kastle Redwood City - the shop that started this, which was
-displaying "Scene: New York, New York" - lands in the Peninsula scene.**
+- **`id`** - stable, hand-chosen, `r-` prefixed, lowercase-kebab. **Never
+  derived from membership.** The `r-` prefix is not decoration: it makes a
+  region id unmistakable beside a scene id (`s` + 10 hex) in a log line, a diff
+  or a `carriesSceneId` field.
+- **`name`** - what the region is called, verbatim. There is no naming rule and
+  no override table any more: a polygon carries its own name, which is what
+  retired `sceneNames.ts` and its 1,074 lines of judgement-keyed-on-a-shop-id.
+- **`rings`** - outer ring first, optional holes after. **`[longitude,
+  latitude]`, GeoJSON order.** Rings may be left open; the loader closes them.
+- **`carriesSceneId`** - optional, and the migration path. The existing
+  `sceneId` this polygon succeeds. Where present, **that id becomes the
+  region's published id**, so a shared `?scene=` link, the stored `VENUE#` /
+  `SCENE#` rows, every player profile and every ladder row keep resolving;
+  `id` is the durable name behind it. It must look like an engine scene id, and
+  two regions cannot carry the same one.
 
-Singapore is the sanity check, because it is the one unambiguously real, dense,
-compact scene in the corpus at every threshold tried. Under a 30km cap it
-**splits in two, and the split is informative**: the island core keeps 83 of its
-97 stores (4,773 matches, 16.2km across, 87% internal play), and what separates
-is Singapore's west plus Johor Bahru across the strait - 13 stores, 25.4km, and
-**56% internal play against a corpus median of 94%**. The number says what the
-map cannot: that cluster is two half-scenes meeting at a border crossing. It is
-published, narrowly, and named `Jurong & Johor Bahru` rather than after either
-half.
+`src/ranking/regions/README.md` is the drawing pass's copy of those rules.
 
-#### The gate: the intra-scene share of play
+#### What the loader refuses, and why each one is a silent failure otherwise
 
-The Louvain path gates on stores-per-scene because a sparse co-play graph gives
-it no better signal. Stores-per-scene is a *proxy*, and geographic mode can
-measure the thing it proxies for directly: **of all the matches involving a
-scene's players, what share are against other players in the same scene.** A
-player belongs to a scene through their home venue, exactly as everywhere else
-in this pass.
+Every problem is collected before anything is thrown, because a drawing pass
+fixes a batch of coordinates at a time and one error per run is a day of round
+trips.
 
-Measured over the 1,155 clusters a 30km cap produces, **player-weighted** -
-because a scene of 3 and a scene of 1,702 are not equally interesting:
+- **A latitude outside [-90, 90].** The `[lat, lng]` swap is *the* classic bug
+  in this shape of data, and the message says so and prints the corrected pair.
+  Be honest about the half that is undetectable: a swapped Paris
+  (`2.3, 48.8` → `48.8, 2.3`) is a valid coordinate in Somalia, so the loader
+  cannot catch it. The coverage report's **"regions holding no store"** line is
+  the only symptom there is.
+- **A ring spanning more than 180° of longitude.** Ray casting in plain lng/lat
+  has no idea the world wraps, so a ring with a point at 179 and the next at
+  -179 reads as a 358°-wide polygon spanning the globe the wrong way round -
+  and every store on earth falls in it. A region that genuinely crosses 180° is
+  written with **continuous** longitudes past the line (177 → 183, not 177 →
+  -177), and `locate` tries the query point at `lng` and `lng ± 360`, so a store
+  recorded at -179 is found by a ring authored at 181.
+- **Two regions whose interiors overlap.** A store inside both is ambiguous and
+  the data is wrong. Three witnesses, in increasing cost: a vertex of one
+  strictly inside the other, a **proper** crossing between two edges, and one
+  region's interior point inside the other. The third is not redundant - two
+  regions drawn with *identical* rings (a copy-paste) have no crossing and no
+  vertex strictly inside, and without it they would load cleanly and file every
+  store in whichever file was read first.
+  **What it deliberately permits is a shared border**, which hand-drawn
+  neighbours will have everywhere: coincident vertices, T-junctions and
+  collinear overlaps are not crossings, and a vertex *on* the other region's
+  boundary is not strictly inside it. A test that called those an intersection
+  would refuse every correctly drawn map. The residual blind spot is an overlap
+  narrower than ~1m with no vertex inside and no proper crossing, which cannot
+  put a store in two regions at the precision a geocode carries - and
+  `stats.boundaryTies` counts the stores that land in one anyway.
+- **A duplicate `id`, or two regions publishing one id.** A `?scene=` link would
+  otherwise resolve to whichever loaded first.
+- **A hole outside its own outer ring**, which would silently subtract nothing.
 
-| percentile (by players) | p10 | p25 | p50 | p75 | p90 |
-|---|---|---|---|---|---|
-| intra-scene share of play | 0.77 | 0.87 | **0.94** | 1.00 | 1.00 |
+And the one thing that is **reported rather than fatal**: a store in no region
+gets `sceneId: null` and a line in the coverage report. It is **never snapped to
+the nearest polygon.** Snapping is how a Mexicali store ended up filed in
+California.
 
-**The threshold is 0.5**, and the distribution is why. It sits below p10, in the
-sparse left tail, so it rejects genuine outliers without cutting into the body;
-and 0.5 is the point with a *meaning* rather than a percentile - below it a
-scene's players play more outside it than inside, and "most of your games are
-against your own scene" is the minimum claim that makes a scene-scoped ladder
-mean anything. What each candidate costs:
+#### A missing map is a state; a broken one is a mistake
 
-| gate | scenes published | players published | players with no scene |
-|---|---|---|---|
-| 0.3 | 1,138 | 33,872 | 37 |
-| **0.5** | **1,123** | **33,737** | **172** |
-| 0.6 | 1,089 | 33,109 | 800 |
-| 0.7 | 1,041 | 32,018 | 1,891 |
+`loadRegionIndex` treats an absent or empty `regions/` directory as "no polygons
+drawn yet": every scene field comes out null, the ladder is unaffected, and the
+refit logs how many polygons it loaded. That is exactly the state the stored
+assignment produced before an operator had ever re-clustered, and it has to stay
+cheap - an engine that refused to refit until the map was finished would hold the
+whole ladder hostage to a drawing pass.
 
-0.7 would reject 114 more clusters and 1,891 players for nothing gained - among
-them Bangkok's real district scenes at 63% and 71%, which are plainly scenes.
+**Invalid content throws.** A file that exists and is wrong is a mistake
+somebody can fix; skipping it would place stores nowhere and look identical to a
+map nobody has drawn.
 
-**What happens to the failures is the honest part.** They are not published at
-all: their venues come back with `sceneId: null`, which is the state every
-reader already has to render, and the event page says "this store is not in a
-rankable scene yet". The 32 rejected clusters are 38 venues and **172 of 39,390
-players (0.4%)**, and inspecting them confirms the gate is finding the right
-thing - almost all are a single isolated store with 1-40 matches whose regulars
-only ever play visitors (Antioch CA at 37%, Deer Park NY at 42%, Fairfield CA at
-45%). Not one is large.
-
-The honest headline, stated as the owner asked: **1,123 scenes covering 2,574
-venues and 33,737 players are rankable; 38 venues holding 172 players are not in
-one yet.** That is a better answer than labelling everything.
-
-#### Naming: match-weighted modal, plus a curated table
-
-The default rule is the modal city label of a scene's venues **weighted by
-matches**, not by player count. The player-count version is `modalRegion` in
-`snapshot.ts` and it has a measured defect: it names a cluster after where its
-*residents* are rather than where the *games* are, so two sleepy stores sharing
-a label outvote one busy store that is the whole scene.
-
-That is still only right about half the time at this scale, and it fails in one
-predictable direction - naming a region after whichever town holds the busiest
-store ("Milpitas CA" for eight stores across San Jose, Santa Clara and
-Sunnyvale). So there is a **curated override table**, `sceneNames.ts`, checked
-into the repo and keyed on that store's `shopExternalId`.
-
-Why a shop id and not a scene id: an override has to survive the thing it names
-being re-clustered. A scene id is carried forward by venue-set Jaccard overlap,
-so it is stable *most* of the time and silently is not when a scene splits -
-which is exactly when the override is most needed. A city label is the thing
-being corrected. A shop id is durable, a store does not move, and it is already
-the only identifier a scene is allowed to be keyed on anywhere in this pass.
-
-One failure mode the table exists for beyond vagueness: **two scenes with the
-same name.** Measured across the whole 30km proposal, 7 default labels are
-shared by 16 passing scenes - three separate `Bangkok, 10`, two `Jakarta, JK`,
-three `Sydney, NSW`, two `Toronto, Canada` - and a picker listing the same entry
-three times is worse than a vague one. Those are named by their own centroids
-(`East Bangkok`, `North Bangkok`) rather than by guesswork.
-
-#### What this does not change
-
-- **`componentId` keeps its meaning, permanently.** It answers "are these two
-  ratings on the same scale" and `crossComponentUncertainty` is only correct
-  for a connected component. Scenes are additive under either method.
-- **No new storage.** The output is a `SceneAssignment` - same row, same
-  `previous` rollback slot, same `diffSceneAssignments`, same `--write` gate.
-  `method` and `geo` are additive fields, and `resolution` / `stats.modularity`
-  / `stats.communities` are **null** rather than a stand-in number, because
-  writing the Louvain default there would claim a knob was used when it was
-  not.
-- **Ids are carried the same way.** `carrySceneIds` is shared by both methods:
-  the overlap carry-over is about *naming stability* and has nothing to do with
-  which clustering proposed the membership.
-- **No geocode is ever an id.** `venueKey`'s `geo:` fallback rounds to ~1km, so
-  only a real `shopExternalId` gets a scene - the same rule as everywhere else.
+One build consequence worth knowing, because forgetting it fails *silently* in
+exactly that way: `tsc` emits JavaScript and nothing else, so
+`scripts/copy-regions.mjs` runs after it and copies the `*.json` into
+`dist/ranking/regions`. Without that step a Lambda deploy carries no polygons
+and production refits with every scene null, which breaks no test and throws no
+error. A static `import` of each file was the alternative and was declined: it
+would require naming every continent in code, and the point of a directory is
+that a drawing pass can add `oceania.json` without one.
 
 #### Cost
 
-Negligible. Complete linkage is quadratic in a cluster's size, so venues are
-first bucketed by a loose single-link pass at `--bucket-km` (70) and clustered
-inside each bucket. **That pre-pass cannot change the answer**, and the reason
-is worth stating because it would fail silently: every pair of venues in a
-finished cluster is within the diameter cap of each other, so every cluster is
-single-link-connected at any radius at or above that cap, so no cluster can
-span two buckets. `rankingGeoScenes.test.ts` pins it three ways - at the cap, at
-the default, and at 40,000km - and also against the unbucketed clustering on a
-120-point cloud. Measured on production: **36ms** for 2,574 venues, against a
-14s replay.
-
-#### The first production dry run
-
-2026-10-27, 403-day replay, nothing written:
+Measured against the real 3,928-venue corpus, with a mechanical 0.25°-grid
+stand-in for the hand-drawn map (2,029 non-overlapping polygons - more than the
+~600-900 expected, so this is an upper bound):
 
 | | |
 |---|---|
-| matches replayed | 75,120 |
-| players | 39,390 |
-| venues with coordinates | **2,574 of 2,574** |
-| clusters at 30km | 1,155 |
-| **scenes published** | **1,123** |
-| max extent / median extent | **29.9km** / 0km |
-| intra-scene play share (player-weighted median) | **94.3%** |
-| rejected by the gate | 32 clusters, 38 venues, **172 players (0.4%)** |
-| median venue purity | 100.0% |
-| clustering time | 36ms |
+| parse + validate + **overlap check**, 2,029 polygons | **75ms** |
+| place 3,928 venues | **14ms** |
+
+Against a 14s replay, free. Two prefilters are what make it free rather than
+3.5M full ring tests: every region carries its **bounding box**, so a point
+outside is rejected in four comparisons, and the boxes are indexed into a 5°
+**grid**, so a query touches the handful of regions whose box covers its cell
+rather than all of them. The overlap check is bounded the same way - only
+bbox-overlapping pairs are compared edge by edge, which on a real map is a
+region's few neighbours.
+
+#### The play-share measurement survives as a health signal, not a gate
+
+This is the one behaviour change that is not about ids, and it follows directly
+from a region being drawn rather than proposed.
+
+The measurement is unchanged: **of all the matches involving a region's players,
+what share are against other players in the same region.** The denominator is
+every match with at least one side living there and the numerator the subset with
+both, so a match between two locals played while visiting another city still
+counts as internal - the pair of *people* is what a rating is estimated from. A
+player belongs to a region through their home venue, exactly as everywhere else
+in this pass. The threshold is unchanged too, at **0.5**, read off the
+player-weighted distribution the clustering produced (p10 0.77, p25 0.87, p50
+0.94), where it sits in the sparse left tail and has a meaning rather than a
+percentile: below it a region's players play more outside it than inside.
+
+**What changed is the consequence.** Under the clustering, a scene below the bar
+was **not published at all** - its venues came back with no scene, the event page
+said "this store is not in a rankable scene yet", and 38 venues holding 172 of
+39,390 players were in that state on the live assignment. That was defensible
+for a *proposal*: a cluster whose players do not play each other is a bad
+cluster. It is not defensible for a region, because **the region exists because a
+human drew it**, and a drawn boundary disappearing from the map because of a
+match count is the churn this whole change removes, reintroduced through a side
+door.
+
+So the figure is published instead. `intraShare` and `ladderMeaningful` ride the
+`SCENE#` item; the region keeps its pin, its name and its counts; and the API and
+UI say *"this region's ladder is not meaningful yet"*. Three things to be precise
+about, because they are three different claims:
+
+- `ladderMeaningful: false` says **ordering this region's players among
+  themselves is thin evidence**. It does not say the region is wrong, small, or
+  about to disappear.
+- It is **milder and different** from `comparable: false`, which says the
+  *pool* cannot be ordered at all. A region below the bar inside a large pool is
+  still comparable.
+- **Null is "not measured", never "failed".** An engine that predates the
+  regions sends neither field, and a caller reads that as no caveat - the same
+  deploy-order discipline as `coverage.unassignedVenues` being null rather than
+  0.
+
+`scripts/metrics/region-coverage.sh` reports how many regions fall below the bar
+and how many players they hold.
+
+#### What is stored, which is nothing
+
+There is **no `SCENE_ASSIGNMENT` row** any more, and the rating pass therefore
+carries **no cross-refit state at all**. The item that used to hold the
+assignment is not read, not written and not migrated - it is left where it is
+until somebody deletes it by hand, because deleting it from a refit path would be
+a write this pass has no reason to make. The SQLite mirror
+(`ranking_scene_assignment`) is no longer created, and an existing dev database
+keeps its now-unread table rather than having opening it be a destructive act.
+
+The output contract is unchanged: `VENUE#` still carries `sceneId` /
+`sceneLabel` / `scenePurity`, `SCENE#<sceneId>` is still the catalogue, and
+every player profile and ladder row still carries `sceneId` / `sceneLabel`. The
+`SCENE#` item gains `regionId` (the durable id behind the published one),
+`intraShare` and `ladderMeaningful`, all additive.
+
+#### What survived unchanged
+
+- **A scene belongs to the venue, not the player.** A player's scene is their
+  home venue's scene, one hop, no new inference.
+- **`purity`** is still the share of a store's player-match participations made
+  by players who live in its own region. A low number is a genuinely split
+  store, not an error.
+- **`componentId` keeps its meaning, permanently.** It is a connected component
+  of the co-play graph and `crossComponentUncertainty` is only correct for one.
+  Regions are additive, exactly as scenes were.
+- **No geocode is ever an id.** `venueKey`'s `geo:` fallback rounds to ~1km and
+  would move if the geocode moved, so only a real `shopExternalId` gets a
+  region. Unresolved organizers stay off the map until `shopMatch.ts` resolves
+  them.
+
+#### What was retired, and what was deliberately kept
+
+Retired, because a drawn polygon makes each one unnecessary rather than merely
+unused:
+
+| gone | it existed to |
+|---|---|
+| `ranking/geoScenes.ts` | cluster venue coordinates by complete linkage under a 30km diameter cap |
+| `ranking/recluster.ts`, `scripts/metrics/scene-recluster.sh` | let an operator propose a clustering, diff it against what was live, and accept it |
+| `scripts/metrics/prompts/recluster-scenes.md` | drive that CLI |
+| `carrySceneIds` / `carryJaccard`, `freshSceneId` | keep an id across a re-clustering that moved the membership |
+| `proposeScenes` (the Louvain **scene proposal**) | produce a stored assignment from Louvain communities |
+| `diffSceneAssignments` / `SceneDiff` / `SceneMove` | gate a re-clustering on its churn |
+| `ranking/sceneNames.ts` | correct a derived name, keyed on a cluster's busiest shop id |
+| the `SCENE_ASSIGNMENT` item and its SQLite mirror | persist the answer a clustering computed |
+
+**Kept, deliberately, and not to be confused with the above:**
+
+- **`ranking/communities.ts` - the Louvain implementation itself.** It is
+  *analysis*, and the section above ("Is a scene a connected component?") is
+  built on it: modularity 0.83, largest community 15.4%, a coverage-invariant
+  partition shape, venue → community at 99.3% median purity, and the
+  12-18% label-churn measurement that motivated persisting an assignment in the
+  first place. `./ranking-metrics.sh communities` still runs it and still
+  publishes nothing. Deleting it would delete the evidence for why a scene is
+  not a connected component, which is a question that will be asked again.
+- **The measurement reports.** `ranking-metrics.sh connectivity | communities |
+  venues | validate | bar | fit` are untouched. `venues` now derives the scene
+  of a venue from the polygons rather than reading the stored assignment -
+  which is newly *safe*, because a point-in-polygon test is a function of the
+  polygons and the coordinates, so the report cannot disagree with the items by
+  recomputing. Under the clustering it could, which is why it read the stored
+  row.
+- **`intraSceneShares` / `summariseIntraShares` / `homeVenues`**, moved from
+  `geoScenes.ts` into `scenes.ts`. The arithmetic is the same; only what it
+  decides changed.
+- **The 30km figure, as a yardstick rather than a cap.** Nothing clamps a drawn
+  polygon's width, so `region-coverage.sh` flags a region whose *own stores*
+  span more than 30km. The number earns that job from the clustering era: at
+  30km the New York area resolves into the seven scenes a local would draw, and
+  at 50km it starts merging across San Francisco Bay, which is a ferry rather
+  than a scene.
+
+One consequence of losing the cap is worth stating rather than discovering: the
+API's `SCENE_CENTROID_MAX_KM` gate was belt-and-braces under a diameter-capped
+cluster (a weighted mean of mutually-within-30km points is within 30km of each
+of them, so it provably could not fire) and is **load-bearing now**. A region the
+size of a country would have a centroid far from its nearest store. The gate is
+already there and already measured; `extentKm` in the coverage report is what
+catches such a polygon before a reader does.
+
+#### Coverage: the report the drawing pass reads
+
+`scripts/metrics/region-coverage.sh` (CLI: `src/ranking/regionCoverage.ts`),
+read-only in the same idiom as the other metrics scripts. It exists because **the
+polygons will be incomplete for a long time and that has to be visible**: a
+clustering covered every store by construction, so there was never anything to
+report, and a drawn map covers whatever somebody has drawn.
+
+It validates the files first, then prints the three ways a hand-drawn map goes
+wrong:
+
+1. **Venues in no region**, busiest first, with their coordinates, their city
+   label and **the scene they are filed under today** - read off the published
+   `VENUE#` items, which is the one new read this change adds (one GSI1 Query
+   over the `VENUE` catalogue partition, the same cost as the scene map's). That
+   last column is what says which polygon to draw next and what to call it, and
+   a store that *has* a scene today and no polygon is a reader whose bookmark is
+   about to stop resolving.
+2. **Regions holding no store**, which is the only visible symptom of the
+   undetectable coordinate swap.
+3. **Regions wider than 30km across their own stores**, and **regions below the
+   play-share bar** - neither fatal, both a polygon worth a second look.
+
+```bash
+cd scripts/metrics
+./region-coverage.sh                 # local SQLite
+./region-coverage.sh --remote        # production, read-only
+./region-coverage.sh --remote --json # machine-readable, for an agent drawing
+```
 
 
 ### The model: Whole-History Rating with a global prior
@@ -2431,7 +2365,13 @@ backend API and the ranking UI; additions are safe, renames are not.**
 | **display-name index** | **`PLAYER_SEARCH`** | **`SHARD#<nnn>`** |
 | scope directory | `RANKING_INDEX` | `RANKING_INDEX` |
 | match-log marker | `RANKING_LOG#<eventId>` | `RANKING_LOG#<eventId>` |
-| scene assignment (not derived) | `SCENE_ASSIGNMENT` | `SCENE_ASSIGNMENT` |
+
+There is **no `SCENE_ASSIGNMENT` row**, and this pass therefore has **no
+cross-refit state at all**. It held the venue -> scene assignment while a scene
+was a clustering, because a clustering has to be computed rarely and stored to
+stop a reader's label moving; a scene is a drawn polygon now, so the assignment
+is a point-in-polygon test over files in git. The stale item is not read, not
+written and not migrated - see "Scenes: hand-drawn region polygons".
 
 `scope` is `all`, `set:<id>`, `component:<id>` or `set:<id>#component:<id>`.
 Scenes do **not** add a scope: the player profile and every ladder row carry
@@ -2632,7 +2572,7 @@ around. The numbers, measured with `./ranking-metrics.sh venues`:
 | `latitude` / `longitude` | the **mean** of the venue's events' coordinates - a store does not move, but the two sources geocode it ~20m apart, so the mean is stable where "whichever event was read last" is not |
 | `players`, `ratedPlayers`, `matches`, `events` | the aggregate a store page leads with |
 | `firstSeen` / `lastSeen` | earliest and latest event played there, ISO |
-| `sceneId`, `sceneLabel`, `scenePurity` | the scene it belongs to, and how true that is. Null until a re-clustering has been run |
+| `sceneId`, `sceneLabel`, `scenePurity` | the region it falls in, and how true that is of its play. Null when no polygon contains it, which is reported by `region-coverage.sh` and never snapped to the nearest one |
 | `topPlayers` | up to `RANKING_VENUE_TOP_PLAYERS` (25) entries, ordered by matches at this store, each with the published rating and `rated` |
 | `topPlayersTruncated` | so a reader can say "and N others" |
 
@@ -2670,7 +2610,7 @@ counts partition the players rather than double-counting visitors - and
 `rankingScenes.test.ts` pins that the per-scene counts sum to the profile count.
 
 Pruning follows the same discipline as everything else: a venue whose last match
-ages out of the replay window, or a scene a re-clustering retires, is deleted by
+ages out of the replay window, or a scene whose polygon was deleted, is removed by
 diffing against the scope directory (which now tracks `venueIds` and
 `sceneIds`), so the catalogue Query never serves a pin with no data behind it.
 
@@ -2686,8 +2626,9 @@ could see.** The paragraph that used to sit here argued the case honestly and
 the case has expired: `SCENE#` items needed an accepted re-clustering, the first
 dry run proposed 1,042 scenes of 2.1 stores each and the CLI refused it, so a
 scene-keyed map would have been an empty map and a component-keyed one was the
-only map available. A geographic assignment has been accepted since - 1,123
-scenes, complete linkage at a 30km diameter - and the symptoms of the old
+only map available. A geographic assignment was accepted after that - 1,123
+scenes, complete linkage at a 30km diameter - and the scenes are hand-drawn
+region polygons now, which needs no acceptance at all. The symptoms of the old
 keying were exactly what this document predicted:
 
 - the map's list read `Karlsruhe, Deutschland` and `Paris, France`, which are
@@ -2993,11 +2934,14 @@ matches is ~50MB that way.
 - **Region labels are null until shops are geocoded.** They come from the shop
   row's `displayCity`, so a venue awaiting reverse geocoding yields an unlabelled
   component. The ladder still works; the region selector shows `Cluster <id>`.
-- **A scene being read before anything is assigned.** `sceneId` is null on every
-  item until an operator runs a re-clustering, and null is the normal value, not
-  a failure: nothing may treat it as an error and nothing may drop a record for
-  lacking one. A reader should fall back to "no scene", never to `componentId`,
-  which means something else entirely.
+- **A scene being read before a polygon contains the store.** `sceneId` is null
+  on every item no region covers, and null is the normal value, not a failure:
+  nothing may treat it as an error and nothing may drop a record for lacking
+  one. A reader should fall back to "no scene", never to `componentId`, which
+  means something else entirely. The map is drawn by hand, so this is the
+  expected state of a store nobody has drawn around yet - and it is *reported*
+  by `region-coverage.sh` rather than papered over by snapping the store to the
+  nearest polygon.
 - **A scene assignment accepted on a fragmented graph.** The first production
   dry run produced 1,042 scenes of 2.1 stores each at modularity 0.9844, because
   the backfill had not captured the cross-venue edges yet. Fragmentation raises
@@ -3044,18 +2988,16 @@ cd scripts/metrics
 ./ranking-metrics.sh fit --remote            # dry-run refit (writes nothing)
 ./ranking-metrics.sh all --file sample.ndjson  # analyse a captured regional sample
 
-./scene-recluster.sh --remote                # propose a scene re-clustering and diff it
-./scene-recluster.sh --remote --show         # print the assignment in force
-./scene-recluster.sh --remote --write        # accept it (the one write in this directory)
-./scene-recluster.sh --remote --rollback --write   # undo the last one
+./region-coverage.sh --remote                # what the drawn polygons cover, and what they miss
+./region-coverage.sh --remote --json         # the same, for an agent drawing polygons
 ```
 
-`ranking-metrics.sh` is entirely read-only. `scene-recluster.sh` is read-only
-**unless `--write`**, and it is the one deliberate write in `scripts/metrics/`:
-see the runbook in [scripts/metrics/README.md](../scripts/metrics/README.md) for
-when to re-cluster and what to check before accepting. The `--file` form takes NDJSON of `{externalId, results, roster}`
-objects, which is how a complete region can be measured before the production
-backfill reaches it.
+**Everything in `scripts/metrics/` is now read-only.** `scene-recluster.sh` was
+the one deliberate write in the directory and it is gone with the clustering it
+drove: a scene is a drawn polygon, so there is no assignment to accept and no
+rollback to keep. The `--file` form of `ranking-metrics.sh` takes NDJSON of
+`{externalId, results, roster}` objects, which is how a complete region can be
+measured before the production backfill reaches it.
 
 ## Lambda layout (production)
 
@@ -3440,10 +3382,10 @@ Venues and scenes:
 
 - `RANKING_VENUE_TOP_PLAYERS`: Players denormalised onto a `VENUE#` item,
   ordered by matches played there (default: `25`)
-- `RANKING_SCENE_RESOLUTION`: Louvain resolution for a **re-clustering**
-  (default: `1`, the measured stability optimum). Read only by
-  `scene-recluster.sh` - a refit never clusters; it reads the stored
-  assignment.
+- `RANKING_SCENE_RESOLUTION` is **gone with the clustering it configured**. A
+  scene is a drawn polygon, so there is no resolution to set; the knob survives
+  in `./ranking-metrics.sh communities --resolution N`, which is a measurement
+  and publishes nothing.
 - `RANKING_SCENE_MAP_TOP_VENUES`: Venues denormalised onto a `COMPONENT#` item
   for the scene map, ordered by matches of that component played there
   (default: `5`). A page-weight knob rather than a modelling one - the item is
@@ -3489,13 +3431,23 @@ properties the design rests on rather than its surface:
   the reported modularity agrees with an independent evaluation of the same
   labelling, and the partition-agreement metrics score a relabelling as
   identical.
-- `rankingScenes.test.ts` - the persisted scene assignment: a store belongs to
-  exactly one scene with a purity attached, a scene id **survives a
-  re-clustering** that changes the membership (overlap-carried, which is the
-  whole reason the assignment is persisted) while a genuinely new scene gets a
-  new id, a geocode is never a venue id, a refit with no assignment publishes
-  null scenes rather than clustering on the fly, and `componentId` keeps its
-  meaning throughout.
+- `rankingRegions.test.ts` - the region loader, and every assertion in it is
+  something that would otherwise fail *silently*: a swapped `[lat, lng]` pair is
+  rejected with the corrected pair in the message (and the undetectable half is
+  pinned as undetectable), two overlapping regions are refused while two
+  **sharing a border** load - including a T-junction and an enclave in a hole -
+  two identical rings are caught by the interior-point witness, a ring wrapping
+  through ±180 is refused while continuous longitudes past the line work, a
+  point in a hole is in no region, a store in no region is reported rather than
+  snapped, and an empty file set is a valid state.
+- `rankingScenes.test.ts` - the assignment the refit reads: a store belongs to
+  exactly one region with a purity attached, the **carried scene id is what gets
+  published** while the region id stays behind it, a region's name is taken
+  verbatim rather than derived from its stores, a store opening outside every
+  polygon moves nothing and is reported unplaced, the play-share measurement
+  flags a region's ladder without deleting the region, a geocode is never a
+  venue id, a refit with no polygons publishes null scenes, and `componentId`
+  keeps its meaning throughout.
 - `rankingSceneMap.test.ts` - locating a scene: the centroid is weighted by
   play rather than by venue, it is a **spherical** mean (so a scene straddling
   the antimeridian lands next to its stores rather than in the Gulf of

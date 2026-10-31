@@ -176,6 +176,16 @@ export interface SceneBoardInfo {
   playerCount: number | null;
   ratedPlayers: number | null;
   venueCount: number | null;
+  /**
+   * The play-share caveat, on the header of the board it qualifies.
+   *
+   * `ladderMeaningful: false` says the rows below are real ratings whose games
+   * were mostly played against people outside this region, so their order among
+   * themselves is thin evidence. Milder and different from `comparable: false`,
+   * which says the pool cannot be ordered at all. Null means not measured.
+   */
+  intraShare: number | null;
+  ladderMeaningful: boolean | null;
   /** The pool the board was filtered out of. Null when the scene has none. */
   componentId: string | null;
   componentSize: number | null;
@@ -354,6 +364,22 @@ export interface SceneMapEntry {
   venueCount: number;
   /** How true "this store belongs to one scene" is, across the scene's stores. */
   medianPurity: number | null;
+  /**
+   * Share of this region's players' matches played against other players in it,
+   * and whether the engine's bar says that makes its ladder meaningful.
+   *
+   * **A caveat on the ladder, not on the region.** The engine used to withhold
+   * such a scene entirely - it was absent from the catalogue, so there was no
+   * row and no pin, and `coverage.unassignedVenues` was the only trace. A scene
+   * is a hand-drawn region now, so it is served and the page says the ladder is
+   * thin rather than losing the place.
+   *
+   * **Null is "not measured".** An older engine sends neither, and reading that
+   * as `false` would caveat every region on the site for up to a refit interval
+   * after a deploy - the same discipline as `profile.known`.
+   */
+  intraShare: number | null;
+  ladderMeaningful: boolean | null;
   /** True for the scene holding the most recorded players. */
   isGiant: boolean;
   /**

@@ -20,6 +20,7 @@ import {
   sceneBounds,
   sceneCoverageSentence,
   sceneFocusBounds,
+  sceneLadderMeaningNote,
   sceneLadderNote,
   scenePurityHint,
   scenePurityLabel,
@@ -38,6 +39,10 @@ function scene(overrides: Partial<SceneMapEntry> & { sceneId: string }): SceneMa
     matchCount: 300,
     venueCount: 4,
     medianPurity: 1,
+    // Measured and healthy by default; the false and null cases have their own
+    // tests, because a fixture carrying either would hide the normal path.
+    intraShare: 1,
+    ladderMeaningful: true,
     isGiant: false,
     // Distinct from `sceneId`, because a scene is not a rating scale and the
     // two ids must never be interchangeable in a fixture either.
@@ -572,3 +577,30 @@ describe('sceneFocusBounds', () => {
     expect(arctic[1][1] - arctic[0][1]).toBeGreaterThan(equator[1][1] - equator[0][1]);
   });
 });
+
+describe('sceneLadderMeaningNote', () => {
+  it('says nothing for a region whose players play each other', () => {
+    expect(sceneLadderMeaningNote(scene({ sceneId: 's-1' }))).toBeNull();
+  });
+
+  it('says nothing for an engine that never measured it', () => {
+    // Null is "not measured", not "failed". Reading it as false would put this
+    // caveat under every region on the site for up to a refit interval after a
+    // deploy - the same rule `profile.known` follows.
+    expect(
+      sceneLadderMeaningNote(scene({ sceneId: 's-1', intraShare: null, ladderMeaningful: null }))
+    ).toBeNull();
+  });
+
+  it('says the ladder is thin, with the share, and never that the region is wrong', () => {
+    const note = sceneLadderMeaningNote(
+      scene({ sceneId: 's-1', intraShare: 0.31, ladderMeaningful: false })
+    )!;
+    expect(note).toContain('ladder is not meaningful yet');
+    expect(note).toContain('31%');
+    // The region exists because somebody drew it. The copy must not imply
+    // otherwise - that is the whole distinction this field carries.
+    expect(note).not.toMatch(/no scene|not a scene|does not exist/i);
+  });
+});
+

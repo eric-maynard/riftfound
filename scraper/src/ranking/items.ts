@@ -516,12 +516,14 @@ export interface VenueProfile {
  * One scene, as its own item, so a scene selector and a map of scenes are one
  * Query each.
  *
- * A scene is a cluster of **stores** - a Louvain community of the co-play graph
- * under `--method louvain`, or a 30km-diameter complete-linkage cluster of
- * venue coordinates under `--method geo` - **persisted** between deliberate
- * re-clusterings rather than recomputed every refit. See ranking/scenes.ts for
- * why that is the only shippable form. The counts here are recomputed on every
- * refit from the stored assignment; the membership is not.
+ * A scene is a **hand-drawn region polygon** (`ranking/regions.ts`), and a
+ * store belongs to it by a point-in-polygon test on its coordinates. The
+ * membership is therefore deterministic and moves only when somebody edits a
+ * polygon; the counts here are recomputed on every refit. It used to be a
+ * cluster - a Louvain community, then a 30km-diameter complete-linkage cluster -
+ * persisted between operator re-clusterings precisely because a clustering
+ * moves when the corpus grows: the last re-clustering moved 12.2% of shared
+ * venues, created 474 ids and retired 144. See ranking/scenes.ts.
  *
  * **It carries the scene's place**, via `ScenePlace`, for exactly the reason
  * `ComponentProfile` does: the coordinates live on the match facts keyed by
@@ -532,16 +534,36 @@ export interface VenueProfile {
  *
  * The geometry is kinder here than on a component. A component is a
  * reachability closure and can span a continent, which is why the API needs
- * `SCENE_CENTROID_MAX_KM` to withhold a pin in the Gulf of Thailand. A scene
- * is diameter-capped (30km by default), and a weighted mean of points that are
- * all within 30km of each other is within 30km of every one of them - so a
- * scene's centroid cannot be far from its own nearest venue by construction.
- * The gate stays in the API anyway, because the cap is a knob.
+ * `SCENE_CENTROID_MAX_KM` to withhold a pin in the Gulf of Thailand. A region
+ * is a drawn boundary, so its venues are inside one polygon and a weighted mean
+ * of them lands inside it too. Note what changed with the regions: the old
+ * 30km diameter cap made that a *proof*, and a drawn polygon is only as compact
+ * as the person who drew it - a region the size of a country would have a
+ * centroid far from its nearest store. So the API's gate is now load-bearing
+ * rather than belt-and-braces, and `extentKm` in the coverage report is the
+ * figure that catches such a polygon before a reader does.
  */
 export interface SceneProfile extends ScenePlace {
   sceneId: string;
-  /** Modal city label of its venues, or null when none is geocoded yet. */
+  /**
+   * The region's name, as the human who drew it wrote it.
+   *
+   * Never derived any more, and that is the repair: it used to be the
+   * match-weighted modal city label of a cluster's venues, corrected by a
+   * curated table keyed on the cluster's *busiest shop id* - which detached
+   * silently the first time a busier store opened. A polygon carries its own
+   * name. Null only on an item written before the regions shipped.
+   */
   label: string | null;
+  /**
+   * The region's own durable id, behind the published `sceneId`.
+   *
+   * They differ exactly where a polygon succeeds a clustered scene and carries
+   * its id forward (`carriesSceneId`), which is what keeps a shared `?scene=`
+   * link alive across the move. Absent on an item written before the regions
+   * shipped.
+   */
+  regionId?: string;
   venueCount: number;
   /** Distinct players whose home venue is in this scene. */
   playerCount: number;
@@ -551,6 +573,32 @@ export interface SceneProfile extends ScenePlace {
   medianPurity: number;
   /** When the assignment that defines this scene was made. Not the refit time. */
   assignedAt: string;
+
+  /**
+   * Share of this scene's players' matches that are against other players in
+   * the same scene, and whether that clears the bar.
+   *
+   * **A health signal about the ladder, not a gate on the region.** This
+   * measurement used to *delete* a scene below `minIntraShare` (0.5): its
+   * venues came back carrying no scene at all. That was defensible while a
+   * scene was a clustering - a proposal whose players do not play each other is
+   * a bad proposal - and it is not defensible now that the region exists
+   * because a human drew it. A boundary vanishing from the map because of a
+   * match count is the churn the regions removed, reintroduced through a side
+   * door.
+   *
+   * So both travel and nothing is withheld on them. `ladderMeaningful: false`
+   * means ordering this region's players among themselves says little, because
+   * most of their games are against people outside it - it does not mean the
+   * region is wrong, or small, or about to disappear. The API and UI say "this
+   * region's ladder is not meaningful yet"; the pin, the name and the counts
+   * are published either way.
+   *
+   * Both are absent on an item written before the regions shipped, where
+   * absence correctly reads as "not measured" rather than as a failing score.
+   */
+  intraShare?: number;
+  ladderMeaningful?: boolean;
 
   /**
    * The rating pool this scene's players are on, and how many pools they are

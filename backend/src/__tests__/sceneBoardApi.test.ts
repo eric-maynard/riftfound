@@ -100,6 +100,10 @@ function boardStore(options: {
     ratedCount: options.rows.length,
     matchCount: 100,
     medianPurity: 1,
+    // Measured and healthy by default; the null and the false cases are what
+    // individual tests override, because both have their own copy.
+    intraShare: 1,
+    ladderMeaningful: true,
     assignedAt: '2026-10-28T00:00:00.000Z',
     latitude: null,
     longitude: null,
@@ -442,6 +446,48 @@ describe('GET /api/rankings?scope=scene:<id>', () => {
     // Page two continues the scene's own numbering rather than restarting it.
     expect(second.body.data.entries.map((entry: { rank: number }) => entry.rank)).toEqual([3]);
     expect(second.body.pagination.hasMore).toBe(false);
+  });
+});
+
+describe('the play-share caveat rides the board it qualifies', () => {
+  it('serves the board, with the caveat, for a region whose play is mostly elsewhere', () => {
+    // Not a gate. The engine used to withhold such a scene entirely, so there
+    // was no board to caveat; a region is drawn by a human now, so the rows are
+    // served and the header says the order among them is thin evidence. That is
+    // a milder and different claim from `comparable: false`, which says the
+    // pool cannot be ordered at all - this board stays comparable.
+    setRankingStore(
+      boardStore({
+        rows: INTERLEAVED,
+        scene: { sceneId: 'peninsula', intraShare: 0.31, ladderMeaningful: false },
+      })
+    );
+    return get('/api/rankings?scope=scene:peninsula').then(({ status, body }) => {
+      expect(status).toBe(200);
+      expect(body.data.scene.intraShare).toBe(0.31);
+      expect(body.data.scene.ladderMeaningful).toBe(false);
+      expect(body.data.scene.comparable).toBe(true);
+      expect(body.data.entries.length).toBeGreaterThan(0);
+    });
+  });
+
+  it('reports an engine that never measured it as null, not false', async () => {
+    setRankingStore(
+      boardStore({
+        rows: INTERLEAVED,
+        scene: { sceneId: 'peninsula', intraShare: null, ladderMeaningful: null },
+      })
+    );
+    const { body } = await get('/api/rankings?scope=scene:peninsula');
+    expect(body.data.scene.intraShare).toBeNull();
+    expect(body.data.scene.ladderMeaningful).toBeNull();
+  });
+
+  it('carries null on a scene the engine has no item for', async () => {
+    setRankingStore(boardStore({ rows: INTERLEAVED, scene: { sceneId: 'peninsula' } }));
+    const { body } = await get('/api/rankings?scope=scene:nowhere');
+    expect(body.data.scene.known).toBe(false);
+    expect(body.data.scene.ladderMeaningful).toBeNull();
   });
 });
 

@@ -26,10 +26,12 @@
  */
 
 import { readFileSync } from 'node:fs';
-import { loadEventNames, loadSceneAssignment } from '../database.js';
+import { loadEventNames } from '../database.js';
 import { ObservationBuilder, dayNumber, type ObservationSet } from './observations.js';
 import { connectivityReport, findComponents, type ConnectivityReport } from './graph.js';
 import { scenePlace } from './sceneMap.js';
+import { assignScenesFromRegions, sceneLookup } from './scenes.js';
+import { loadRegionIndex } from './regions.js';
 import { communityReport, venueAggregates, type CommunityReport } from './communities.js';
 import { buildEras, DEFAULT_PRERELEASE_OPTIONS, parseSetTable, parsePrereleaseTypes, type SetEra } from './sets.js';
 import { replayDates, replayFacts, resolveVenueLabels, runRankingPass } from './pass.js';
@@ -385,19 +387,22 @@ async function main(): Promise<void> {
         ? [...venues].map(v => v.players).sort((a, b) => a - b)[Math.floor(venues.length / 2)]
         : 0,
     }]));
-    // The scene a venue belongs to comes from the *persisted* assignment, not
-    // from a fit run here - that is the whole point of the assignment, and
-    // printing a freshly-computed one would make this report disagree with the
-    // items. Use ./scene-recluster.sh to propose a new one.
-    const assignment = args.file ? null : await loadSceneAssignment().catch(() => null);
-    const sceneOfVenue = new Map((assignment?.venues ?? []).map(row => [row.venue, row.sceneId]));
-    const purityOfVenue = new Map((assignment?.venues ?? []).map(row => [row.venue, row.purity]));
-    const labelOfScene = new Map((assignment?.scenes ?? []).map(row => [row.sceneId, row.label]));
+    // The scene a venue belongs to is a point-in-polygon test against the
+    // checked-in region files, computed here exactly as the refit computes it.
+    // That is now safe in a way it was not under the clustering: the answer is
+    // a function of the polygons and the coordinates, so a report cannot
+    // disagree with the items by recomputing. See ranking/regions.ts.
+    const assignment = assignScenesFromRegions(observations, loadRegionIndex(), {
+      venueLabels: await resolveVenueLabels(observations).catch(() => new Map<string, string>()),
+    });
+    const scenes = sceneLookup(assignment);
+    const { sceneOfVenue, purityOfVenue, labelOfScene } = scenes;
     console.log(
-      assignment
-        ? `\nScene assignment in force: ${assignment.venues.length} venues in ` +
-            `${assignment.scenes.length} scenes, made ${assignment.generatedAt}`
-        : '\nScene assignment in force: none - run ./scene-recluster.sh to create one. ' +
+      assignment.stats.regions > 0
+        ? `\nRegions: ${assignment.stats.regions} polygons from ` +
+            `${assignment.regionFiles.length} files; ${assignment.stats.venues} venues placed in ` +
+            `${assignment.stats.scenes} of them, ${assignment.stats.unplacedVenues} venues in none`
+        : '\nRegions: none drawn yet - add polygons under scraper/src/ranking/regions/. ' +
             'Every venue and player item carries a null scene until then.'
     );
 
@@ -411,7 +416,7 @@ async function main(): Promise<void> {
         events: venue.events,
         latitude: venue.latitude?.toFixed(4) ?? '-',
         longitude: venue.longitude?.toFixed(4) ?? '-',
-        scene: sceneId ? `${labelOfScene.get(sceneId) ?? '(unlabelled)'} ${sceneId}` : '-',
+        scene: sceneId ? `${labelOfScene.get(sceneId) ?? '(unnamed)'} ${sceneId}` : '-',
         purity: sceneId ? percent(purityOfVenue.get(venue.venue) ?? 0) : '-',
       };
     })));

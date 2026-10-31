@@ -660,6 +660,26 @@ export interface SceneBoardInfo {
   /** Of those, the ones the engine rated, from the item. */
   ratedPlayers: number | null;
   venueCount: number | null;
+  /**
+   * Share of this scene's players' matches that are against other players in
+   * the same scene, and whether the engine's bar says that makes this board
+   * meaningful.
+   *
+   * **This is the one place the figure matters most**, because it is the header
+   * of the board it qualifies. `ladderMeaningful: false` says the rows below
+   * are real players with real ratings whose games were mostly played against
+   * people *outside* this region - so their order among themselves is thin
+   * evidence, which is a different and milder caveat than `comparable: false`
+   * (that one says the pool cannot be ordered at all).
+   *
+   * It is deliberately **not** a gate here either. The engine used to withhold
+   * the whole scene below the bar; a region is drawn by a human now, so the
+   * board is served with the caveat attached. Null means an engine that never
+   * measured it, and reads as no caveat - the same deploy-order discipline as
+   * `known: false`.
+   */
+  intraShare: number | null;
+  ladderMeaningful: boolean | null;
   /** The pool the board was filtered out of. Null when the scene has no pool. */
   componentId: string | null;
   componentSize: number | null;
@@ -853,6 +873,28 @@ export interface SceneMapEntry {
   venueCount: number;
   /** How true "this store belongs to one scene" is, across the scene's stores. */
   medianPurity: number | null;
+  /**
+   * Share of this scene's players' matches that are against other players in
+   * the same scene, and whether that clears the engine's bar (0.5).
+   *
+   * **A statement about the ladder, not about the region.** The engine used to
+   * treat this as a gate: a scene below the bar was **not published at all**,
+   * and its venues came back with no scene - which is part of what
+   * `coverage.unassignedVenues` counted. A scene is a hand-drawn region now
+   * (scraper `ranking/regions.ts`), so a drawn boundary vanishing because of a
+   * match count would be exactly the churn the regions removed, and the
+   * measurement is published instead. `ladderMeaningful: false` means most of
+   * this region's players' games are against people outside it, so ordering
+   * them among themselves says little; the pin, the name and the counts are
+   * served either way, and a caller says so rather than hiding the region.
+   *
+   * **Null is "not measured", never "failed".** An engine that predates the
+   * regions sends neither field, and a caller must read that as no caveat
+   * rather than as a failing score - the same deploy-order discipline as
+   * `coverage.unassignedVenues` being null rather than 0.
+   */
+  intraShare: number | null;
+  ladderMeaningful: boolean | null;
   /** True for the scene holding the most recorded players. */
   isGiant: boolean;
 

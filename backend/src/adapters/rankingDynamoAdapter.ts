@@ -492,6 +492,12 @@ function toSceneDirectoryEntry(item: Item): SceneDirectoryEntry | null {
     ratedCount: readNumber(item, ['ratedCount', 'ratedPlayers']),
     matchCount: readNumber(item, ['matchCount', 'matches']),
     medianPurity: readNumber(item, ['medianPurity']),
+    intraShare: readNumber(item, ['intraShare']),
+    // Read as a tri-state on purpose: absent means an engine that never
+    // measured it, and coercing that to `false` would caveat every ladder on
+    // the site for up to one refit interval after a deploy.
+    ladderMeaningful:
+      typeof item.ladderMeaningful === 'boolean' ? item.ladderMeaningful : null,
     assignedAt: readString(item, ['assignedAt']),
     latitude: located ? latitude : null,
     longitude: located ? longitude : null,

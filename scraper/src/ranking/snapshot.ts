@@ -86,13 +86,14 @@ export interface SnapshotOptions {
   /** Venue key -> human-readable label, resolved from the shops table. */
   venueLabels: Map<string, string>;
   /**
-   * The persisted venue -> scene assignment, read not computed.
+   * The venue -> scene assignment, derived from the drawn region polygons.
    *
-   * Null means "no re-clustering has been run", and every scene field comes out
-   * null rather than being invented. The refit never clusters: see
-   * ranking/scenes.ts for why a per-refit partition is unshippable (12-18%
-   * label churn) and why this is the one piece of cross-refit state the pass
-   * carries.
+   * Null, or an assignment holding no venue, means no polygon contains any
+   * store this refit replayed - which is the normal early state of a map drawn
+   * by hand - and every scene field comes out null rather than being invented.
+   * The refit still never *clusters*; it now does not read a stored assignment
+   * either, because a point-in-polygon test over checked-in files is
+   * deterministic. See ranking/scenes.ts.
    */
   sceneAssignment?: SceneAssignment | null;
   /** How many players a venue item denormalises, ordered by matches there. */
@@ -427,8 +428,9 @@ export function buildSnapshot(
     return venue ? options.venueLabels.get(venue) ?? null : null;
   };
 
-  // Scenes are *read*, never fitted here. A null assignment leaves every scene
-  // field null rather than inventing one - see ranking/scenes.ts.
+  // Scenes are *placed*, never fitted here: a store's region is a
+  // point-in-polygon test the assignment already ran. A null assignment leaves
+  // every scene field null rather than inventing one - see ranking/scenes.ts.
   const scenes = sceneLookup(options.sceneAssignment ?? null);
   const sceneOf = (player: number): { sceneId: string | null; sceneLabel: string | null } => {
     const venue = homeVenue.get(player);
@@ -952,9 +954,15 @@ export function buildSnapshot(
     }
   }
 
-  // Scene directory. Built from the *stored* assignment, so every scene it
-  // names exists in the assignment an operator accepted - a scene cannot
-  // appear or vanish because a refit saw one more match.
+  // Scene directory. Built from the assignment's own scene list, so every scene
+  // it names is a polygon somebody drew - a scene cannot appear or vanish
+  // because a refit saw one more match, only because a polygon was edited.
+  //
+  // `assignedAt` is the assignment's timestamp, which under the regions equals
+  // the refit time: the polygons are the thing with a history now, and it lives
+  // in git rather than in a `generatedAt` field. It keeps its name and its
+  // meaning ("when this scene's membership was decided") because a reader
+  // downstream branches on it.
   const assignedAt = options.sceneAssignment?.generatedAt ?? generatedAt;
   const sceneProfiles: SceneProfile[] = (options.sceneAssignment?.scenes ?? [])
     .filter(scene => sceneTotals.has(scene.sceneId))
@@ -980,6 +988,11 @@ export function buildSnapshot(
         ...scenePlace(places, { topVenues: options.sceneMapTopVenues }),
         sceneId: scene.sceneId,
         label: scene.label,
+        regionId: scene.regionId,
+        // The play-share measurement, published rather than enforced. See
+        // `SceneProfile` for why this stopped being a gate.
+        intraShare: scene.intraShare,
+        ladderMeaningful: scene.ladderMeaningful,
         venueCount: totals.venues,
         playerCount: totals.players.size,
         ratedCount: totals.rated,

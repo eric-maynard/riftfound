@@ -445,6 +445,19 @@ export interface SceneDirectoryEntry {
   ratedCount: number | null;
   matchCount: number | null;
   medianPurity: number | null;
+  /**
+   * Share of the scene's players' matches that are against other players in the
+   * same scene, and whether the engine's own bar says that makes its ladder
+   * meaningful.
+   *
+   * **Both null is "not measured", never "failed".** The engine used to *delete*
+   * a scene below the bar - its venues came back with no scene at all - and it
+   * publishes the figure instead, because a scene is a hand-drawn region now and
+   * a boundary must not disappear because of a match count. See scraper
+   * `ranking/scenes.ts`. An engine that predates the change sends neither.
+   */
+  intraShare: number | null;
+  ladderMeaningful: boolean | null;
   /** When the **assignment** was made, which is not the refit time. */
   assignedAt: string | null;
 

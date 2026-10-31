@@ -85,6 +85,10 @@ function scene(overrides: Partial<SceneDirectoryEntry> & { sceneId: string }): S
     ratedCount: 0,
     matchCount: 20,
     medianPurity: 1,
+    // Measured and healthy by default; the null and the false cases are what
+    // individual tests override, because both have their own copy.
+    intraShare: 1,
+    ladderMeaningful: true,
     assignedAt: '2026-10-28T05:46:25.569Z',
     latitude: null,
     longitude: null,
@@ -386,6 +390,57 @@ describe('GET /api/rankings/map', () => {
       const { body } = await get('/api/rankings/map');
       expect(body.data.coverage.unassignedVenues).toBe(38);
       expect(body.data.coverage.unassignedPlayers).toBe(172);
+    });
+
+    it('serves a region whose ladder is not meaningful, rather than hiding it', async () => {
+      // The whole shape of the change behind this field. The engine used to
+      // **delete** a scene whose players mostly play elsewhere, so there was no
+      // row to render and `coverage.unassignedVenues` was the only trace of it.
+      // A scene is a hand-drawn region now, so the region is served with the
+      // measurement attached and a reader is told rather than left guessing
+      // why their store is nowhere.
+      setRankingStore(
+        directoryStore([
+          scene({
+            sceneId: 's-thin',
+            playerCount: 40,
+            latitude: 1,
+            longitude: 1,
+            intraShare: 0.31,
+            ladderMeaningful: false,
+          }),
+        ])
+      );
+
+      const { body } = await get('/api/rankings/map');
+      expect(body.data.scenes).toHaveLength(1);
+      const [entry] = body.data.scenes;
+      expect(entry.sceneId).toBe('s-thin');
+      expect(entry.intraShare).toBe(0.31);
+      expect(entry.ladderMeaningful).toBe(false);
+      // Still drawn, still counted. Nothing is withheld on the flag.
+      expect(entry.latitude).toBe(1);
+      expect(entry.playerCount).toBe(40);
+    });
+
+    it('reports an engine that never measured the play share as null, not false', async () => {
+      // Coercing absent to `false` would put a "not meaningful yet" caveat on
+      // every region on the site for up to one refit interval after a deploy.
+      setRankingStore(
+        directoryStore([
+          scene({
+            sceneId: 's-1',
+            latitude: 1,
+            longitude: 1,
+            intraShare: null,
+            ladderMeaningful: null,
+          }),
+        ])
+      );
+
+      const { body } = await get('/api/rankings/map');
+      expect(body.data.scenes[0].intraShare).toBeNull();
+      expect(body.data.scenes[0].ladderMeaningful).toBeNull();
     });
 
     it('reports an engine that does not publish that figure as null, not zero', async () => {
