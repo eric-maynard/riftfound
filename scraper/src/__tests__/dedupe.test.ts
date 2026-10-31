@@ -310,6 +310,93 @@ describe('one primary per secondary', () => {
   });
 });
 
+describe('concurrent events at one store are never dropped', () => {
+  // Reported as the suspected cause of a store's events being missing from the
+  // site: "that store legitimately has two concurrent events (diff names,
+  // types) and i think we incorrectly block that". It does not happen, and
+  // this is the real data it was reported against - the four production rows at
+  // Just For Fun, San Francisco (shopExternalId 23916) that share a start
+  // minute with another event, verbatim from the table on 2026-10-31.
+  const jffLat = 37.7884844;
+  const jffLon = -122.4037532;
+
+  const nexusNight = {
+    id: 'prb-117520331668810299',
+    latitude: jffLat,
+    longitude: jffLon,
+    startDate: new Date('2026-10-31T00:45:00.000Z'),
+    eventType: 'Nexus Night',
+    price: '$10.00',
+  };
+  const learnToPlay = {
+    id: 'prb-117482010545883446',
+    latitude: jffLat,
+    longitude: jffLon,
+    startDate: new Date('2026-10-31T01:00:00.000Z'),
+    eventType: 'Learn to Play',
+    price: '$10.00',
+  };
+  // Two *identically named* Riot tournaments at the same store, same minute.
+  const casualA = {
+    id: 'prb-117322217421492717',
+    latitude: jffLat,
+    longitude: jffLon,
+    startDate: new Date('2026-10-10T00:45:00.000Z'),
+    eventType: 'Nexus Night',
+    price: '$10.00',
+  };
+  const casualB = { ...casualA, id: 'prb-117322227512178825' };
+
+  it('keeps all of them when the UVS feed has nothing there', () => {
+    // Which is the actual state of this store: the UVS feed stopped listing it
+    // after 2026-10-03, so none of these rows has a UVS twin to merge with.
+    const { unique, matched } = splitDuplicates(
+      [nexusNight, learnToPlay, casualA, casualB],
+      buildDedupeIndex<DedupeableEvent>([])
+    );
+    expect(unique.map(e => e.id)).toEqual([
+      'prb-117520331668810299',
+      'prb-117482010545883446',
+      'prb-117322217421492717',
+      'prb-117322227512178825',
+    ]);
+    expect(matched).toHaveLength(0);
+  });
+
+  it('keeps the same-minute pair even when one of them merges with a UVS row', () => {
+    // The documented "a UVS row can only absorb one Riot record per run" rule.
+    // The second is inserted as its own event, so the store still has two.
+    const uvsTwin = { ...casualA, id: '1045192' };
+    const { unique, matched } = splitDuplicates([casualA, casualB], buildDedupeIndex([uvsTwin]));
+    expect(matched.map(m => m.secondary.id)).toEqual(['prb-117322217421492717']);
+    expect(unique.map(e => e.id)).toEqual(['prb-117322227512178825']);
+  });
+
+  it('accounts for every Riot record, whatever the UVS feed holds', () => {
+    // The invariant that makes "a concurrent event is blocked" impossible:
+    // splitDuplicates partitions its input, so nothing can fall out of it.
+    // A matched record is written onto the surviving UVS row; a unique one
+    // becomes its own row. Neither path discards an event.
+    const riot = [nexusNight, learnToPlay, casualA, casualB];
+    for (const index of [
+      buildDedupeIndex<DedupeableEvent>([]),
+      buildDedupeIndex([{ ...casualA, id: '1045192' }]),
+      buildDedupeIndex([
+        { ...nexusNight, id: '898395', eventType: 'Other', price: 'Free' },
+        { ...learnToPlay, id: '916009' },
+        { ...casualA, id: '1045192' },
+      ]),
+    ]) {
+      const { unique, matched } = splitDuplicates(riot, index);
+      expect(unique.length + matched.length).toBe(riot.length);
+      expect(new Set([...unique.map(e => e.id), ...matched.map(m => m.secondary.id)]).size).toBe(riot.length);
+      // No UVS row absorbs two Riot records, so no pair of concurrent events
+      // can collapse into one.
+      expect(new Set(matched.map(m => m.primary)).size).toBe(matched.length);
+    }
+  });
+});
+
 describe('best candidate selection', () => {
   const base = { latitude: 37.9419, longitude: -121.7367, startDate: new Date('2026-10-19T01:00:00Z') };
 

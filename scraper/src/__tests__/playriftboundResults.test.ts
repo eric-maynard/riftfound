@@ -18,6 +18,7 @@ vi.mock('../database.js', () => db);
 import {
   DEFAULT_LOOKBACK_DAYS,
   MAX_ATTEMPTS,
+  ROSTER_BUDGET_SHARE,
   ROSTER_LEAD_MS,
   RESULTS_RECHECK_AFTER_MS,
   RESULTS_SETTLE_MS,
@@ -30,6 +31,7 @@ import {
   normalizeRosterFromRegistrants,
   normalizeRosterFromResults,
   parseEventPage,
+  partitionDueEventFacts,
   runPlayriftboundResultsPass,
   selectDueEventFacts,
   tournamentIdFromExternalId,
@@ -579,6 +581,95 @@ describe('selectDueEventFacts', () => {
       candidate({ startOffsetMs: -(i + 2) * DAY, externalId: `prb-${i}` })
     );
     expect(selectDueEventFacts(many, { ...opts, max: 3 })).toHaveLength(3);
+  });
+
+  // The starvation that stalled the production backfill. Roster work still
+  // goes first, but it may no longer take the whole run: an event whose page
+  // has no registrants records nothing and stays roster-due every two hours
+  // for its whole 24h window, so roster work does not drain and, unbounded,
+  // left the results queue a third of the budget. See ROSTER_BUDGET_SHARE.
+  describe('the roster share of the budget', () => {
+    const rosters = (n: number) =>
+      Array.from({ length: n }, (_, i) =>
+        candidate({ startOffsetMs: (i + 1) * 60 * 1000, externalId: `prb-roster-${i}` })
+      );
+    const results = (n: number) =>
+      Array.from({ length: n }, (_, i) =>
+        candidate({ startOffsetMs: -(i + 2) * DAY, externalId: `prb-result-${i}` })
+      );
+
+    it('reserves the rest of the budget for results work', () => {
+      const work = selectDueEventFacts([...rosters(40), ...results(40)], { ...opts, max: 10 });
+      expect(work.filter(w => w.kind === 'roster')).toHaveLength(5);
+      expect(work.filter(w => w.kind === 'results')).toHaveLength(5);
+      expect(ROSTER_BUDGET_SHARE).toBe(0.5);
+    });
+
+    it('serves the soonest rosters, which is also where registrants exist', () => {
+      const work = selectDueEventFacts([...rosters(40), ...results(40)], { ...opts, max: 10 });
+      expect(work.filter(w => w.kind === 'roster').map(w => w.candidate.externalId)).toEqual([
+        'prb-roster-0',
+        'prb-roster-1',
+        'prb-roster-2',
+        'prb-roster-3',
+        'prb-roster-4',
+      ]);
+    });
+
+    it('still queues results oldest-first inside the share it gets', () => {
+      const work = selectDueEventFacts([...rosters(40), ...results(40)], { ...opts, max: 8 });
+      expect(work.filter(w => w.kind === 'results').map(w => w.candidate.externalId)).toEqual([
+        'prb-result-39',
+        'prb-result-38',
+        'prb-result-37',
+        'prb-result-36',
+      ]);
+    });
+
+    it('gives rosters the whole budget when no results are waiting', () => {
+      const work = selectDueEventFacts(rosters(40), { ...opts, max: 10 });
+      expect(work).toHaveLength(10);
+      expect(work.every(w => w.kind === 'roster')).toBe(true);
+    });
+
+    it('spends an unused roster share on results rather than idling', () => {
+      const work = selectDueEventFacts([...rosters(2), ...results(40)], { ...opts, max: 10 });
+      expect(work.filter(w => w.kind === 'roster')).toHaveLength(2);
+      expect(work.filter(w => w.kind === 'results')).toHaveLength(8);
+    });
+
+    it('spends an unused results share on the rosters it held back', () => {
+      const work = selectDueEventFacts([...rosters(40), ...results(2)], { ...opts, max: 10 });
+      expect(work.filter(w => w.kind === 'results')).toHaveLength(2);
+      expect(work.filter(w => w.kind === 'roster')).toHaveLength(8);
+    });
+
+    it('is tunable, and keeps the old behaviour at a share of 1', () => {
+      const all = [...rosters(40), ...results(40)];
+      expect(selectDueEventFacts(all, { ...opts, max: 10, rosterShare: 1 }).every(w => w.kind === 'roster')).toBe(true);
+      expect(selectDueEventFacts(all, { ...opts, max: 10, rosterShare: 0 }).filter(w => w.kind === 'results'))
+        .toHaveLength(10);
+    });
+  });
+});
+
+describe('partitionDueEventFacts', () => {
+  const opts = { now: NOW };
+
+  it('reports the whole queue, which the capped numbers cannot', () => {
+    const due = [
+      ...Array.from({ length: 30 }, (_, i) =>
+        candidate({ startOffsetMs: (i + 1) * 60 * 1000, externalId: `prb-roster-${i}` })
+      ),
+      ...Array.from({ length: 700 }, (_, i) =>
+        candidate({ startOffsetMs: -(i + 2) * DAY, externalId: `prb-result-${i}` })
+      ),
+    ];
+    const outstanding = partitionDueEventFacts(due, opts);
+    expect(outstanding.rosterDue).toHaveLength(30);
+    expect(outstanding.resultsDue).toHaveLength(700);
+    // The budget is what the run can afford; it says nothing about the backlog.
+    expect(selectDueEventFacts(due, { ...opts, max: 500 })).toHaveLength(500);
   });
 });
 
