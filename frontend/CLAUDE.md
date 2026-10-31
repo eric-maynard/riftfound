@@ -176,17 +176,22 @@ round trip.
   and a game between two of them would merge them - over 1,235 scenes, 369 of
   them on the global ladder and 15 in its top 25. There is no RC/RCQ tier in
   the data to link them: the whole corpus is Nexus Night, Pre-Rift and Other.
-  So every scene's level rests on the 1,200 prior and nothing else. Three
-  surfaces carry that, all of them in the page's existing idiom:
+  So every scene's level rests on the 1,200 prior and nothing else. **Two**
+  surfaces carry that, both in the page's existing idiom:
   - the `#` header is a dotted-underlined `abbr` whose title is
-    `GLOBAL_POSITION_HINT`, beside the thing it qualifies;
-  - the banner is one line (`GLOBAL_POSITION_NOTICE`), replacing
-    "No positions in Global — pick a scene", which now describes a page that
-    does not exist. No paragraph, same as every other notice here;
+    `GLOBAL_POSITION_HINT`, beside the thing it qualifies. This is now the only
+    place the caveat is written down, and a test says so;
   - the `Scene` column **stays**, beside the positions rather than instead of
     them, because seeing that #1 and #2 come from scenes that have never met
     *is* the caveat. Its cell hint is `sceneSizeHint` - the depth a place was
     earned among.
+
+  There was a third - a one-line `GLOBAL_POSITION_NOTICE` banner above the
+  ladder - and it is **gone**, constant and all. Global is the landing scope,
+  so it was a sentence every first-time reader met before they had seen a
+  single thing it qualified, saying what the `#` header's own hint says. The
+  banner element survives for the one case with no `#` column to hang a hint
+  on: a scene too small to order anyone.
 - **No cross-scene figure is published, and that was measured, not assumed.**
   Two candidates were rejected on the numbers. The engine's own
   `crossComponentUncertainty` widens the margin by a median of **1.2 rating
@@ -237,10 +242,26 @@ round trip.
   display state and the game counts first and let the reason string pick the
   wording only when it says something the numbers cannot - that the *margin*,
   not the volume, is what is holding the rating back.
-- The exposition is the footer's "How Rankings Work" hover note (`Layout.tsx`),
-  not a section on the page. Short hints carry the same facts where the
-  concepts appear: the scene picker's `?` and the dotted-underlined "Rating"
-  and "Margin" column headers.
+- **The exposition is one hover note in the site footer** ("How Rankings
+  Work", `Layout.tsx`), and there is no explanatory copy on any Rankings
+  surface. Every caveat is attached to the thing it qualifies: the scene
+  picker's `?`, the dotted-underlined "Rating", "Margin" and `#` column
+  headers, and `COVERAGE_FLOOR_HINT` on the coverage figure.
+  - **The rule, when deciding where a new caveat goes.** A standing paragraph
+    every reader reads every time is exposition and does not ship. A caveat
+    shown at the point of confusion does - short, and on the number or the row
+    it is about, not in a block above the content. A figure that carries its
+    own caveat needs no sentence: `1,249±101` already says the rating is
+    uncertain, and `46 Rated · 77 Still settling · 5 No rating yet` already
+    says what the three states are.
+  - What went, in the pass that wrote this down: the coverage block's "Counts
+    are a floor" line (now the figure reads `200 of 200+` with the reason as
+    its hint), the Global positions banner, the roster table's source line, the
+    scene panel's four paragraphs, and the trailing "it fills in as events are
+    played" sentence from four empty states.
+  - Anything moved into a `title` must stay reachable: `abbr.col-hint` is the
+    idiom, a focusable link's own `title` is better, and where neither works
+    `RatingMoveNote` is the disclosure pattern for touch and keyboard.
 - The scene picker (`SceneSelect`) is a **search field that opens a split
   pane**: a filterable list of every scene on one side, a map of them on the
   other, bound to each other. Scene names are places, so a reader who knows
@@ -496,15 +517,30 @@ arrived looks, and at the foot under 60 rows of list.
   local names it, and the engine publishes it as `SCENE#<sceneId>`.
 - **A scene has no ladder, and the page must not imply one.** The ladder's scope
   is `component:<id>`; there is no `scene:` scope, because
-  `crossComponentUncertainty` is only correct for a connected component. So the
-  detail panel prints `sceneLadderNote` - "a scene is not a ranking: this opens
-  the ladder for the pool these players are in, which covers other scenes too" -
-  above a link labelled **"Open the ladder for these players"**, where it used
-  to read "See this scene's ladder" and assert something that does not exist.
+  `crossComponentUncertainty` is only correct for a connected component. The
+  link is labelled **"Open the ladder for these players"** - not "See this
+  scene's ladder", which asserted something that does not exist - and
+  `sceneLadderNote` ("a scene is not a ranking: this opens the ladder for the
+  pool these players are in, which covers other scenes too", with the pool's
+  size) is that link's **hover hint**. It used to be a paragraph above the
+  button, which every reader read whether they were going to click or not.
   `sceneComparableHint` quotes the **pool's** size against the gate, not the
   scene's; it used to say "a position needs a scene of at least 8 players, and
   this one has 3", which measured the scene against a threshold the scene is not
-  measured by. A scene with `componentId: null` gets the note and no link.
+  measured by. A scene with `componentId: null` has no link to hang the note on,
+  so there it is still a line.
+- **The detail panel is figures, not prose.** It carried four stacked
+  paragraphs - the pin's basis, the pool-size caveat, the purity line and the
+  ladder note - and three of them are now attached to the thing they qualify:
+  `scenePlaceHint` is the hint on the **Venues** figure it was computed from
+  and only stands as a line when there is **no pin** (the one case nothing else
+  on the page can say); `scenePurityHint` became the **In-scene play** figure
+  (`scenePurityLabel`, e.g. `96%`) with the meaning as its hint, because
+  "almost every scene is 100%" turned out to be false of the big ones -
+  Singapore 96%, Toronto 99% - so that line was under most scenes anybody
+  opens; `sceneLadderNote` moved onto the link above. The pool-size caveat
+  stays a line: it is conditional, rare, and there is no number in the panel
+  that is *about* it.
 - **Some stores are in no scene at all**, and the coverage line is the only
   place that can say so: a store that failed the engine's intra-scene
   play-share gate is absent from a catalogue of scenes by construction, so there
@@ -995,9 +1031,13 @@ arrived looks, and at the foot under 60 rows of list.
   scroll inside their panel and never drag the page sideways; everything else
   restacks. Verified at 390px: 16px gutters, no page-level horizontal scroll.
 - **Empty states are one line.** No explanation of our plumbing, no corpus
-  statistics; the reason, where there is one, is the hover hint on the line
-  (`trimmedReason`, `NOT_FINAL_REASON`). The one qualifier kept is that a roster
-  shown without recorded games counts towards nothing.
+  statistics, and no "it appears here once..." tail; the reason, where there is
+  one, is the hover hint on the line (`trimmedReason`, `NOT_FINAL_REASON`). The
+  one qualifier kept is that a roster shown without recorded games counts
+  towards nothing - `rosterNote` returns **null** in every other case, and the
+  source line it used to print ("Sign-ups recorded before the event") is gone,
+  because the heading over the table (`Who is signed up` / `Who played`) and
+  the header's capture row already said it.
 - Pure logic lives in `lib/tournament.ts` and is tested without a DOM - the
   five contract warnings above each have a test.
 

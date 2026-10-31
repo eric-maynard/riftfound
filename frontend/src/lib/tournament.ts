@@ -64,7 +64,8 @@ import { ratingDisplay, sceneTooSmallExplanation, UNRANKED_LABEL } from './ranki
  * right grain. What the word says is where this event's mean sits **among
  * other events' means** - a true statement about an observed number - and
  * `FIELD_BAND_HINT` carries the caveat that the spread between events is
- * within sampling noise. Printing it with its caveat rather than withholding
+ * within sampling noise - in words, not with the SDs, which are above here
+ * for whoever maintains this and were furniture in a tooltip. Printing it with its caveat rather than withholding
  * it is the same call the ladder already made for Global positions.
  *
  * ## The bands are measured, not chosen
@@ -101,10 +102,9 @@ export const FIELD_BAND_LABELS = ['Low', 'Medium', 'High', 'Very high'] as const
 export const FIELD_BAND_WIDTH = FIELD_BAND_EDGES[1] - FIELD_BAND_EDGES[0];
 
 export const FIELD_BAND_HINT =
-  "Where this event's mean rating sits among all events we have a field for - the bands are the " +
-  'quartiles of 11,946 of them. It is not a claim that this event is harder: measured over the same ' +
-  'corpus, event means vary no more than drawing a few players at random from one pool would make ' +
-  'them (within-event SD 84, between-event SD 0).';
+  "Where this event's mean rating sits among all events we have a field for, by quartile. It is " +
+  'not a claim that this event is harder: measured over the same corpus, event means vary no more ' +
+  'than drawing a few players at random from one pool would make them.';
 
 /**
  * How many rated players a band needs: enough that one player's own margin
@@ -235,26 +235,30 @@ export function fieldComposition(
   ];
 }
 
-/** The hover hint on each legend row, so each one says which state it is. */
+/**
+ * The threshold behind each legend row, as its hover hint.
+ *
+ * One clause each. The labels beside the counts - `Rated`, `Still settling`,
+ * `No rating yet` - already say what the three states *are*, so the hint only
+ * has to say where the lines between them fall.
+ */
 export function fieldSegmentHint(key: FieldSegment['key'], field: TournamentField): string {
   switch (key) {
     case 'rated':
       return (
-        `Settled: ${field.minGamesForRating} or more recorded games with a margin inside ` +
-        `+/-${field.maxUncertaintyForRating}, in a scene of at least ${field.minComponentSize}. ` +
-        `These hold a position on the ladder.`
+        `${field.minGamesForRating} or more recorded games, margin inside ` +
+        `+/-${field.maxUncertaintyForRating}, scene of at least ${field.minComponentSize}.`
       );
     case 'unsettled':
       return (
-        `A rating, shown with its margin, that is not a position yet - fewer than ` +
+        `A rating the table prints, but not a position - fewer than ` +
         `${field.minGamesForRating} recorded games, or a margin wider than ` +
-        `+/-${field.maxUncertaintyForRating}. The table prints their number.`
+        `+/-${field.maxUncertaintyForRating}.`
       );
     default:
       return (
-        `No rating to print: fewer than ${field.minGamesToPublishRating} recorded games, where the ` +
-        `estimate still echoes the starting average rather than describing the player. The table ` +
-        `reads ${UNRANKED_LABEL}.`
+        `Fewer than ${field.minGamesToPublishRating} recorded games, so no rating is published. ` +
+        `The table reads ${UNRANKED_LABEL}.`
       );
   }
 }
@@ -462,25 +466,23 @@ export function trimmedReason(results: TournamentResults): string {
 }
 
 /**
- * What this list is, in one line.
+ * The one qualifier a roster needs, or null when it needs none.
  *
- * A qualifier on the data shown, not exposition: where the names came from,
- * and - when no games were recorded - that none of it earned anybody
- * anything, because a table of ratings under a finished event otherwise
- * implies it did.
+ * **Where the names came from is no longer said here.** "Sign-ups recorded
+ * before the event" was a paragraph above every roster table restating the
+ * heading over it (`Who is signed up` / `Who played`), and the capture time is
+ * already in the header's provenance line - so it was a standing sentence that
+ * told a reader nothing the page had not told them twice.
+ *
+ * What is left is the caveat, and only when it applies: a table of ratings
+ * under a finished-looking event implies those ratings were earned there, and
+ * when no games were recorded they were not. The roster itself is no longer an
+ * argument, because nothing left in here reads it.
  */
-export function rosterNote(
-  roster: TournamentRoster,
-  results: TournamentResults | null
-): string {
-  const source =
-    roster.source === 'registrants'
-      ? 'Sign-ups recorded before the event'
-      : 'Recovered from the field that played';
+export function rosterNote(results: TournamentResults | null): string | null {
   const noGames = !results || results.status === 'none';
-  return noGames
-    ? `${source}; no games were recorded, so nothing here counts towards a rating.`
-    : `${source}.`;
+  if (!noGames) return null;
+  return 'No games were recorded here, so nothing in this table counts towards a rating.';
 }
 
 /**
@@ -681,16 +683,15 @@ export function sceneLine(scene: TournamentScene, minComponentSize: number): Sce
 
   const partial = scene.componentCount > 1;
   const basis =
-    'This store belongs to this scene - a group of nearby stores whose players play each other. ' +
+    'A group of nearby stores whose players play each other. ' +
     (scene.placedPlayers > 0
-      ? `The ladder it links to is the wider pool of ${
+      ? `The ladder is the wider pool of ${
           scene.componentSize === null
             ? 'players'
             : `${scene.componentSize.toLocaleString()} players`
-        } whose ratings are on one scale with the ${scene.matchPlayers.toLocaleString()} ` +
+        } on one scale with the ${scene.matchPlayers.toLocaleString()} ` +
         `${plural(scene.matchPlayers, 'player')} who played here.`
-      : 'The ladder has not placed anybody who played here yet, so there is no rating pool to ' +
-        'link to.');
+      : 'Nobody who played here is placed on a ladder yet, so there is no pool to link to.');
 
   // The size caveat, in the ladder's own words, and still about the component:
   // it is the component's size that decides whether an order is a placement.

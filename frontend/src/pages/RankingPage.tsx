@@ -21,7 +21,6 @@ import {
   formatUncertainty,
   gateProgress,
   GLOBAL_POSITION_HINT,
-  GLOBAL_POSITION_NOTICE,
   GLOBAL_SCENE_LABEL,
   hasPositions,
   marginBar,
@@ -57,9 +56,11 @@ import { carryPreview } from '../lib/preview';
  *    `GLOBAL_POSITION_HINT`). A row still gets no place when it has not
  *    cleared the gate, or when its own scene is too small to order anyone.
  *  - A rating that has not cleared the confidence gate is not printed at all;
- *    the player simply reads "Unranked". The reason is a tooltip, and the
- *    general explanation lives in "How rankings work" at the foot of the page -
- *    not in prose beside every row.
+ *    the player simply reads "Unranked". The reason is a tooltip on the word,
+ *    not prose beside every row, and this page carries no explainer section of
+ *    its own: the general rule is one opt-in note in the site footer
+ *    (`HOW_RANKINGS_WORK` in Layout.tsx). Every other caveat here sits on the
+ *    thing it qualifies or it does not ship.
  *
  * The density is borrowed from op.gg and lolchess: one summary block instead of
  * a row of equal-weight tiles, a filled meter instead of a bare count, and a
@@ -72,14 +73,24 @@ import { carryPreview } from '../lib/preview';
 /** Hover/focus copy for the concepts the page cannot avoid naming. */
 const HINTS = {
   scene:
-    'A scene is a group of stores close enough together that the players at them really play each other. Pick the one you play in. The board it opens is the wider pool those players are ranked in, which usually covers a few neighbouring scenes.',
+    'A group of stores close enough together that the players at them really play each other. The ladder it opens is the wider pool those players are ranked in, which usually covers a few neighbouring scenes.',
   pool:
-    'This board is a rating pool: every player whose recorded games chain together, which is the only group two ratings can be compared inside. A pool usually covers several scenes, so it is named after the pool rather than after the scene you picked.',
+    'A rating pool: every player whose recorded games chain together, which is the only group two ratings can be compared inside. It covers several scenes, so it is named after the pool rather than the scene you picked.',
   rating:
     'Worked out from games recorded at events. The ± is the margin of uncertainty around the number.',
   margin:
     'Each bar is one rating plus and minus its margin, drawn on one scale. Where two bars overlap, the order between those two players is not settled yet.',
 } as const;
+
+/**
+ * The caveat on an incomplete count, as the hint on the count itself.
+ *
+ * It used to be a standing line under the coverage block, read by every
+ * visitor whether or not the scope was capped. The `+` on the figure is the
+ * visible half; this is the reason, for a reader who wants it.
+ */
+const COVERAGE_FLOOR_HINT =
+  'A floor: this scope has more players than one page of coverage.';
 
 const PAGE_SIZE = 25;
 /**
@@ -309,22 +320,19 @@ function RankingPage() {
             scopeLabel={scopeLabel}
           />
 
-          {/* One line. Why lives in the hover hint, like every other
-              explanation on this page - the banner reports, it does not teach.
-              Two different facts, and the Global one is no longer "there are
-              no positions": there are, and the line says what they order. */}
-          {(scored.length > 0 || unscored.length > 0) && (mixesScenes || !laddered) && (
+          {/* Only when there is no `#` column to hang a hint on. On Global
+              there is one, and it carries `GLOBAL_POSITION_HINT` - so the
+              caveat sits on the number it qualifies instead of standing as a
+              line every reader reads before seeing anything it is about. */}
+          {(scored.length > 0 || unscored.length > 0) && !laddered && (
             <div
               className="notice-banner"
-              title={
-                mixesScenes
-                  ? GLOBAL_POSITION_HINT
-                  : `Positions need at least ${coverage?.minComponentSize ?? minSceneSize} players who have played each other.`
-              }
+              title={`Positions need at least ${coverage?.minComponentSize ?? minSceneSize} players who have played each other.`}
             >
-              {mixesScenes
-                ? GLOBAL_POSITION_NOTICE
-                : `Too few players for positions \u2014 ${selectedComponent?.componentSize ?? 'a few'} in this scene.`}
+              Too few players for positions
+              {selectedComponent?.componentSize != null
+                ? ` \u2014 ${selectedComponent.componentSize} in this scene.`
+                : '.'}
             </div>
           )}
 
@@ -523,7 +531,6 @@ function RankingPage() {
         </div>
       )}
 
-      {/* The exposition, at the foot: after the numbers, not before them. */}
     </div>
   );
 }
@@ -591,13 +598,27 @@ function SceneSummary({
       <div className="scene-coverage">
         <span className="stat-label">Rated</span>
         <p className="coverage-headline">
-          <strong>{coverage.ratedPlayers}</strong>
-          <span className="coverage-of"> of {seen} players seen</span>
+          {/* The floor caveat rides the figure it is about rather than
+              standing as a line under the block: more players here than one
+              page of coverage means both counts understate. */}
+          {coverage.coverageComplete ? (
+            <>
+              <strong>{coverage.ratedPlayers}</strong>
+              <span className="coverage-of"> of {seen} players seen</span>
+            </>
+          ) : (
+            <abbr className="col-hint" title={COVERAGE_FLOOR_HINT}>
+              <strong>{coverage.ratedPlayers}</strong>
+              <span className="coverage-of"> of {seen}+ players seen</span>
+            </abbr>
+          )}
         </p>
         <div
           className="coverage-track"
           role="img"
-          aria-label={`${coverage.ratedPlayers} of ${seen} players seen here have enough recorded games to be rated`}
+          aria-label={`${coverage.ratedPlayers} of ${seen} players seen here have enough recorded games to be rated.${
+            coverage.coverageComplete ? '' : ` ${COVERAGE_FLOOR_HINT}`
+          }`}
         >
           <span className="coverage-fill" style={{ width: `${ratedPercent}%` }} />
         </div>
@@ -620,11 +641,6 @@ function SceneSummary({
         </div>
       </dl>
 
-      {/* Provenance only. The gate thresholds moved to "How rankings work". */}
-      <p className="coverage-note">
-        {!coverage.coverageComplete &&
-          'Counts are a floor: this scope has more players than one page of coverage. '}
-      </p>
     </section>
   );
 }
@@ -641,12 +657,8 @@ function NobodyRatedYet({ hasPlayers }: { hasPlayers: boolean }) {
             listed below as <strong>Unranked</strong>.
           </p>
         ) : (
-          <p>No games have been recorded for this slice yet - there is simply nothing to rank.</p>
+          <p>No games have been recorded for this slice yet.</p>
         )}
-        <p className="muted">
-          Competitive Riftbound is days old, so a near-empty ranking is the honest picture for now.
-          It fills in as events are played.
-        </p>
         <p>
           {/* Even the way out carries the flag: the reader should be able to
               come back to an unlisted section they were just looking at. */}
