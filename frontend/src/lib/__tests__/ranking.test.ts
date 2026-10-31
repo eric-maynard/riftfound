@@ -446,9 +446,35 @@ describe('sceneCatalogueOptions', () => {
       row('s-sb', 'South Bay', 200, { componentId: 'c-bay' }),
       row('s-else', 'Mainz', 100, { componentId: 'c-mainz' }),
     ]);
-    expect(peninsula.meta).toBe('300 players · ladder shared with 1 other scene');
-    expect(southBay.meta).toBe('200 players · ladder shared with 1 other scene');
+    expect(peninsula.meta).toBe('300 players · shared ladder');
+    expect(southBay.meta).toBe('200 players · shared ladder');
     expect(elsewhere.meta).toBe('100 players');
+    // A scene whose pool is its own says nothing, and so has nothing to
+    // explain: an empty hint rather than a restatement of the line above it.
+    expect(elsewhere.metaHint).toBeNull();
+  });
+
+  it('states the shared ladder as a fact and keeps the figure in the hint', () => {
+    // The clause used to print the count inline, written when a pool covered
+    // two or three scenes. The live Bay Area pool covers 296, so every row read
+    // `ladder shared with 295 other scenes` - a number nobody can act on, and
+    // wide enough that it crushed the scene name beside it to zero pixels. The
+    // short form is the same claim; the figure is a hover away.
+    const pool = Array.from({ length: 296 }, (_, i) =>
+      row(`s-${i}`, `Scene ${i}`, 300 - i, { componentId: 'c-bay' })
+    );
+    const [, biggest] = sceneCatalogueOptions(pool);
+    expect(biggest.meta).toBe('300 players · shared ladder');
+    expect(biggest.meta).not.toContain('295');
+    expect(biggest.metaHint).toContain('295 other scenes');
+
+    // Singular, because one other scene is the common case and "1 other
+    // scenes" is the kind of thing a reader notices.
+    const [, pair] = sceneCatalogueOptions([
+      row('s-a', 'Peninsula', 30, { componentId: 'c-bay' }),
+      row('s-b', 'South Bay', 20, { componentId: 'c-bay' }),
+    ]);
+    expect(pair.metaHint).toContain('1 other scene,');
   });
 
   it('offers no board for a scene whose players are in no pool', () => {

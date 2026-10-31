@@ -300,10 +300,18 @@ round trip.
   `sceneOptionScope`. They are separate because a scene is not a rating scale:
   the ladder's scope is `component:<id>`, there is no `scene:` scope, and one
   pool covers several scenes, so two rows can lead to one board. The row's
-  `meta` says so before the click ("ladder shared with 3 other scenes"), and a
+  `meta` says so before the click (`shared ladder`), and a
   scene whose players are in no pool reads `no ladder yet` and yields a **null**
   scope - which puts the board back to Global rather than fetching
   `component:<a scene id>` and getting nothing.
+  - **The share clause states the fact, not the figure, and the figure is why.**
+    It read `ladder shared with N other scenes`, written when a pool covered two
+    or three scenes. On the live 1,453-scene catalogue the Bay Area's pool
+    (`c19644e617f`, 25,210 players) covers **296**, so nearly every row carried
+    `ladder shared with 295 other scenes` - 34 characters of a number nobody can
+    act on, repeated down the whole list. `sceneOptionMetaHint` keeps the count
+    as the line's hover hint, in the `no pin` flag's own
+    word-on-the-row/reason-in-a-title idiom.
   - `sceneOptionScope` distinguishes `undefined` from `null` on purpose. The
     fallback rows built from the ladder's `components` *are* pools, so their id
     is their scope and they carry no `scope` field; an explicit `null` means
@@ -323,6 +331,30 @@ round trip.
     a real API bug and is out of scope; the fix belongs in `listComponents()`.
   - `selectedLabel` is the field's caption before the catalogue arrives, so a
     scene from a shared `?region=` link does not leave it blank.
+- **A row is two lines: the name, then everything else.** It was one line, with
+  the name `flex: 1 1 auto` and the metadata `flex: none`, so the metadata took
+  its full intrinsic width first and the name got the remainder. On the live
+  catalogue the remainder was **nothing**: measured in Chromium at 1280px, the
+  meta line was 302px of a 320px list column and every real scene row's name had
+  a `clientWidth` of **0px**. The owner reported it as "the names are cut off
+  (e.g. N... 615 players, ladder shared...) when it should just be the name!" and
+  was being generous - there was no `N`.
+  - The fix is `flex-basis: 100%` on `.scene-option-label`, which says the thing
+    that was wrong: **the name claims the row's whole width first**, and the
+    metadata and the `no pin` flag bid for the next line. Nothing can shorten the
+    name, so the ellipsis bites the metadata instead - the correct order, since
+    the name is what someone is scanning for.
+  - The `no pin` flag moved onto the **metadata** line with it. A sibling of the
+    label was already right (an ellipsis inside the name must not eat the flag),
+    but while it shared the name's line it could still take ~45px off it, which
+    on a 35-character label is the difference between legible and truncated.
+  - Measured on the live 1,453-scene catalogue, at 1280px and at 390px: **0 of
+    the 150 drawn rows truncates its name** at either width. The longest label in
+    the corpus is `Bay Area — San Francisco & East Bay` at 263px natural text
+    against 281px (split column) and 301px (phone pane) of line - and it still
+    does not truncate with a `no pin` flag grafted on. Rows grew 35px → 51px,
+    which costs ~3 visible rows of a scrolling list and buys a touch target the
+    size the rest of this codebase insists on.
 - **150 rows are drawn at a time** (`LIST_CAP`), biggest scene first, with
   "N more, keep typing" in the footer - the same device as the map page's list.
   1,307 rows cost ~300ms to open and ~120ms a keystroke; 150 cost 150ms and
