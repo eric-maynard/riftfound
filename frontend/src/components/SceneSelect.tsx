@@ -9,6 +9,7 @@ import {
   sceneCatalogueOptions,
   sceneCountSummary,
   sceneMapPath,
+  sceneOptionScope,
   sceneOptions,
 } from '../lib/ranking';
 import { carryPreview } from '../lib/preview';
@@ -46,20 +47,38 @@ import { carryPreview } from '../lib/preview';
  * nothing is reachable only through it. The map carries `role="application"`
  * and a label saying so.
  *
+ * ## Two ids, and the whole point of this control
+ *
+ * **A row is a scene; the ladder it opens is a pool.** They are different
+ * things with different ids and the rows carry both: `option.id` is the engine's
+ * `sceneId` - what the map highlights, what `?scene=` records - and
+ * `option.scope` is the `componentId` the board is actually fetched with,
+ * because `crossComponentUncertainty` is only correct for a connected component
+ * and there is no `scene:` scope.
+ *
+ * This control used to list components under the word "scene", which is why
+ * `Peninsula` and `South Bay` - the names a reader was looking for - were not
+ * offered anywhere, and why the list read `Karlsruhe, Deutschland` and
+ * `Paris, France`. One pool covers several scenes, so two rows can lead to one
+ * board; the row's `meta` says so ("ladder shared with 3 other scenes") rather
+ * than letting a reader discover it after the click.
+ *
  * ## Where the rows come from, and why not from the ladder
  *
- * From `/api/rankings/map` - the engine's scene catalogue - and not from
- * `/api/rankings`' `components`, which is **41 scenes of 1,307**: whatever the
- * global board's first page happened to touch. The old picker could therefore
- * name 3% of the corpus. The catalogue is also the map's own source, which is
- * what makes the two halves agree about which scenes exist and what they are
- * called (the two sources name 16 of those 41 differently; see
- * `sceneCatalogueOptions`).
+ * From `/api/rankings/map` - the engine's scene directory - and not from
+ * `/api/rankings`' `components`, which is **41 pools of 1,307 components**:
+ * whatever the global board's first page happened to touch, and components
+ * rather than scenes besides. The directory is also the map's own source, which
+ * is what makes the two halves agree about which scenes exist and what they are
+ * called.
  *
- * `components` is still used, as the **rows shown while the catalogue is in
+ * `components` is still used, as the **rows shown while the directory is in
  * flight**: a list that works immediately beats a correct list that appears a
- * moment later, and the footer says what is happening. The swap only ever adds
- * rows.
+ * moment later, and the footer says what is happening. Those fallback rows are
+ * pools, so their `id` *is* their scope and they carry no `scope` field at all -
+ * `sceneOptionScope` resolves that, and the distinction matters: an explicit
+ * `null` scope means "this scene has no board", which is not the same as "the
+ * id is the scope".
  *
  * ## What stays out of the bundle
  *
@@ -137,8 +156,22 @@ function loadCatalogue(): Promise<SceneCatalogue> {
 
 interface SceneSelectProps {
   components: ComponentSummary[];
+  /**
+   * The row to mark as chosen: a `sceneId` once the directory has loaded, or a
+   * `componentId` from a bare `?region=` link, which is what the fallback rows
+   * are keyed on. Either way it is an **id**, never a scope.
+   */
   value: string | null;
-  onChange: (componentId: string | null) => void;
+  /**
+   * Both halves of the choice, because they are two facts.
+   *
+   * `sceneId` is where the reader plays and goes in `?scene=`; `scope` is the
+   * `componentId` the ladder is fetched with and goes in `?region=`. A scene
+   * with no pool yields a non-null `sceneId` and a null `scope` - the reader
+   * picked a real place whose players are not on a board yet, and the page has
+   * to be able to say that rather than silently fetch Global.
+   */
+  onChange: (sceneId: string | null, scope: string | null) => void;
   /** Hover/focus text for the label - the picker explains itself here. */
   hint?: string;
   /**
@@ -184,11 +217,11 @@ function SceneSelect({ components, value, onChange, hint, selectedLabel }: Scene
     if (!catalogue) return [];
     if (query.trim() === '') return catalogue.located;
     const wanted = new Set(matches.map((option) => option.id));
-    return catalogue.located.filter((scene) => wanted.has(scene.componentId));
+    return catalogue.located.filter((scene) => wanted.has(scene.sceneId));
   }, [catalogue, matches, query]);
 
   const selectedScene = useMemo(
-    () => (catalogue && value ? catalogue.all.find((scene) => scene.componentId === value) ?? null : null),
+    () => (catalogue && value ? catalogue.all.find((scene) => scene.sceneId === value) ?? null : null),
     [catalogue, value]
   );
 
@@ -200,6 +233,12 @@ function SceneSelect({ components, value, onChange, hint, selectedLabel }: Scene
   const highlighted = hovered ?? activeOption?.id ?? null;
 
   /** The selected row's own "why there is no pin", or null. Contextual copy. */
+  // The map link only carries a selection it knows is a **scene** id. Before
+  // the directory lands, `value` may be a `componentId` off a shared
+  // `?region=` link, and `?scene=<a component id>` is the exact bug this whole
+  // change fixes - it would open the map and select nothing.
+  const mapLink = selectedScene === null ? '/rankings/map' : sceneMapPath(selectedScene.sceneId);
+
   const selectedPinHint = selected?.pinHint ?? null;
 
   // Fetch once, when the pane is first opened. Not on mount: a reader who
@@ -290,7 +329,7 @@ function SceneSelect({ components, value, onChange, hint, selectedLabel }: Scene
   function chooseIndex(index: number) {
     const option = visible[index];
     if (!option) return;
-    onChange(option.id);
+    onChange(option.id, sceneOptionScope(option));
     closeAndFocus();
   }
 
@@ -305,12 +344,15 @@ function SceneSelect({ components, value, onChange, hint, selectedLabel }: Scene
    * can see.
    */
   const selectFromMap = useCallback(
-    (componentId: string | null) => {
-      if (componentId === null) return;
-      onChange(componentId);
+    (sceneId: string | null) => {
+      if (sceneId === null) return;
+      // A pin carries a scene id; its scope has to be looked up on the
+      // directory the pin came from, because a pin is not a scope.
+      const scene = catalogue?.all.find((entry) => entry.sceneId === sceneId) ?? null;
+      onChange(sceneId, scene?.componentId ?? null);
       closeAndFocus();
     },
-    [onChange, closeAndFocus]
+    [catalogue, onChange, closeAndFocus]
   );
 
   function handleKeyDown(event: React.KeyboardEvent<HTMLInputElement>) {
@@ -490,7 +532,7 @@ function SceneSelect({ components, value, onChange, hint, selectedLabel }: Scene
                   full page, carrying the selection and the preview flag. */}
               <Link
                 className="scene-pane-expand"
-                to={carryPreview(value === null ? '/rankings/map' : sceneMapPath(value), search)}
+                to={carryPreview(mapLink, search)}
                 title="Open the full scene map"
               >
                 <span aria-hidden="true">&#10530;</span>
@@ -518,7 +560,7 @@ function SceneSelect({ components, value, onChange, hint, selectedLabel }: Scene
             {!splitFits && (
               <Link
                 className="scene-pane-foot-link"
-                to={carryPreview(value === null ? '/rankings/map' : sceneMapPath(value), search)}
+                to={carryPreview(mapLink, search)}
               >
                 See these on the map &rarr;
               </Link>

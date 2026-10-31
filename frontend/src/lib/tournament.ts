@@ -548,8 +548,8 @@ export type SceneLine =
   | {
       kind: 'scene';
       /**
-       * The **component** to link the ladder and the map at, or null when the
-       * engine has placed nobody who played here.
+       * The **component** to link the *ladder* at, or null when the engine has
+       * placed nobody who played here.
        *
        * Deliberately not the scene id, and the distinction is the whole point
        * of this type. The name above is the scene's; this is the rating pool
@@ -559,6 +559,18 @@ export type SceneLine =
        * than letting the link imply the two are one thing.
        */
       componentId: string | null;
+      /**
+       * The **scene** to link the *map* at. Never null in this branch.
+       *
+       * Carried separately because the two links go to two different places
+       * keyed on two different ids, and sending the component id to the map was
+       * a real, reported bug: `/rankings/map` listed components, so the `Map`
+       * link next to `Peninsula` selected a component on a map that had no
+       * scenes on it, and a reader who built `?scene=s94af82a16f` by hand got
+       * the unfiltered world view. The map is keyed on scenes now, so this is
+       * the id it needs.
+       */
+      sceneId: string;
       /** The scene's name, or `Scene <id>` when the engine has no label. */
       name: string;
       /** `62 players · 8 rated · 4 stores` - the scene's size, not this event's. */
@@ -589,13 +601,18 @@ export type SceneLine =
  * stores in California. A shop in Redwood City read "Scene: New York, New
  * York" on its own page. This is the fix for that.
  *
- * ## The link still goes to the component, and the hint says so
+ * ## Two links, two ids, and the hint says why
  *
- * A ladder is scoped to a `componentId`, because a component is what makes two
- * ratings comparable - a scene does not define a rating scale, so there is no
- * scene-scoped ladder to link at. The name is therefore the scene's and the
- * link is the rating pool's, which is two facts rather than one, so the hint
- * states both instead of letting the link imply they are the same thing.
+ * The **ladder** is scoped to a `componentId`, because a component is what makes
+ * two ratings comparable - a scene does not define a rating scale, so there is
+ * no scene-scoped ladder to link at. The name is therefore the scene's and the
+ * ladder link is the rating pool's, which is two facts rather than one, so the
+ * hint states both instead of letting the link imply they are the same thing.
+ *
+ * The **map** link is keyed on the `sceneId`, which it was not: the map used to
+ * draw components, so this line sent it a component id and the reader got a map
+ * with nothing selected. Both ids therefore travel on the line, and neither
+ * stands in for the other.
  * `partial` keeps its old meaning: the placed players do not all share one
  * component, which happens when an event's pairings did not connect everyone,
  * or when the engine has not replayed this event yet.
@@ -693,6 +710,7 @@ export function sceneLine(scene: TournamentScene, minComponentSize: number): Sce
   return {
     kind: 'scene',
     componentId: scene.componentId,
+    sceneId: scene.sceneId,
     name,
     summary: parts.join(' · '),
     hint: [basis + split, tooSmall].filter((part): part is string => part !== null).join(' '),

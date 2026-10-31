@@ -513,15 +513,32 @@ export interface VenueProfile {
 }
 
 /**
- * One scene, as its own item, so a scene selector is one Query.
+ * One scene, as its own item, so a scene selector and a map of scenes are one
+ * Query each.
  *
- * A scene is a Louvain community of the co-play graph, **persisted** between
- * deliberate re-clusterings rather than recomputed every refit - see
- * ranking/scenes.ts for why that is the only shippable form. The counts here
- * are recomputed on every refit from the stored assignment; the membership is
- * not.
+ * A scene is a cluster of **stores** - a Louvain community of the co-play graph
+ * under `--method louvain`, or a 30km-diameter complete-linkage cluster of
+ * venue coordinates under `--method geo` - **persisted** between deliberate
+ * re-clusterings rather than recomputed every refit. See ranking/scenes.ts for
+ * why that is the only shippable form. The counts here are recomputed on every
+ * refit from the stored assignment; the membership is not.
+ *
+ * **It carries the scene's place**, via `ScenePlace`, for exactly the reason
+ * `ComponentProfile` does: the coordinates live on the match facts keyed by
+ * *player*, there is no index from a scene to its matches, and the only place
+ * the two are in the same hand is the replay that produced this item.
+ * `scenePlace` takes venue tallies and knows nothing about which partition
+ * produced them, so the derivation is shared verbatim.
+ *
+ * The geometry is kinder here than on a component. A component is a
+ * reachability closure and can span a continent, which is why the API needs
+ * `SCENE_CENTROID_MAX_KM` to withhold a pin in the Gulf of Thailand. A scene
+ * is diameter-capped (30km by default), and a weighted mean of points that are
+ * all within 30km of each other is within 30km of every one of them - so a
+ * scene's centroid cannot be far from its own nearest venue by construction.
+ * The gate stays in the API anyway, because the cap is a knob.
  */
-export interface SceneProfile {
+export interface SceneProfile extends ScenePlace {
   sceneId: string;
   /** Modal city label of its venues, or null when none is geocoded yet. */
   label: string | null;
@@ -534,6 +551,33 @@ export interface SceneProfile {
   medianPurity: number;
   /** When the assignment that defines this scene was made. Not the refit time. */
   assignedAt: string;
+
+  /**
+   * The rating pool this scene's players are on, and how many pools they are
+   * spread over.
+   *
+   * **A scene is not a rating scale and this is how that is said.** A ladder is
+   * scoped `component:<id>` because `crossComponentUncertainty` is only correct
+   * for a connected component; a scene is additive and has no scope of its own.
+   * So a reader who has found their scene on the map needs to be pointed at the
+   * board their ratings actually live on, which is the component holding the
+   * largest share of the scene's home players - the same pairing the event page
+   * already publishes ("this event was held in the Peninsula scene" beside
+   * "these players' ratings are on one scale with these others'").
+   *
+   * `componentId` is the modal component, `componentSize` its player count (so
+   * a reader can be told whether that board can be ordered at all), and
+   * `componentCount` the number of distinct components - over 1 means this
+   * scene's players are not all on one scale, which is a fact about the pools
+   * and not about the scene.
+   *
+   * Null / 0 for a scene none of whose home players was replayed: the scene is
+   * still a fact about its stores, and nothing is invented to fill the gap.
+   */
+  componentId: string | null;
+  componentSize: number | null;
+  componentCount: number;
+
   generatedAt: string;
 }
 

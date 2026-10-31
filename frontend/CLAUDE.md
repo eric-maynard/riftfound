@@ -133,7 +133,20 @@ shared calendar URL and the Rankings set/scene selection both survive the
 round trip.
 
 ### Rankings
-- **Opens on `Global`** - the scope that mixes every scene - and the reader
+- **Two URL parameters, because they are two facts.** `?region=` is the ladder
+  **scope** - a `componentId`, the only thing a rating scale can be - and
+  `?scene=` is the **place** the reader picked, which is what the picker's field
+  shows and what the map highlights. The scope is read from `region` alone, so
+  every `?region=` link handed out before `?scene=` existed is the same page it
+  always was; dropping `?scene=` changes nothing about the board. They are
+  written in one `setSearchParams` call, because two `updateParam` calls would
+  each patch the same stale `searchParams` and the second would drop the first.
+- **The heading names the pool and the picker names the scene, and they differ.**
+  That is not a bug to rename away - a pool covers several scenes, so "Peninsula"
+  in the field beside "New York, New York" in the heading is two true statements
+  - so the heading's pool name is a dotted-underlined `abbr` carrying
+  `HINTS.pool`, beside the name that differs, in the page's existing idiom.
+- **Opens on `Global`** - the scope that mixes every pool - and the reader
   picks a scene when they want positions. It used to auto-select the biggest
   comparable component by rewriting the URL; it does not any more, so a bare
   `/rankings` link is the same page for everyone. `pickDefaultComponent` is
@@ -257,11 +270,28 @@ round trip.
     which half of one answer they wanted before seeing either. Before that, a
     `Ladder | Scene map` tab pair, which claimed the map was a second view of
     the ladder. Neither exists now.
-- **The rows come from the scene catalogue, not from the ladder.**
+- **The rows are scenes now, and that is the point of the control.** They were
+  connected components under the word "scene", so the list read
+  `Karlsruhe, Deutschland` and `Paris, France` and a reader could not pick
+  `Peninsula` or `South Bay` anywhere. A row carries **two ids**: `option.id` is
+  the engine's `sceneId` - what the map highlights and what `?scene=` records -
+  and `option.scope` is the `componentId` the board is fetched with, resolved by
+  `sceneOptionScope`. They are separate because a scene is not a rating scale:
+  the ladder's scope is `component:<id>`, there is no `scene:` scope, and one
+  pool covers several scenes, so two rows can lead to one board. The row's
+  `meta` says so before the click ("ladder shared with 3 other scenes"), and a
+  scene whose players are in no pool reads `no ladder yet` and yields a **null**
+  scope - which puts the board back to Global rather than fetching
+  `component:<a scene id>` and getting nothing.
+  - `sceneOptionScope` distinguishes `undefined` from `null` on purpose. The
+    fallback rows built from the ladder's `components` *are* pools, so their id
+    is their scope and they carry no `scope` field; an explicit `null` means
+    "there is no board". A `scope ?? id` would get that exactly backwards.
+- **The rows come from the scene directory, not from the ladder.**
   `sceneCatalogueOptions` builds them from `/api/rankings/map`, because
-  `/api/rankings`' `components` is **41 scenes of 1,307** - whatever the global
-  board's first page happened to touch - so the old picker could name 3% of the
-  corpus. It is also the map's own source, which is what makes the two halves
+  `/api/rankings`' `components` is **41 of 1,307** - whatever the global
+  board's first page happened to touch, and components rather than scenes
+  besides - so the old picker could name 3% of the corpus. It is also the map's own source, which is what makes the two halves
   agree about which scenes exist *and* what they are called: the two sources
   name **16 of those 41 differently** (one is `Simi Valley, CA` on the ladder
   and `New York, New York` in the catalogue). One source inside the control.
@@ -450,36 +480,59 @@ round trip.
 
 ### The scene map (`/rankings/map`)
 
-Where the competitive scenes are, and the way into each one's ladder. Reached
-from the **expand control on the map half of the scene picker's pane** - the
-page is that map at full size, with the same selection carried in `?scene=`
-(and on a phone, where the pane has no map half, from the link in its footer). Because it
-is a drill-down rather than a tab, it carries "Back to the ladder" twice: above
-the heading, where a reader who has just arrived looks, and at the foot under
-60 rows of list.
+Where the competitive scenes are, and the way into the ladder each one's players
+are ranked on. Reached from the **expand control on the map half of the scene
+picker's pane** - the page is that map at full size, with the same selection
+carried in `?scene=` (and on a phone, where the pane has no map half, from the
+link in its footer). Because it is a drill-down rather than a tab, it carries
+"Back to the ladder" twice: above the heading, where a reader who has just
+arrived looks, and at the foot under 60 rows of list.
 
-- **A pin is derived, never inferred.** A scene is a connected component of the
-  co-play graph and has no coordinates of its own; its pin is the
-  match-weighted centroid of the venues *its own games* were played at,
-  computed by the rating engine during its replay. Nothing in the frontend
-  geocodes anything, and nothing positions a scene from its name.
+- **A row is a scene, keyed on `sceneId`.** It was a connected component, which
+  is why the list read `Karlsruhe, Deutschland` and `Paris, France`, why
+  `Peninsula` was not selectable, and why `?scene=s94af82a16f` showed the
+  unfiltered world - the ids under the parameter came from another partition.
+  A scene is a cluster of **stores** within 30km of each other, named the way a
+  local names it, and the engine publishes it as `SCENE#<sceneId>`.
+- **A scene has no ladder, and the page must not imply one.** The ladder's scope
+  is `component:<id>`; there is no `scene:` scope, because
+  `crossComponentUncertainty` is only correct for a connected component. So the
+  detail panel prints `sceneLadderNote` - "a scene is not a ranking: this opens
+  the ladder for the pool these players are in, which covers other scenes too" -
+  above a link labelled **"Open the ladder for these players"**, where it used
+  to read "See this scene's ladder" and assert something that does not exist.
+  `sceneComparableHint` quotes the **pool's** size against the gate, not the
+  scene's; it used to say "a position needs a scene of at least 8 players, and
+  this one has 3", which measured the scene against a threshold the scene is not
+  measured by. A scene with `componentId: null` gets the note and no link.
+- **Some stores are in no scene at all**, and the coverage line is the only
+  place that can say so: a store that failed the engine's intra-scene
+  play-share gate is absent from a catalogue of scenes by construction, so there
+  is no row to render. 38 on the live assignment. `sceneCoverageSentence` counts
+  them, and says nothing at all when the API sends null (an older engine) rather
+  than implying every store is placed.
+- **A pin is derived, never inferred.** A scene has no coordinates of its own;
+  its pin is the match-weighted centroid of the venues *its own games* were
+  played at, computed by the rating engine during its replay. Nothing in the
+  frontend geocodes anything, and nothing positions a scene from its name.
 - **A scene with no geocoded venue has no pin.** It is listed under the map
   instead, flagged `not on the map` in words, and the coverage line leads the
   page with how many of the scenes are drawn. A map showing 40 of 1,235 scenes
   is otherwise silently wrong about the world. The API sends the two
   populations as separate lists, so this is not a null check the page can
   forget.
-- **A scene too spread out to have a centre has no pin either**, and this is
-  the larger case. The API withholds a centroid that sits more than 100km from
-  the scene's own nearest venue - measured, 20 of 1,302 production scenes, and
-  they hold **40% of all recorded players**, including the two biggest, whose
-  centres fall 360km into the Gulf of Thailand and 2,080km into the Pacific.
-  Those arrive `dispersed: true` and are flagged `spans several regions` rather
-  than `not on the map`, because the two are different facts: one is a gap in
-  our geocoding, the other is a true statement about the scene. Selecting one
-  draws its **venues** - the only honest picture of where it plays - and the
-  coverage line names the count, since otherwise a reader sees "1,282 of 1,302
-  scenes, 60% of players" and has no way to find the other 40%.
+- **`dispersed` is still handled and should never fire.** The API withholds a
+  centroid sitting more than 100km from the scene's own nearest venue, which
+  used to take 20 of 1,302 *components* off the map - they held 40% of recorded
+  players, and the two biggest centred 360km into the Gulf of Thailand and
+  2,080km into the Pacific. A scene is capped at 30km across, so its centroid is
+  within 30km of its own stores by construction; measured on the 2026-10-31
+  production proposal the largest scene extent in the corpus is 29.9km and
+  nothing is dispersed. The branch stays because `--max-diameter` is a knob and
+  `--method louvain` has no bound: such a scene arrives `dispersed: true`,
+  flagged `spans several regions` rather than `not on the map` - one is a gap in
+  our geocoding, the other a true statement about the scene - and selecting it
+  draws its **venues**, the only honest picture of where it plays.
 - **Two radii, two quantities, and they are never swapped.** Each scene is
   drawn twice: a **ground disc** whose radius is the scene's real `spreadKm`,
   which scales with zoom because it is a distance and is absent entirely for a
@@ -495,13 +548,26 @@ the heading, where a reader who has just arrived looks, and at the foot under
   focusable 44px button in the list, the selected row carries the same cyan the
   selected dot does, and both flags (`not on the map`, `too small to order`)
   are words rather than colour - the same rule the result pips follow.
-- **The selection is in the URL** (`?scene=<componentId>`), so a view of one
-  scene is shareable, and written with `replace` so panning does not fill the
-  back button with a history entry per dot. The parameter name lives in
+- **The selection is in the URL** (`?scene=<sceneId>`), so a view of one scene
+  is shareable, and written with `replace` so panning does not fill the back
+  button with a history entry per dot. The parameter name was always `scene`;
+  what changed is that the ids under it are now scene ids, so a link the event
+  page builds - and one an owner types by hand - resolves. The parameter name lives in
   `lib/ranking.ts` (`SCENE_MAP_PARAM`, with `sceneMapPath`) because this page
   is no longer its only writer - an event page links in with its own scene
   already selected, and two spellings of `scene` would be a link that selects
   nothing. Why `lib/ranking.ts` and not here: see the bundling note below.
+- **Measured after the move to scenes**, because the rule is that nothing from
+  the lazy map chunk may reach the eager one: main bundle **155.93KB gzipped
+  before, 156.29KB after** (+0.36KB - the picker's second id, `sceneOptionScope`
+  and `sceneOptionMeta`, all of which live in the already-eager
+  `lib/ranking.ts`), map chunk 47.63 → 48.07KB (+0.44KB - `sceneLadderNote`,
+  `scenePurityHint` and their copy, in the lazy `lib/sceneMap.ts`). Verified on
+  the built output: the eager chunk contains no `leaflet`, no basemap geometry
+  and none of `lib/sceneMap.ts`'s copy or geometry. Verified at 390px in a real
+  browser: no page-level horizontal scroll on the map page with a scene
+  selected, on the map page with nothing selected, or on the ladder with the
+  picker open - and the picker's pane still requests no Leaflet at that width.
 - **Why Leaflet.** 42KB gzipped, no token, no WebGL, against Mapbox GL JS's
   ~800KB and a client-side token the frontend does not carry (the Mapbox token
   is server-side, behind `/api/events/geocode`, and should stay there). The
@@ -686,6 +752,14 @@ the heading, where a reader who has just arrived looks, and at the foot under
   `scenePath`) plus a `Map` link into `/rankings/map` with that scene already
   selected (`sceneMapPath`, which shares `ScenesPage`'s own `scene` parameter
   so one spelling cannot drift from the other).
+  - **The two links carry two different ids**, and sending the wrong one was a
+    reported bug. The ladder link is the **pool's** `componentId`; the map link
+    is the scene's `sceneId`. It used to be the component's, because the map
+    drew components - so the `Map` control beside `Peninsula` opened a map and
+    selected nothing, and a hand-built `?scene=<sceneId>` found nothing either.
+    `SceneLine` carries both and neither stands in for the other. The map link
+    is no longer withheld when there is no rating pool, because the scene is a
+    fact about the store whether or not anybody who played here is placed.
   - **It is the venue's scene, which is a lookup rather than a guess.** The
     engine groups stores that are close enough together for their players to
     really play each other and assigns one scene to each store; this event was

@@ -2,7 +2,12 @@ import { env } from '../config/env.js';
 import { useDynamoDB } from '../config/database.js';
 import { dynamoRankingStore } from '../adapters/rankingDynamoAdapter.js';
 import { fixtureRankingStore } from '../adapters/rankingFixtureAdapter.js';
-import type { PlayerRecord, RankingStore, SetRatingRecord } from '../adapters/rankingStore.js';
+import type {
+  PlayerRecord,
+  RankingStore,
+  SceneCoverageCounts,
+  SetRatingRecord,
+} from '../adapters/rankingStore.js';
 import {
   resolveVerdict,
   earnsPosition,
@@ -288,7 +293,6 @@ export async function getRankings(scope: Scope, limit: number, cursor?: string):
     pagination: { limit, cursor: page.cursor, hasMore: page.cursor !== null },
   };
 }
-
 // ---------------------------------------------------------------------------
 // The scene map
 // ---------------------------------------------------------------------------
@@ -296,24 +300,46 @@ export async function getRankings(scope: Scope, limit: number, cursor?: string):
 /**
  * Every scene, with a place where one could be derived.
  *
- * **One Query.** The engine's `COMPONENT#<id>` items carry GSI1 keys so the
- * whole catalogue reads as a single Query against one partition - 1,235 items
- * on production, no scan, no profile fetches, no leaderboard pages. That is
- * the entire cost of this endpoint, and it is why the place is published *on*
- * the catalogue item rather than assembled here: the alternative join is
- * unaffordable. Coordinates live on the per-player match items
- * (`PLAYER#<uuid>` / `MATCH#…`, which denormalise `shopId` and lat/lon), and
- * there is no index from a component to its matches - so locating 1,235 scenes
- * at request time would mean reading every match item of every player, which
- * is a table walk over ~110k event rows' worth of derived data on an
- * on-demand table. The engine already has every coordinate in hand during its
- * replay; it does the arithmetic once a day and writes the answer.
+ * **It reads `SCENE#`, not `COMPONENT#`, and that is the whole point of this
+ * endpoint.** It used to serve the component catalogue, and a component is a
+ * reachability closure of the co-play graph: one travelling player welds two
+ * cities into one permanently and no amount of coverage separates them again.
+ * The measured consequence was a map whose list read `Karlsruhe, Deutschland`
+ * and `Paris, France` while `Peninsula`, `South Bay` and the rest of the names
+ * a reader was actually looking for were not selectable anywhere on it - and a
+ * `?scene=<sceneId>` link, the kind the event page hands out, resolved to
+ * nothing because the ids were from a different partition. A scene is a cluster
+ * of **stores**, capped at 30km across, named the way a local names it.
+ *
+ * **One Query.** The engine's `SCENE#<sceneId>` items carry GSI1 keys so the
+ * whole directory reads as a single Query against one partition - 1,123 scenes
+ * on the live assignment, the same order as the 1,235 components this replaced
+ * and therefore the same cost. Plus **one GetItem** on the scope directory, for
+ * the figure a list of scenes structurally cannot carry: how much is in no
+ * scene at all. Still no scan, no profile fetches and no leaderboard pages.
+ *
+ * The place is read, never derived here, for the same reason as before: a
+ * scene's coordinates live on the per-player `MATCH#` items and there is no
+ * index from a scene to its matches, so locating them at request time would be
+ * a walk of the derived data. The engine does it during its replay with
+ * `scenePlace`, which takes venue tallies and knows nothing about which
+ * partition produced them - so the derivation moved from components to scenes
+ * without a line of arithmetic changing.
+ *
+ * **A scene is not a rating scale, and this endpoint says so in its field
+ * names.** `componentId` keeps its meaning permanently: it answers "are these
+ * two ratings on one scale", `crossComponentUncertainty` is only correct for a
+ * connected component, and the ladder's scope syntax is still `component:<id>`
+ * with no `scene:` scope. So a scene entry carries the **pool** its home
+ * players sit on as `componentId` / `componentSize` / `componentCount`, and
+ * `comparable` is a statement about that pool's board rather than about the
+ * scene. A caller must present them as two facts, never as one.
  *
  * **Nothing is placed at a guessed point.** A scene is located only if its own
  * venues carried coordinates, and the two fallbacks that would fill the map in
  * are both refused:
  *
- * - *the region label's city.* `regionLabel` is a modal city name, so
+ * - *the scene's label's city.* The label is a modal city name, so
  *   forward-geocoding it would put the scene at a city centre and present that
  *   with the same authority as a venue-weighted centroid - a different and
  *   weaker precision claim wearing the same clothes. It would also be a Mapbox
@@ -323,55 +349,70 @@ export async function getRankings(scope: Scope, limit: number, cursor?: string):
  *   Guinea.
  *
  * So the answer separates the two populations rather than mixing them: the map
- * draws `scenes`, the page accounts for `unlocated`, and `coverage` carries
- * the ratio so a reader is told why there are fewer pins than scenes.
+ * draws `scenes`, the page accounts for `unlocated`, and `coverage` carries the
+ * ratios - including the venues and players in no scene - so a reader is told
+ * why there are fewer pins than stores.
  */
 export async function getSceneMap(): Promise<SceneMapResult> {
   const store = getRankingStore();
 
-  // A store with no catalogue reader at all - which is every store older than
-  // the GSI1 keys on those items - is "cannot tell", not "nothing is located".
-  if (!store.listSceneCatalogue) {
+  // A store with no directory reader at all is "cannot tell", not "nothing is
+  // located". Same rule as the catalogue reader it replaced.
+  if (!store.listSceneDirectory) {
     return { scenes: [], unlocated: [], coverage: emptySceneCoverage(true) };
   }
 
-  const catalogue = await store.listSceneCatalogue();
+  const [catalogue, counts] = await Promise.all([
+    store.listSceneDirectory(),
+    store.getSceneCoverage ? store.getSceneCoverage().catch(() => null) : Promise.resolve(null),
+  ]);
+
+  // An empty directory is "no scene is assigned yet", which is the normal state
+  // until an operator accepts a re-clustering *and* a refit runs after it - but
+  // it is indistinguishable here from a reader that failed, so it is reported
+  // the same careful way: as "cannot tell" rather than "there are no scenes".
   if (catalogue.length === 0) {
-    return { scenes: [], unlocated: [], coverage: emptySceneCoverage(true) };
+    return { scenes: [], unlocated: [], coverage: emptySceneCoverage(true, counts) };
   }
 
   const entries: SceneMapEntry[] = catalogue.map((scene) => {
-    // `componentSize` and `playerCount` are the same number under the two
-    // names the contract allows; take whichever the item carries.
-    const playerCount = scene.playerCount ?? scene.componentSize ?? 0;
+    const playerCount = scene.playerCount ?? 0;
     const hasCentroid = scene.latitude !== null && scene.longitude !== null;
-    // A centroid that sits further than this from every venue of its own
-    // scene is arithmetic rather than a place - see SCENE_CENTROID_MAX_KM for
-    // the measurement, and note it costs 40% of the players. A missing
-    // `nearestVenueKm` is treated as near rather than far: an item written
-    // before that field existed should not have its pin withdrawn by a
-    // deploy.
+    // Kept, and expected never to fire on a scene: a cluster capped at 30km
+    // across has its centroid within 30km of every one of its own stores, so
+    // the 100km gate cannot be crossed. See SCENE_CENTROID_MAX_KM and the note
+    // beside it for why it stays - the cap is a knob, and the Louvain method
+    // has no geometric bound at all. A missing `nearestVenueKm` is treated as
+    // near rather than far: an item written before that field existed should
+    // not have its pin withdrawn by a deploy.
     const dispersed =
       hasCentroid && scene.nearestVenueKm !== null && scene.nearestVenueKm > SCENE_CENTROID_MAX_KM;
     const located = hasCentroid && !dispersed;
     return {
-      componentId: scene.componentId,
-      regionLabel: scene.regionLabel,
+      sceneId: scene.sceneId,
+      label: scene.label,
       playerCount,
       ratedPlayers: scene.ratedCount ?? 0,
       matchCount: scene.matchCount ?? 0,
       venueCount: scene.venueCount ?? 0,
-      isGiant: scene.isGiant,
-      // The same gate as the ladder's, from the same place: a position inside
-      // a scene of three is not a position. It is a property of the scene, so
-      // the map can say which pins lead to an orderable board.
-      comparable: isComparable(scene.componentSize ?? playerCount),
+      medianPurity: scene.medianPurity,
+      // Deliberately not `isGiant` off the item: a component's `isGiant` is a
+      // statistical fact about the giant component, and a scene has no such
+      // thing. This is the plain reading - the scene with the most recorded
+      // players - decided once below so the flag and the sort cannot disagree.
+      isGiant: false,
+      componentId: scene.componentId,
+      componentSize: scene.componentSize,
+      componentCount: scene.componentCount ?? 0,
+      // The ladder's own gate, applied to the ladder's own scope. Never to
+      // `playerCount`: a scene of 40 players whose pool is 6 still has no
+      // orderable board, and a scene of 3 inside a 2,000-player pool does.
+      comparable: scene.componentId !== null && isComparable(scene.componentSize),
       latitude: located ? scene.latitude : null,
       longitude: located ? scene.longitude : null,
-      // The spread and the distance to the nearest venue travel on a
-      // dispersed scene too: there they are not a detail of the pin, they are
-      // the reason there is none, and "the nearest store is 2,080 km away" is
-      // what the page says instead of a coordinate.
+      // The spread and the distance to the nearest venue travel on a dispersed
+      // scene too: there they are not a detail of the pin, they are the reason
+      // there is none.
       spreadKm: hasCentroid ? scene.spreadKm : null,
       nearestVenueKm: hasCentroid ? scene.nearestVenueKm : null,
       dispersed,
@@ -387,13 +428,22 @@ export async function getSceneMap(): Promise<SceneMapResult> {
   const located = entries.filter((scene) => scene.latitude !== null && scene.longitude !== null);
   const unlocated = entries.filter((scene) => scene.latitude === null || scene.longitude === null);
 
-  // Biggest first in both lists. The map does not care, but a legend, a
-  // sorted side panel and a z-order all do, and sorting once here means no
-  // reader has to - the same reasoning as sorting the pairings server-side.
+  // Biggest first in both lists. The map does not care, but a legend, a sorted
+  // side panel and a z-order all do, and sorting once here means no reader has
+  // to - the same reasoning as sorting the pairings server-side.
   const bySize = (a: SceneMapEntry, b: SceneMapEntry) =>
-    b.playerCount - a.playerCount || a.componentId.localeCompare(b.componentId);
+    b.playerCount - a.playerCount || a.sceneId.localeCompare(b.sceneId);
   located.sort(bySize);
   unlocated.sort(bySize);
+
+  // The largest scene by recorded players, flagged once over the whole
+  // catalogue rather than per list, so the tag means "largest in the corpus"
+  // and not "largest of the ones that happen to have a pin".
+  let biggest: SceneMapEntry | null = null;
+  for (const scene of entries) {
+    if (biggest === null || scene.playerCount > biggest.playerCount) biggest = scene;
+  }
+  if (biggest !== null && biggest.playerCount > 0) biggest.isGiant = true;
 
   return {
     scenes: located,
@@ -402,6 +452,8 @@ export async function getSceneMap(): Promise<SceneMapResult> {
       totalScenes: entries.length,
       locatedScenes: located.length,
       dispersedScenes: entries.filter((scene) => scene.dispersed).length,
+      unassignedVenues: counts?.unassignedVenues ?? null,
+      unassignedPlayers: counts?.unassignedPlayers ?? null,
       locatedPlayers: located.reduce((total, scene) => total + scene.playerCount, 0),
       totalPlayers: entries.reduce((total, scene) => total + scene.playerCount, 0),
       comparableScenes: entries.filter((scene) => scene.comparable).length,
@@ -418,11 +470,19 @@ export async function getSceneMap(): Promise<SceneMapResult> {
   };
 }
 
-function emptySceneCoverage(catalogueUnavailable: boolean) {
+function emptySceneCoverage(
+  catalogueUnavailable: boolean,
+  counts?: SceneCoverageCounts | null
+) {
   return {
     totalScenes: 0,
     locatedScenes: 0,
     dispersedScenes: 0,
+    // Carried even with no scenes, because this is exactly the state in which
+    // it is the only number there is: before a re-clustering is accepted every
+    // store is in no scene, and the page should say that rather than nothing.
+    unassignedVenues: counts?.unassignedVenues ?? null,
+    unassignedPlayers: counts?.unassignedPlayers ?? null,
     locatedPlayers: 0,
     totalPlayers: 0,
     comparableScenes: 0,

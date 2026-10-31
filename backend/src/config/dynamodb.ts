@@ -207,6 +207,17 @@ export function venueProfileKeys(shopExternalId: number) {
 }
 
 /** One scene's own directory item, by id. Carries the scene's size. */
+/**
+ * The engine's scope directory: one item per table, rewritten by every refit.
+ *
+ * The API reads exactly two things off it - how many venues and players the
+ * last refit left in no scene - because they are the one part of the scene
+ * map's coverage a catalogue of scenes cannot express.
+ */
+export function rankingIndexKeys() {
+  return { PK: 'RANKING_INDEX', SK: 'RANKING_INDEX' };
+}
+
 export function sceneProfileKeys(sceneId: string) {
   return {
     PK: `${SCENE_CATALOGUE_PARTITION}#${sceneId}`,

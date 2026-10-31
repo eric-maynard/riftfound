@@ -2246,8 +2246,12 @@ Why this shape:
 
 `SCENE#<sceneId>` / `SK: PROFILE`, `GSI1PK: 'SCENE'`, is the matching
 catalogue - `label`, `venueCount`, `playerCount`, `ratedCount`, `matchCount`,
-`medianPurity`, and `assignedAt` (when the **assignment** was made, which is not
-the refit time). Its membership comes from the stored assignment, so a scene
+`medianPurity`, `assignedAt` (when the **assignment** was made, which is not the
+refit time), the five `ScenePlace` fields plus `topVenues` (see "Giving a scene a
+place on a map"), and the rating pool its players sit on as `componentId` /
+`componentSize` / `componentCount`. The place and the pool are what make
+`/api/rankings/map` one Query against this partition instead of a map of
+components wearing scene-shaped field names. Its membership comes from the stored assignment, so a scene
 cannot appear or vanish because a refit saw one more match; only its counts
 move. A player belongs to a scene via their **home** venue, so scene player
 counts partition the players rather than double-counting visitors - and
@@ -2258,23 +2262,81 @@ ages out of the replay window, or a scene a re-clustering retires, is deleted by
 diffing against the scope directory (which now tracks `venueIds` and
 `sceneIds`), so the catalogue Query never serves a pin with no data behind it.
 
-### Giving a connected component a place on a map
+### Giving a scene a place on a map
 
-`src/ranking/sceneMap.ts`, published on the `COMPONENT#<id>` item. This is what
-the backend's `/api/rankings/map` and the frontend's `/rankings/map` read, and
-it is the one piece of geography in this pass that is **not** about `VENUE#`.
+`src/ranking/sceneMap.ts`, published on **both** the `SCENE#<sceneId>` and the
+`COMPONENT#<id>` item. The backend's `/api/rankings/map` and the frontend's
+`/rankings/map` read the **scene** one; the component one stays because
+`getComponent` serves the event page's rating-pool line off the same item.
 
-Be precise about which primitive is being located, because this document argues
-at length that they are different things. **This locates a `componentId`**, the
-connected component - not a Louvain `sceneId`. That is a decision forced by the
-data rather than a contradiction of the recommendation above: `SCENE#` items
-require an accepted re-clustering, the first production dry run produced 1,042
-scenes of 2.1 stores each and the CLI correctly refused it, and there are
-**zero** `SCENE#` and zero `VENUE#` items in production today. There are
-**1,235** `COMPONENT#` items, written by every refit. A map built on `SCENE#`
-would be an empty map. When a re-clustering is finally accepted, the same
-derivation applies unchanged to `SCENE#` - `scenePlace` takes venue tallies and
-knows nothing about which partition produced them.
+**This used to locate components only, and the map was wrong in a way a reader
+could see.** The paragraph that used to sit here argued the case honestly and
+the case has expired: `SCENE#` items needed an accepted re-clustering, the first
+dry run proposed 1,042 scenes of 2.1 stores each and the CLI refused it, so a
+scene-keyed map would have been an empty map and a component-keyed one was the
+only map available. A geographic assignment has been accepted since - 1,123
+scenes, complete linkage at a 30km diameter - and the symptoms of the old
+keying were exactly what this document predicted:
+
+- the map's list read `Karlsruhe, Deutschland` and `Paris, France`, which are
+  modal city labels of reachability closures, not scenes;
+- `Peninsula`, `South Bay` and the other 1,121 were **not selectable anywhere on
+  the map**, because they were not in the catalogue it read;
+- a `?scene=<sceneId>` link - the only kind an event page can build, since the
+  event page reads the venue's scene - resolved to nothing and showed the
+  unfiltered world view.
+
+`scenePlace` moved without a line of arithmetic changing, which is what the old
+paragraph promised: it takes venue tallies and knows nothing about which
+partition produced them. `snapshot.ts` accumulates the same `ComponentVenue`
+rows per scene that `findComponents` already produces per component - venue key,
+shop id, matches, and the **mean** of that store's events' coordinates - and
+hands them to the same function.
+
+#### The geometry is kinder on a scene, and `SCENE_CENTROID_MAX_KM` stays anyway
+
+A component has no geometric bound, which is why the API needs a gate: the
+largest in the corpus pins 360km out in the Gulf of Thailand and another 2,080km
+into the Pacific, and 20 of 1,302 components holding 40% of recorded players
+came off the map because of it.
+
+A scene is diameter-capped. Every store in one is within `--max-diameter` (30km)
+of every other, and a weighted mean of points that are all mutually within 30km
+lies within 30km of each of them - so a scene's centroid is at most ~30km from
+its own nearest venue against a 100km gate. **`dispersed` cannot be true for a
+scene produced at the default cap, and measured on the 2026-10-31 production
+proposal the largest scene extent in the whole corpus is 29.9km.** Not one of
+the 1,432 proposed scenes comes near the gate, and none of the 1,123 live ones
+does either.
+
+The gate is kept rather than deleted for two reasons, both of them live: the cap
+is a **knob**, so an operator who raises `--max-diameter` past 200km re-creates
+the failure it was measured for; and `--method louvain` is still the default,
+and a Louvain community has no diameter bound at all. A gate that never fires
+costs a comparison; a pin in the Pacific costs the map's credibility.
+
+#### What a scene's pin links to, which is not a scene ladder
+
+`componentId` keeps its meaning permanently, and the map is where that rule
+earns its keep. The ladder's scope syntax is `all`, `set:<id>`,
+`component:<id>` or `set:<id>#component:<id>`; **there is no `scene:` scope**,
+because `crossComponentUncertainty` is only valid for a connected component and
+a scene is additive. So a `SCENE#` item carries the pool its home players sit
+on - `componentId`, `componentSize` and `componentCount`, the modal component of
+the players whose home venue is in the scene - and the UI is required to present
+them as two facts:
+
+> *this is the Peninsula scene*, and *these players' ratings are on one scale
+> with these others'*.
+
+That is the pairing the event page's scene line already publishes. The frontend
+says it in `sceneLadderNote` and the picker's row meta ("ladder shared with 3
+other scenes"), and the one thing neither may do is call it "this scene's
+ladder". A scene with no pool - nobody who plays there has been replayed - gets
+no link at all rather than a dead one.
+
+`componentCount` is free: the loop that attributes players to scenes by home
+venue already has `components.componentIds[p]` in hand.
 
 #### Why the derivation lives here and not in the API
 

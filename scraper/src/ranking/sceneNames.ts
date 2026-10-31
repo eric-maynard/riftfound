@@ -87,12 +87,64 @@ export const SCENE_NAME_OVERRIDES: SceneNameOverride[] = [
   { shopExternalId: 17613, name: 'Rhine-Neckar', insteadOf: 'Mühlhausen, Deutschland' },
   { shopExternalId: 39502, name: 'Thessaloniki', insteadOf: 'Menemeni, B' },
 
-  // --- The scenes this whole investigation was about ----------------------
-  // A shop in Redwood City read "Scene: New York, New York". It is now in a
-  // three-store Peninsula scene 12.1km across, and the eight stores across San
-  // Jose, Sunnyvale and Santa Clara are the South Bay rather than "Milpitas".
-  { shopExternalId: 1826, name: 'Peninsula', insteadOf: 'Redwood City, CA' },
-  { shopExternalId: 3249, name: 'South Bay', insteadOf: 'Milpitas, CA' },
+  // --- The Bay Area, metro-prefixed --------------------------------------
+  //
+  // These are the scenes this whole investigation was about - a shop in Redwood
+  // City read "Scene: New York, New York" - and they are now prefixed with the
+  // metro, as the owner asked ("whats the bay area scene, since i dont see
+  // one?"). The prefix earns its length in a worldwide picker: `Peninsula` and
+  // `South Bay` are unambiguous to a local and mean nothing to a reader
+  // scrolling 1,432 rows, where `Bay Area — Peninsula` sorts and reads with its
+  // neighbours.
+  //
+  // Read against the 2026-10-31 geo proposal (403-day replay, 130,012 matches),
+  // because three of these clusters changed shape under it and two of the names
+  // now carry a caveat the next reader needs:
+  //
+  //   s2a4726a0cd  10 stores  21.8km  86.0% internal  Milpitas/San Jose/Santa Clara/Sunnyvale
+  //   s94af82a16f   6 stores  26.1km  63.1% internal  Redwood City/San Carlos/San Mateo + Union City/Castro Valley
+  //   sc563896885   7 stores  19.0km  71.2% internal  San Francisco/Berkeley/Alameda/El Cerrito
+  //   sefab00f271   4 stores  17.9km  58.2% internal  Livermore/Dublin
+  //   s65bc71aa6e   4 stores  16.6km  55.0% internal  Martinez/Benicia/Vallejo
+  { shopExternalId: 3249, name: 'Bay Area — South Bay', insteadOf: 'Milpitas, CA' },
+  // **The caveat on this one is real and is not a naming problem.** Under the
+  // 2026-10-31 proposal this cluster reaches across the Bay: Union City and
+  // Castro Valley join Redwood City, San Carlos and San Mateo, because the
+  // Dumbarton and San Mateo bridges put them inside 30km in a straight line.
+  // Its internal play share fell to 63.1% against a corpus median of 89.9% -
+  // the same signature `Jurong & Johor Bahru` carries at 52%, which the scenes
+  // doc reads as "two half-scenes meeting at a crossing". `Peninsula` is still
+  // the right name for the half that holds the anchor store and the play; if the
+  // owner would rather the cluster not span the Bay at all, the knob is
+  // `--max-diameter`, not this table.
+  { shopExternalId: 1826, name: 'Bay Area — Peninsula', insteadOf: 'Redwood City, CA' },
+  // New under the 2026-10-31 proposal: San Francisco's three stores cluster
+  // with Berkeley, Alameda and El Cerrito across the Bay Bridge. Named for both
+  // halves rather than after the city, on the same rule the cross-border names
+  // below follow. This is a proposal rather than something the owner named.
+  { shopExternalId: 23916, name: 'Bay Area — San Francisco & East Bay', insteadOf: 'San Francisco, CA' },
+  // Livermore plus two Dublin stores: the Tri-Valley, which is what a local
+  // calls it and which the default rule cannot know.
+  { shopExternalId: 2000, name: 'Bay Area — Tri-Valley', insteadOf: 'Livermore, California' },
+  // **Named as asked, and the name no longer quite fits.** The owner asked for
+  // `Diablo Valley` for Martinez/Concord/Vallejo, which is what the *live*
+  // assignment held. Under the 2026-10-31 proposal both Concord stores and
+  // Pleasant Hill fall below the intra-scene play gate and keep no scene, so
+  // what is left is Martinez, Benicia and Vallejo - the Carquinez Strait rather
+  // than the Diablo Valley, and at 55.0% internal play it is another
+  // two-halves-of-a-crossing cluster. Kept as the owner wrote it because naming
+  // is their call and an override is one word to change; `Bay Area — Martinez &
+  // Vallejo` is the alternative that matches the table's own cross-border rule.
+  { shopExternalId: 51914, name: 'Bay Area — Diablo Valley', insteadOf: 'Martinez, CA' },
+  //
+  // **`Bay Area — East Bay` is deliberately absent.** The owner asked for it
+  // for Union City/Dublin/Castro Valley, and under the 2026-10-31 proposal that
+  // cluster does not exist: Union City and Castro Valley joined the Peninsula
+  // scene and both Dublin stores joined Livermore. Keying the name on any store
+  // in it would put a second override inside an existing scene, where the match
+  // is decided by the busiest *overridden* store - so it would rename either
+  // Peninsula or Tri-Valley, and which one would move with the match counts.
+  // Nothing is added until a cluster exists for it to name.
 
   // New York at a 30km diameter is five scenes, and four of them are counties
   // or sub-regions rather than the town their busiest store sits in. The city

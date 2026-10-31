@@ -246,7 +246,7 @@ export interface PlayerSearchResponse {
 
 /**
  * One venue pin under a scene. No name: the API does not carry one, because
- * the engine's `COMPONENT#` item does not (see scraper/src/ranking/items.ts).
+ * the engine's `SCENE#` item does not (see scraper/src/ranking/items.ts).
  */
 export interface SceneMapVenue {
   shopExternalId: number | null;
@@ -258,20 +258,46 @@ export interface SceneMapVenue {
 /**
  * One scene on the map.
  *
+ * **A scene, not a connected component.** It is a cluster of *stores* close
+ * enough together that their players really play each other, named the way a
+ * local names it - `Peninsula`, `South Bay`, `Nassau County`. The endpoint used
+ * to serve connected components under these field names, which is why this page
+ * listed `Karlsruhe, Deutschland` and `Paris, France` and could not select
+ * `Peninsula` at all.
+ *
  * A **located** scene has non-null coordinates derived from its own venues; an
  * unlocated one arrives in a separate list and is never drawn. Both are this
  * one type on purpose - the page lists both, and only the map cares which it
  * has - so the null coordinates stay typed rather than narrowed away.
  */
 export interface SceneMapEntry {
-  componentId: string;
-  regionLabel: string | null;
+  /** The engine's scene id. What `?scene=` carries. Never a `componentId`. */
+  sceneId: string;
+  /** What a local calls it. Null when no store in it is geocoded yet. */
+  label: string | null;
   playerCount: number;
   ratedPlayers: number;
   matchCount: number;
   venueCount: number;
+  /** How true "this store belongs to one scene" is, across the scene's stores. */
+  medianPurity: number | null;
+  /** True for the scene holding the most recorded players. */
   isGiant: boolean;
-  /** Whether a position inside this scene means anything at all. */
+  /**
+   * The ladder this scene's players are ranked on - **not** the scene's own.
+   *
+   * A scene has no ladder: the ladder's scope is `component:<id>` and there is
+   * no `scene:` scope, because `componentId` answers "are these two ratings on
+   * one scale" and nothing else does. So this is the pool holding most of the
+   * scene's players, and the UI must present it as the pool. Null when none of
+   * the scene's players has been replayed, in which case there is no board.
+   */
+  componentId: string | null;
+  /** That pool's player count - what `comparable` is a statement about. */
+  componentSize: number | null;
+  /** Pools the scene's players are spread over. Over 1 is not one scale. */
+  componentCount: number;
+  /** Whether a position on the **pool's** board means anything at all. */
   comparable: boolean;
   latitude: number | null;
   longitude: number | null;
@@ -296,6 +322,17 @@ export interface SceneMapCoverage {
   locatedScenes: number;
   /** Scenes with a centroid too far from their own venues to publish. */
   dispersedScenes: number;
+  /**
+   * Stores in no scene at all, and the players whose home store is one of
+   * them. Null when the engine does not publish the figure, which is not zero.
+   *
+   * A list of scenes cannot express an absence: a store whose regulars only
+   * ever play visitors fails the rankability gate and is simply not in the
+   * directory. So the page prints the count rather than letting a reader
+   * discover it by looking for their store and finding nothing.
+   */
+  unassignedVenues: number | null;
+  unassignedPlayers: number | null;
   locatedPlayers: number;
   totalPlayers: number;
   comparableScenes: number;

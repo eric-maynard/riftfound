@@ -26,7 +26,14 @@
 
 import type { SceneMapEntry } from '../types/ranking';
 
-/** The label for a scene with no region name of its own. */
+/**
+ * The label for a scene with no name of its own.
+ *
+ * Kept for the copy that talks *about* unnamed scenes. `sceneLabel` itself
+ * falls back to `Scene <id>` rather than to this, matching the ladder picker:
+ * an id is a handle a reader can share and search for, where "Unnamed scene"
+ * repeated down a list is indistinguishable from a bug.
+ */
 export const UNNAMED_SCENE_LABEL = 'Unnamed scene';
 
 /**
@@ -78,10 +85,10 @@ export function sceneSpreadRadiusMeters(scene: SceneMapEntry): number | null {
   return scene.spreadKm * 1000;
 }
 
-/** A scene's display name: its region, else its id, never a blank. */
+/** A scene's display name: the engine's label, else a blank-proof fallback. */
 export function sceneLabel(scene: SceneMapEntry): string {
-  const label = scene.regionLabel?.trim();
-  return label && label.length > 0 ? label : UNNAMED_SCENE_LABEL;
+  const label = scene.label?.trim();
+  return label && label.length > 0 ? label : `Scene ${scene.sceneId}`;
 }
 
 /**
@@ -142,12 +149,26 @@ export function scenePlaceHint(scene: SceneMapEntry): string {
   return `Centred on ${basis}, weighted by matches played at each. ${spread}`;
 }
 
-/** Why a scene's board cannot be ordered, or null when it can. */
+/**
+ * Why the board a scene leads to cannot be ordered, or null when it can.
+ *
+ * **The gate is on the pool, not on the scene**, and the wording has to say so
+ * or it is simply wrong: this used to read "a position needs a scene of at
+ * least 8 players, and this one has 3", which quoted the scene's own count
+ * against a threshold the scene is not measured by. A rating is identified
+ * against the players it was earned among, so the depth that matters is the
+ * pool's - a 3-store scene inside a 2,000-player pool orders fine, and a
+ * 40-player scene whose pool is 6 does not.
+ */
 export function sceneComparableHint(scene: SceneMapEntry, minComponentSize: number): string | null {
   if (scene.comparable) return null;
+  if (scene.componentId === null) {
+    return 'No positions yet: none of the players who play here has been placed in a rating pool.';
+  }
+  const size = scene.componentSize === null ? 'fewer' : formatCount(scene.componentSize);
   return (
-    `Too small to order: a position needs a scene of at least ${minComponentSize} players, ` +
-    `and this one has ${formatCount(scene.playerCount)}. The ratings are still published.`
+    `Too small to order: a position needs a pool of at least ${minComponentSize} players who have played ` +
+    `each other, and the one these players are in has ${size}. The ratings are still published.`
   );
 }
 
@@ -164,14 +185,82 @@ export function formatCount(value: number): string {
 }
 
 /**
- * The scope string for a scene's leaderboard.
+ * The scope string for the ladder a scene's players are ranked on.
  *
- * A scene *is* a connected component, so this is `component:<id>` - the scope
- * `/api/rankings` has always taken. Named here so the map and the ladder
- * cannot drift on the spelling.
+ * **The argument is a `componentId`, not a `sceneId`, and that is the whole
+ * distinction this module now has to keep.** A scene is a cluster of stores; a
+ * scope is a rating scale, and only a connected component is one, because
+ * `crossComponentUncertainty` is correct for nothing else. So a scene's row
+ * links at `scene.componentId` - the pool most of its players sit in - and the
+ * copy beside it says the two things separately rather than letting the link
+ * assert they are one. A scene with no pool has no scope at all; see
+ * `sceneLadderNote`.
  */
 export function sceneScope(componentId: string): string {
   return `component:${componentId}`;
+}
+
+/**
+ * What a scene's ladder link actually leads to, in one sentence, or null when
+ * there is no link to make.
+ *
+ * This exists because the honest answer is two facts and a link can only carry
+ * one. *This is the Peninsula scene* and *these players' ratings are on one
+ * scale with these others'* are both true and neither implies the other - a
+ * component spans several scenes, so the board a Peninsula player is on is
+ * shared with South Bay and everyone else their games chain to. The event page
+ * already states it as a pair for the same reason; this is that sentence at a
+ * panel's length.
+ *
+ * Three answers, and the first two are the common ones:
+ *
+ * - **a pool with an orderable board** - say how big it is, so the reader knows
+ *   the positions are not a position among six;
+ * - **a pool too small to order** - the board exists and the ratings are
+ *   published; the ranks are not positions;
+ * - **no pool** - nobody who plays here has been replayed yet, so there is no
+ *   board to link at. Not an error, and not a statement about the scene, which
+ *   is a fact about its stores either way.
+ */
+export function sceneLadderNote(scene: SceneMapEntry): string | null {
+  if (scene.componentId === null) {
+    return (
+      'No ladder yet: none of the players who play here has been placed in a rating pool, ' +
+      'so there is no board to open. The scene is still where these stores are.'
+    );
+  }
+  const shared =
+    scene.componentCount > 1
+      ? ` The players here sit in ${formatCount(scene.componentCount)} separate pools, so they are not all on one scale.`
+      : '';
+  const size =
+    scene.componentSize === null
+      ? ''
+      : ` That pool holds ${formatCount(scene.componentSize)} player${scene.componentSize === 1 ? '' : 's'}.`;
+  return (
+    'A scene is not a ranking: ratings are only comparable between players whose games chain together, ' +
+    'so this opens the ladder for the pool these players are in, which covers other scenes too.' +
+    size +
+    shared
+  );
+}
+
+/**
+ * How honestly "this store belongs to one scene" holds across the scene, or
+ * null when it holds outright or is unknown.
+ *
+ * The engine stores a purity per store - the share of that store's play that
+ * sat inside the scene at clustering time - and the median over a scene's
+ * stores is 100% for almost all of them. A low number is a genuinely split
+ * scene, which is worth showing rather than hiding, and it is only worth a line
+ * when it is not 1.
+ */
+export function scenePurityHint(scene: SceneMapEntry): string | null {
+  if (scene.medianPurity === null || scene.medianPurity >= 0.999) return null;
+  return (
+    `Its stores play a median ${Math.round(scene.medianPurity * 100)}% of their games inside this scene. ` +
+    'A store that plays more outside it is a genuinely split store rather than a mistake.'
+  );
 }
 
 /*
@@ -193,16 +282,18 @@ export function sceneScope(componentId: string): string {
 /**
  * Filter the scene list by a free-text query.
  *
- * Matches the region label and the component id, the same two things the
- * ladder's own `filterSceneOptions` matches, so searching here and searching
- * in the picker behave the same way. Case- and whitespace-insensitive.
+ * Matches the scene's label and its id, the same two things the ladder's own
+ * `filterSceneOptions` matches, so searching here and searching in the picker
+ * behave the same way. Case- and whitespace-insensitive.
  */
 export function filterScenes(scenes: SceneMapEntry[], query: string): SceneMapEntry[] {
   const needle = query.trim().toLowerCase();
   if (needle.length === 0) return scenes;
   return scenes.filter((scene) => {
-    const label = (scene.regionLabel ?? '').toLowerCase();
-    return label.includes(needle) || scene.componentId.toLowerCase().includes(needle);
+    const label = (scene.label ?? '').toLowerCase();
+    // The scene id is matched too, so a `?scene=` link a reader was handed is
+    // findable by paste as well as by name.
+    return label.includes(needle) || scene.sceneId.toLowerCase().includes(needle);
   });
 }
 
@@ -274,10 +365,11 @@ export function sceneCoverageSentence(coverage: {
   dispersedScenes: number;
   locatedPlayers: number;
   totalPlayers: number;
+  unassignedVenues: number | null;
   catalogueUnavailable: boolean;
 }): string {
   if (coverage.catalogueUnavailable) {
-    return 'No scene map yet — the rating engine has not published where its scenes are.';
+    return 'No scene map yet — no store has been placed in a scene, so there is nothing to draw.';
   }
   if (coverage.locatedScenes === 0) {
     return `${formatCount(coverage.totalScenes)} scenes, none of them locatable — no venue in any of them has been geocoded.`;
@@ -295,9 +387,17 @@ export function sceneCoverageSentence(coverage: {
     coverage.dispersedScenes > 0
       ? ` ${formatCount(coverage.dispersedScenes)} more play across too many regions to pin.`
       : '';
+  // The stores in **no** scene are named here and nowhere else on the page.
+  // They cannot be listed - they are absent from a catalogue of scenes by
+  // construction - so if this line does not count them, nothing does, and a
+  // reader looking for Palo Alto is left to conclude the map lost it.
+  const unassigned =
+    coverage.unassignedVenues !== null && coverage.unassignedVenues > 0
+      ? ` ${formatCount(coverage.unassignedVenues)} store${coverage.unassignedVenues === 1 ? ' is' : 's are'} in no scene yet.`
+      : '';
   return (
     `${formatCount(coverage.locatedScenes)} of ${formatCount(coverage.totalScenes)} scenes on the map, ` +
-    `holding ${playerShare}% of recorded players.${dispersed}`
+    `holding ${playerShare}% of recorded players.${dispersed}${unassigned}`
   );
 }
 

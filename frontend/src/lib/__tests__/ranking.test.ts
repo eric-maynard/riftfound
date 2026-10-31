@@ -46,6 +46,7 @@ import {
   pickDefaultComponent,
   shouldUseSetPills,
   SET_PILL_LIMIT,
+  sceneOptionScope,
   sceneOptions,
   sceneCatalogueOptions,
   searchCaption,
@@ -359,12 +360,18 @@ describe('the searchable scene picker', () => {
 });
 
 /**
- * The picker's rows, built from the scene catalogue.
+ * The picker's rows, built from the scene directory.
  *
- * The thing being tested is a correction: the picker used to offer the 41
- * scenes `/api/rankings` happened to send, which is 3% of the corpus, and the
- * map beside it drew all 1,307. One source, or the two halves of one control
- * disagree about which scenes exist.
+ * Two corrections are under test here, and the second is the bigger one:
+ *
+ * 1. the picker used to offer the 41 entries `/api/rankings` happened to send,
+ *    which is 3% of the corpus, while the map beside it drew all 1,307. One
+ *    source, or the two halves of one control disagree about what exists;
+ * 2. those entries were **connected components**, so the list read
+ *    `Karlsruhe, Deutschland` and `Paris, France` and a reader could not pick
+ *    `Peninsula` at all. A row is a scene now, and the pool it leads to rides
+ *    beside it as `scope` - a different id, deliberately, because a scene is
+ *    not a rating scale.
  */
 describe('sceneCatalogueOptions', () => {
   const row = (
@@ -373,9 +380,12 @@ describe('sceneCatalogueOptions', () => {
     players: number,
     extra: Partial<SceneCatalogueRow> = {}
   ): SceneCatalogueRow => ({
-    componentId: id,
-    regionLabel: label,
+    sceneId: id,
+    label,
     playerCount: players,
+    // Distinct from `sceneId` by default, because the thing most worth pinning
+    // is that the row's id and its ladder scope are two different strings.
+    componentId: `pool-${id}`,
     comparable: true,
     latitude: 1,
     longitude: 2,
@@ -415,6 +425,53 @@ describe('sceneCatalogueOptions', () => {
     expect(big.meta).toBe('2,213 players');
     const [, one] = sceneCatalogueOptions([row('b', 'Tiny', 1)]);
     expect(one.meta).toBe('1 player');
+  });
+
+  it('keeps the row id and the ladder scope apart', () => {
+    // The whole correction in one assertion: the row is identified by the
+    // scene (what `?scene=` carries and what the map highlights) and scoped by
+    // the pool (what `/api/rankings` is fetched with). A control that
+    // collapsed them asked for `component:<a scene id>` and got nothing.
+    const [, peninsula] = sceneCatalogueOptions([row('s94af82a16f', 'Peninsula', 111)]);
+    expect(peninsula.id).toBe('s94af82a16f');
+    expect(peninsula.scope).toBe('pool-s94af82a16f');
+    expect(sceneOptionScope(peninsula)).toBe('pool-s94af82a16f');
+  });
+
+  it('says when two scenes lead to one board, before the click', () => {
+    // A pool covers several scenes, so picking Peninsula and picking South Bay
+    // can land on the same ladder. That is the truth about rating scales and
+    // it belongs on the row rather than being discovered afterwards.
+    const [, peninsula, southBay, elsewhere] = sceneCatalogueOptions([
+      row('s-pen', 'Peninsula', 300, { componentId: 'c-bay' }),
+      row('s-sb', 'South Bay', 200, { componentId: 'c-bay' }),
+      row('s-else', 'Mainz', 100, { componentId: 'c-mainz' }),
+    ]);
+    expect(peninsula.meta).toBe('300 players · ladder shared with 1 other scene');
+    expect(southBay.meta).toBe('200 players · ladder shared with 1 other scene');
+    expect(elsewhere.meta).toBe('100 players');
+  });
+
+  it('offers no board for a scene whose players are in no pool', () => {
+    // A real state: the scene is a fact about its stores, and nobody who plays
+    // there has been replayed. An explicit null scope is not the same as "the
+    // id is the scope" - `sceneOptionScope` has to tell them apart, or the
+    // ladder is fetched with a scene id.
+    const [, orphan] = sceneCatalogueOptions([row('s-new', 'Vacaville', 4, { componentId: null })]);
+    expect(orphan.scope).toBeNull();
+    expect(sceneOptionScope(orphan)).toBeNull();
+    expect(orphan.meta).toBe('4 players · no ladder yet');
+  });
+
+  it('reads a fallback row built from the ladder as its own scope', () => {
+    // `sceneOptions` rows are pools: their `id` *is* the scope and they carry
+    // no `scope` field. `scope ?? id` would be wrong for the row above, so the
+    // resolver distinguishes undefined from null.
+    const [, pool] = sceneOptions([
+      { componentId: 'c-bay', regionLabel: 'Bay Area', componentSize: 23, ratedPlayers: 6, comparable: true },
+    ]);
+    expect(pool.scope).toBeUndefined();
+    expect(sceneOptionScope(pool)).toBe('c-bay');
   });
 
   it('marks the rows with no pin, and says nothing about the rest', () => {

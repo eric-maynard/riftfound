@@ -10,7 +10,9 @@ import {
   sceneComparableHint,
   sceneCoverageSentence,
   sceneLabel,
+  sceneLadderNote,
   scenePlaceHint,
+  scenePurityHint,
   sceneSummary,
 } from '../lib/sceneMap';
 import { SCENE_MAP_PARAM, scenePath } from '../lib/ranking';
@@ -22,24 +24,40 @@ import { carryPreview } from '../lib/preview';
  *
  * ## What a pin means, and what it does not
  *
- * A scene is a connected component of the co-play graph - a set of players a
- * chain of recorded games links together - and it has no coordinates of its
- * own. Its pin is the **match-weighted centroid of the venues its own games
- * were played at**, computed by the rating engine during its replay, where the
- * coordinates and the component membership are in the same hand. Nothing here
- * geocodes anything or infers a position from a name.
+ * A scene is a cluster of **stores** - close enough together that the players
+ * who play at them really play each other - published by the rating engine from
+ * an assignment an operator accepted, and named the way a local names it:
+ * `Peninsula`, `South Bay`, `Nassau County`.
  *
- * So the page has to carry two caveats the map cannot:
+ * **This page used to list connected components instead**, which is why it read
+ * `Karlsruhe, Deutschland` and `Paris, France` and why `Peninsula` was not
+ * selectable anywhere on it - and why a `?scene=<sceneId>` link, the only kind
+ * an event page can produce, resolved to the unfiltered world view. A component
+ * is a reachability closure of the co-play graph: one travelling player welds
+ * two cities into one permanently, and the measured case was a 1,688-player
+ * component labelled `New York, New York` whose five busiest stores were all in
+ * California.
+ *
+ * A scene's pin is the **match-weighted centroid of the venues its own games
+ * were played at**, computed by the engine during its replay, where the
+ * coordinates and the membership are in the same hand. Nothing here geocodes
+ * anything or infers a position from a name.
+ *
+ * So the page has to carry three caveats the map cannot:
  *
  * 1. **A scene with no geocoded venue has no pin, and is listed instead.**
- *    Never at its region label's city (a different precision claim wearing the
- *    same clothes), never at `0, 0`. The count of those scenes leads the page,
- *    because a map showing 40 of 1,235 scenes is otherwise silently wrong
- *    about the world.
- * 2. **A scene is not always a point.** `spreadKm` is drawn as a real ground
- *    disc beside each dot, so a 133km corridor looks like a corridor. The dot
- *    itself is sized in *pixels* by player count, which is not a distance -
- *    see `lib/sceneMap.ts`.
+ *    Never at its label's city (a different precision claim wearing the same
+ *    clothes), never at `0, 0`.
+ * 2. **Some stores are in no scene at all**, and they cannot be listed here
+ *    because they are absent from a catalogue of scenes by construction. A
+ *    geographic cluster is only published as a scene when its players play
+ *    each other enough to rank anybody, so a store whose regulars only ever
+ *    play visitors keeps none - 38 venues on the live assignment. The coverage
+ *    line counts them, because nothing else on the page can.
+ * 3. **A scene is not a ladder.** The ladder's scope is a *rating pool* - a
+ *    connected component - and a pool covers several scenes, so the link out of
+ *    a scene says what it opens rather than calling it "this scene's ladder".
+ *    `sceneLadderNote` is that sentence.
  *
  * ## Layout
  *
@@ -61,9 +79,9 @@ const LIST_LIMIT = 60;
 
 const HINTS = {
   scene:
-    'A scene is a group of players who have actually played each other. No recorded game crosses one, so a rating is only really earned inside a scene - which is why there is a separate ladder per scene rather than one world ranking.',
+    'A scene is a group of stores close enough together that the players at them really play each other. It is where you play, not a ranking: ratings are only comparable between players whose games chain together, which is a wider pool and covers several scenes.',
   place:
-    'A scene has no location of its own. Each pin is the centroid of the venues that scene’s games were played at, weighted by how many were played at each, and the disc around it is how far those venues spread. A scene whose venues have never been geocoded has no pin and is listed under the map.',
+    'Each pin is the centroid of the venues that scene’s games were played at, weighted by how many were played at each, and the disc around it is how far those venues spread. A scene whose venues have never been geocoded has no pin and is listed under the map. A store whose players only ever play visitors is in no scene at all, and is counted here rather than drawn.',
   spread:
     'The mean distance from the pin to the venues it was computed from. A small figure is a city; a large one is a travel circuit, and the pin is its middle rather than a place anyone plays.',
 } as const;
@@ -125,7 +143,7 @@ function ScenesPage() {
   );
 
   const select = useCallback(
-    (componentId: string | null) => updateParam(URL_PARAMS.SCENE, componentId),
+    (sceneId: string | null) => updateParam(URL_PARAMS.SCENE, sceneId),
     [updateParam]
   );
 
@@ -135,7 +153,7 @@ function ScenesPage() {
   // too rather than only the list.
   const mapScenes = useMemo(() => filterScenes(state.scenes, query), [state.scenes, query]);
   const selected = useMemo(
-    () => all.find((scene) => scene.componentId === selectedId) ?? null,
+    () => all.find((scene) => scene.sceneId === selectedId) ?? null,
     [all, selectedId]
   );
 
@@ -227,9 +245,9 @@ function ScenesPage() {
             <ul className="scene-list">
               {matching.slice(0, LIST_LIMIT).map((scene) => (
                 <SceneRow
-                  key={scene.componentId}
+                  key={scene.sceneId}
                   scene={scene}
-                  selected={scene.componentId === selectedId}
+                  selected={scene.sceneId === selectedId}
                   minSceneSize={minSceneSize}
                   search={location.search}
                   onSelect={select}
@@ -274,6 +292,8 @@ function SceneDetail({
 }) {
   const located = scene.latitude !== null && scene.longitude !== null;
   const tooSmall = sceneComparableHint(scene, minSceneSize);
+  const ladder = sceneLadderNote(scene);
+  const purity = scenePurityHint(scene);
 
   return (
     <div className="scene-detail">
@@ -322,9 +342,33 @@ function SceneDetail({
 
       {tooSmall && <p className="scene-place-note">{tooSmall}</p>}
 
-      <Link className="scene-ladder-link" to={carryPreview(scenePath(scene.componentId), search)}>
-        See this scene&rsquo;s ladder
-      </Link>
+      {/* How honestly the scene holds together, where it does not hold
+          outright. Silent at 100%, which is almost every scene. */}
+      {purity && <p className="scene-place-note">{purity}</p>}
+
+      {/* The link out, and the sentence that keeps it honest.
+
+          **A scene has no ladder.** A ladder is scoped to a rating pool - a
+          connected component - because that is the only thing two ratings can
+          be compared inside; a scene is a cluster of stores and is additive.
+          One pool covers several scenes, so a reader who opens this from
+          Peninsula lands on a board with South Bay players on it, and the note
+          says so before the click rather than leaving them to notice. The
+          button used to read "See this scene's ladder", which asserted
+          something that does not exist.
+
+          A scene with no pool has no board at all, so there is no link - just
+          the note. That is not an error and the scene is still a fact about
+          its stores. */}
+      <p className="scene-place-note">{ladder}</p>
+      {scene.componentId !== null && (
+        <Link
+          className="scene-ladder-link"
+          to={carryPreview(scenePath(scene.componentId), search)}
+        >
+          Open the ladder for these players
+        </Link>
+      )}
     </div>
   );
 }
@@ -341,7 +385,7 @@ function SceneRow({
   selected: boolean;
   minSceneSize: number;
   search: string;
-  onSelect: (componentId: string) => void;
+  onSelect: (sceneId: string) => void;
 }) {
   const located = scene.latitude !== null && scene.longitude !== null;
   const tooSmall = sceneComparableHint(scene, minSceneSize);
@@ -355,7 +399,7 @@ function SceneRow({
         type="button"
         className="scene-row-main"
         aria-pressed={selected}
-        onClick={() => onSelect(scene.componentId)}
+        onClick={() => onSelect(scene.sceneId)}
       >
         <span className="scene-row-name">
           {sceneLabel(scene)}
@@ -383,9 +427,16 @@ function SceneRow({
         </span>
         <span className="scene-row-summary">{sceneSummary(scene)}</span>
       </button>
-      <Link className="scene-row-link" to={carryPreview(scenePath(scene.componentId), search)}>
-        Ladder
-      </Link>
+      {/* `Ladder`, not `This scene's ladder`: the link opens the pool these
+          players are ranked in, which is wider than the scene. A scene whose
+          players are in no pool yet has no board to open, and gets no link
+          rather than a dead one - the row's `too small to order` flag already
+          carries the reason. */}
+      {scene.componentId !== null && (
+        <Link className="scene-row-link" to={carryPreview(scenePath(scene.componentId), search)}>
+          Ladder
+        </Link>
+      )}
     </li>
   );
 }

@@ -8,6 +8,8 @@ import {
   PLAYER_PROFILE_SK,
   PLAYER_MATCH_SK_PREFIX,
   COMPONENT_CATALOGUE_PARTITION,
+  SCENE_CATALOGUE_PARTITION,
+  rankingIndexKeys,
   PLAYER_SEARCH_PK,
   PLAYER_SEARCH_SK_PREFIX,
   componentProfileKeys,
@@ -37,6 +39,7 @@ import type {
   RankingStore,
   SceneCatalogueEntry,
   SceneCatalogueVenue,
+  SceneCoverageCounts,
   SceneDirectoryEntry,
   SetCatalogueEntry,
   SetRatingRecord,
@@ -447,6 +450,54 @@ function toSceneCatalogueEntry(item: Item): SceneCatalogueEntry | null {
   };
 }
 
+/**
+ * One `SCENE#<sceneId>` item.
+ *
+ * Shares every mapping rule with `toSceneCatalogueEntry` - a coordinate is only
+ * ever read as a pair, `topVenues` is filtered rather than trusted, and a
+ * missing number is null rather than 0 - because the two items carry the same
+ * `scenePlace` output written by the same engine pass. What differs is the key
+ * and the id's name, and that difference is the whole point of the endpoint
+ * change: a `SCENE#` row is a cluster of stores with a name a local would use,
+ * where a `COMPONENT#` row is a reachability closure that can span a continent.
+ */
+function toSceneDirectoryEntry(item: Item): SceneDirectoryEntry | null {
+  const sceneId =
+    readString(item, ['sceneId']) ?? readString(item, ['PK'])?.replace(/^SCENE#/, '') ?? null;
+  if (!sceneId) return null;
+
+  const latitude = readNumber(item, ['latitude', 'lat']);
+  const longitude = readNumber(item, ['longitude', 'lng', 'lon']);
+  const located = latitude !== null && longitude !== null;
+
+  const rawVenues = pick(item, ['topVenues']);
+  const topVenues = Array.isArray(rawVenues)
+    ? rawVenues.map(readSceneVenue).filter((venue): venue is SceneCatalogueVenue => venue !== null)
+    : [];
+
+  return {
+    sceneId,
+    label: readString(item, ['label', 'sceneLabel']),
+    venueCount: readNumber(item, ['venueCount', 'venues']),
+    playerCount: readNumber(item, ['playerCount', 'players']),
+    ratedCount: readNumber(item, ['ratedCount', 'ratedPlayers']),
+    matchCount: readNumber(item, ['matchCount', 'matches']),
+    medianPurity: readNumber(item, ['medianPurity']),
+    assignedAt: readString(item, ['assignedAt']),
+    latitude: located ? latitude : null,
+    longitude: located ? longitude : null,
+    spreadKm: located ? readNumber(item, ['spreadKm']) : null,
+    nearestVenueKm: located ? readNumber(item, ['nearestVenueKm']) : null,
+    locatedVenues: readNumber(item, ['locatedVenues']),
+    locatedMatches: readNumber(item, ['locatedMatches']),
+    topVenues,
+    componentId: readString(item, ['componentId']),
+    componentSize: readNumber(item, ['componentSize']),
+    componentCount: readNumber(item, ['componentCount']),
+    generatedAt: readString(item, ['generatedAt', 'updatedAt', 'computedAt']),
+  };
+}
+
 export const dynamoRankingStore: RankingStore = {
   kind: 'dynamodb',
 
@@ -750,6 +801,71 @@ export const dynamoRankingStore: RankingStore = {
     return entries;
   },
 
+  async listSceneDirectory(): Promise<SceneDirectoryEntry[]> {
+    // One shared GSI1 partition holds every scene, so the whole directory is a
+    // single Query - the same access pattern, the same page cap and the same
+    // posture as `listSceneCatalogue` above. The item count is of the same
+    // order (1,123 scenes against 1,235 components on production) and so is the
+    // cost; what changes is that the rows are the places a reader recognises.
+    const client = getDynamoClient();
+    const entries: SceneDirectoryEntry[] = [];
+    let startKey: Record<string, unknown> | undefined;
+
+    try {
+      for (let page = 0; page < SCENE_CATALOGUE_PAGES; page++) {
+        const result = await client.send(
+          new QueryCommand({
+            TableName: getTableName(),
+            IndexName: 'GSI1',
+            KeyConditionExpression: 'GSI1PK = :pk',
+            ExpressionAttributeValues: { ':pk': SCENE_CATALOGUE_PARTITION },
+            ...(startKey ? { ExclusiveStartKey: startKey } : {}),
+          })
+        );
+
+        for (const item of (result.Items ?? []) as Item[]) {
+          const entry = toSceneDirectoryEntry(item);
+          if (entry) entries.push(entry);
+        }
+
+        startKey = result.LastEvaluatedKey as Record<string, unknown> | undefined;
+        if (!startKey) break;
+      }
+    } catch (error) {
+      // A thrown Query is "cannot tell", which the service reports as
+      // `catalogueUnavailable` - never a 500, and never "there are no scenes".
+      console.warn('[ranking] scene directory query failed:', error);
+      return [];
+    }
+
+    return entries;
+  },
+
+  async getSceneCoverage(): Promise<SceneCoverageCounts | null> {
+    // One GetItem on the scope directory the refit already writes. The two
+    // figures are absent on an index written before they shipped, and absent
+    // reads as null - "this engine does not publish it" - rather than 0, which
+    // would claim every store is in a scene.
+    try {
+      const client = getDynamoClient();
+      const result = await client.send(
+        new GetCommand({ TableName: getTableName(), Key: rankingIndexKeys() })
+      );
+      if (!result.Item) return null;
+      const item = result.Item as Item;
+      return {
+        unassignedVenues: readNumber(item, ['unassignedVenues']),
+        unassignedPlayers: readNumber(item, ['unassignedPlayers']),
+        generatedAt: readString(item, ['generatedAt']),
+      };
+    } catch (error) {
+      // Same posture as every other optional reader here: a failed read is
+      // "cannot tell", never a 500 on a map.
+      console.warn('[ranking] scope directory read failed:', error);
+      return null;
+    }
+  },
+
   async getComponent(componentId: string): Promise<SceneCatalogueEntry | null> {
     // One GetItem, ~1 read unit, and the same `toSceneCatalogueEntry` mapping
     // the catalogue Query uses - so a scene named on an event page and the
@@ -821,17 +937,10 @@ export const dynamoRankingStore: RankingStore = {
         new GetCommand({ TableName: getTableName(), Key: sceneProfileKeys(sceneId) })
       );
       if (!result.Item) return null;
-      const item = result.Item as Item;
-      return {
-        sceneId,
-        label: readString(item, ['label', 'sceneLabel']),
-        venueCount: readNumber(item, ['venueCount', 'venues']),
-        playerCount: readNumber(item, ['playerCount', 'players']),
-        ratedCount: readNumber(item, ['ratedCount', 'ratedPlayers']),
-        matchCount: readNumber(item, ['matchCount', 'matches']),
-        medianPurity: readNumber(item, ['medianPurity']),
-        assignedAt: readString(item, ['assignedAt']),
-      };
+      // The same mapping the directory Query uses, so a scene named on an
+      // event page and the same scene drawn on the map can never read two
+      // different labels - or two different places - off one item.
+      return toSceneDirectoryEntry(result.Item as Item);
     } catch (error) {
       console.warn('[ranking] scene profile read failed:', error);
       return null;

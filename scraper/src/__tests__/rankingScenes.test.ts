@@ -354,6 +354,66 @@ describe('the refit reads the assignment, it does not fit one', () => {
     expect(new Set(snapshot.profiles.map(profile => profile.componentId)).size).toBe(1);
   });
 
+  it('gives each scene a place, from the same derivation a component gets', () => {
+    // `scenePlace` takes venue tallies and knows nothing about which partition
+    // produced them, which is why the map could move from `COMPONENT#` to
+    // `SCENE#` without a line of arithmetic changing. This pins that the scene
+    // item actually carries the result - an empty place here is a map with no
+    // pins on it, which is what the component-keyed version was protecting
+    // against and is no longer a reason to stay on components.
+    const assignment = proposeScenes(observations, { venueLabels });
+    const { snapshot } = buildSnapshot(observations, { ...base, sceneAssignment: assignment });
+
+    for (const scene of snapshot.scenes) {
+      expect(scene.latitude).not.toBeNull();
+      expect(scene.longitude).not.toBeNull();
+      expect(scene.locatedVenues).toBe(scene.venueCount);
+      expect(scene.locatedMatches).toBe(scene.matchCount);
+      expect(scene.nearestVenueKm).not.toBeNull();
+      // The busiest venues, descending, so `topVenues` is a map's drill-down
+      // rather than whatever order a Map iterated in.
+      expect(scene.topVenues.length).toBeGreaterThan(0);
+      for (let i = 1; i < scene.topVenues.length; i++) {
+        expect(scene.topVenues[i - 1].matchCount).toBeGreaterThanOrEqual(scene.topVenues[i].matchCount);
+      }
+      // Weighted by play, which means the centroid lies inside the span of the
+      // stores it was computed from - stated against the scene's own venues
+      // rather than a hardcoded box, so the assertion is about the arithmetic
+      // and not about where the fixture happens to put its shops.
+      const lats = scene.topVenues.map(venue => venue.latitude);
+      expect(scene.latitude!).toBeGreaterThanOrEqual(Math.min(...lats) - 1e-6);
+      expect(scene.latitude!).toBeLessThanOrEqual(Math.max(...lats) + 1e-6);
+      const lons = scene.topVenues.map(venue => venue.longitude);
+      expect(scene.longitude!).toBeGreaterThanOrEqual(Math.min(...lons) - 1e-6);
+      expect(scene.longitude!).toBeLessThanOrEqual(Math.max(...lons) + 1e-6);
+    }
+  });
+
+  it('names the rating pool a scene links to, without becoming one', () => {
+    // A scene is not a rating scale: the ladder's scope is `component:<id>`,
+    // there is no `scene:` scope, and `crossComponentUncertainty` is only
+    // correct for a connected component. So the item carries the pool its home
+    // players sit on, as a separate field, and `componentId` keeps its meaning.
+    const assignment = proposeScenes(observations, { venueLabels });
+    const { snapshot } = buildSnapshot(observations, { ...base, sceneAssignment: assignment });
+
+    const pools = new Set(snapshot.profiles.map(profile => profile.componentId));
+    expect(pools.size).toBe(1);
+    const [onlyPool] = [...pools];
+
+    // Both scenes point at that one pool - which is the normal case and the
+    // whole reason a scene cannot own a ladder: two places, one scale.
+    expect(snapshot.scenes).toHaveLength(2);
+    for (const scene of snapshot.scenes) {
+      expect(scene.componentId).toBe(onlyPool);
+      expect(scene.componentCount).toBe(1);
+      expect(scene.componentSize).toBe(snapshot.profiles.length);
+      // And the pool id is not the scene id. A UI that swapped them would ask
+      // the API for `component:<a scene id>` and get an empty board.
+      expect(scene.componentId).not.toBe(scene.sceneId);
+    }
+  });
+
   it('caps the denormalised roster and says it was cut short', () => {
     const assignment = proposeScenes(observations, { venueLabels });
     const { snapshot } = buildSnapshot(observations, {

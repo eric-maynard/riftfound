@@ -142,7 +142,7 @@ every rating refit, and rewritten only by this script.
 | a scene is | a Louvain community, projected onto stores | a set of stores all within 30km of each other |
 | needs | cross-venue edges the results backfill has not captured yet | coordinates, which **2,574 of 2,574 venues have** |
 | gate | stores per scene (a proxy) | the intra-scene **share of play** (the thing itself) |
-| state today | **refused by its own gate**: 2.3 stores/scene against a STOP at 3 | proposes 1,123 scenes, 94.3% median internal play |
+| state today | **refused by its own gate**: 2.3 stores/scene against a STOP at 3 | **in force**: 1,123 scenes assigned 2026-10-28; a 2026-10-31 dry run proposes 1,432 |
 
 **Louvain is the better definition and stays the default.** A scene is really
 about who plays whom, and geography is a proxy for that - see
@@ -262,6 +262,71 @@ busiest store. The corrections live in a checked-in table,
 the only identifier durable enough to survive the scene being re-clustered.
 `--show-scenes` prints that id in the `busiestShop` column precisely so a
 reader who disagrees with a name has the one number they need to fix it.
+
+Two properties of the match worth knowing before editing the table, because
+both are easy to get wrong:
+
+- **An override follows its store, not the scene's busiest store.**
+  `sceneNameOverride` scans a cluster's members for *any* overridden shop id and
+  takes the busiest **overridden** one. So a name survives its cluster being
+  re-drawn as long as its store is still in it - which is why all 31 names
+  survived the 2026-10-31 proposal even though several clusters changed shape -
+  and it is lost only when that store ages out of the replay or lands in a
+  different cluster.
+- **Two overrides inside one cluster is a name that moves on its own.** The
+  match is decided by match counts, so adding a second name to a cluster that
+  already has one means the cluster's name flips whenever the two stores trade
+  places. This is why there is no `Bay Area - East Bay` row: the cluster it
+  would have named no longer exists, and keying it on a store in it would
+  rename `Bay Area - Peninsula` or `Bay Area - Tri-Valley` depending on the
+  week.
+
+#### The dry run of 2026-10-31, and what it is waiting on
+
+Read this before running another one, because the next `--write` inherits the
+two open questions below. Dry run, nothing written, 403-day replay, **130,012
+matches** against the 75,120 the assignment in force was built on:
+
+| | live (2026-10-28) | proposed (2026-10-31) |
+|---|---|---|
+| venues in a scene | 2,574 | **3,687** |
+| scenes | 1,123 | **1,432** |
+| stores per scene | 2.3 | **2.6** |
+| players / matches at clustering time | 39,390 / 75,120 | **63,951 / 130,012** |
+| median venue purity | 100.0% | 100.0% |
+| max / median extent | 29.9km / 0km | 29.9km / **0.4km** |
+| intra-scene play share (player-weighted median) | 94.3% | **89.9%** |
+| not rankable | 32 clusters, 38 venues, 172 players (0.4%) | **75 clusters, 97 venues, 527 players (0.8%)** |
+
+The diff: **300 of 2,533 shared venues move (11.8%)**, 1,154 are newly placed,
+41 lose their scene, and **994 of 1,123 scene ids carry over (88.5%)** with 438
+created and 129 retired. Verdict: `CAUTION` on the churn, which is the middle
+band - over the 10% warning, well under the 25% STOP - and every gate above is
+otherwise clear. **All 31 curated names in `sceneNames.ts` still land on a
+cluster**, `Peninsula` included, and it keeps the id `s94af82a16f` it has in
+production.
+
+Two things to settle before writing it:
+
+1. **Seven default labels are shared by 14 scenes.** A picker listing the same
+   entry twice is worse than a vague one, and the override table exists for
+   exactly this: two `New York, New York` (26 stores and 10), two
+   `Las Vegas, NV` (11 and 6), two `Toronto, Canada` (21 and 3), two
+   `London, United Kingdom` (10 and 3), two `Brisbane, Australia` (9 and 5),
+   two `Austin, TX` (7 and 1) and two `Raleigh, NC` (3 and 3). The previous
+   seven collisions were resolved by measuring each cluster's centroid and
+   naming it by its position relative to the core (`East Bangkok`,
+   `North Bangkok`); these want the same treatment and it is a judgement, not
+   a computation.
+2. **Two Bay Area clusters now reach across the Bay**, and the number says so
+   rather than the map. `Peninsula` picks up Union City and Castro Valley
+   (26.1km, **63.1%** internal play) and a new San Francisco cluster picks up
+   Berkeley, Alameda and El Cerrito (19.0km, 71.2%) - both the
+   two-halves-of-a-crossing signature `Jurong & Johor Bahru` carries at 52%.
+   The 30km cap was chosen as "the largest bound that does not merge across San
+   Francisco Bay"; with 1,113 more stores placed, straight-line distance now
+   bridges it. If that reads wrong, the knob is `--max-diameter`, not the name
+   table, and lowering it is a re-clustering like any other.
 
 #### Driving this from an agent
 

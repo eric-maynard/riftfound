@@ -257,14 +257,54 @@ the rating is published either way.
 `GET /api/rankings/map` answers "where are the competitive scenes" in one
 request, and the shape of the answer is the whole of its honesty.
 
-**One Query, no parameters.** The engine's `COMPONENT#<id>` items carry GSI1
-keys, so the whole catalogue is a single Query against one partition -
-**1,235 items for 46 read units**, measured against production on 2026-10-27.
-No scan, no profile fetches, no leaderboard pages. It takes no bounding box and
-no zoom on purpose: this is one cached answer every reader shares, and a
-viewport parameter would fragment the edge cache into a key per pan for a
-payload a browser can filter itself. `cacheRanking` applies, because the
-catalogue only moves when the engine refits.
+**It reads `SCENE#`, not `COMPONENT#`, and that was a bug fix rather than a
+refactor.** The endpoint used to serve the component catalogue under
+scene-shaped field names. A component is a reachability closure of the co-play
+graph - one travelling player welds two cities into one permanently - so the
+measured result was a map whose list read `Karlsruhe, Deutschland` and
+`Paris, France`, with `Peninsula`, `South Bay` and the other 1,121 real,
+named scenes **not selectable anywhere on it**; and a `?scene=<sceneId>` link,
+the only kind the event page can build, resolved to the unfiltered world view
+because the ids came from a different partition. The event page and the player
+profiles were already on scenes; the map and the picker were the two surfaces
+left behind.
+
+**One Query plus one GetItem, no parameters.** The engine's `SCENE#<sceneId>`
+items carry GSI1 keys, so the whole directory is a single Query against one
+partition - 1,123 scenes on the live assignment, the same order as the 1,235
+components it replaced (**46 read units**, measured against production on
+2026-10-27) and therefore the same cost. The GetItem is the engine's scope
+directory, for `coverage.unassignedVenues` / `unassignedPlayers`: see "What is
+in no scene" below. No scan, no profile fetches, no leaderboard pages. It takes
+no bounding box and no zoom on purpose: this is one cached answer every reader
+shares, and a viewport parameter would fragment the edge cache into a key per
+pan for a payload a browser can filter itself. `cacheRanking` applies, because
+the directory only moves when the engine refits.
+
+**A scene is not a ladder, and the payload keeps them apart.** The ladder's
+scope syntax is `all`, `set:<id>`, `component:<id>` or
+`set:<id>#component:<id>`. There is no `scene:` scope and this change did not
+add one, because `crossComponentUncertainty` is only correct for a connected
+component and a scene is additive. So a scene entry carries `componentId`,
+`componentSize` and `componentCount` - the **pool** holding most of its home
+players - and `comparable` is `isComparable(componentSize)`, a statement about
+that pool's board rather than about the scene's own player count. A caller
+presents the two as two facts; the frontend's `sceneLadderNote` is that
+sentence and the picker's row meta says "ladder shared with 3 other scenes".
+`componentId: null` is a normal value - nobody who plays there has been
+replayed - and means there is no board to link at, not that the scene is
+defective.
+
+**What is in no scene.** A catalogue of scenes cannot express an absence: a
+store whose regulars only ever play visitors fails the engine's intra-scene
+play-share gate and is simply not in the directory, so there is nothing for a
+page to render. 38 venues and 172 of 39,390 players on the live assignment; 97
+venues and 527 of 63,951 on the 2026-10-31 proposal. The figures therefore ride
+on `coverage`, off the engine's scope directory (`getSceneCoverage`, one
+GetItem, ~1 read unit on an already edge-cached route), and they are **null**
+rather than 0 for an engine that does not publish them - 0 would claim every
+store is placed. They travel even when the directory is empty, which is the one
+state in which they are the only numbers there are.
 
 **The place is read, never derived here.** A component has no coordinates of
 its own; they live on the per-player `MATCH#` items, and there is no index from
@@ -276,13 +316,28 @@ component a place on a map", for the derivation and for why it is a
 match-weighted *spherical* centroid with a spread published beside it.
 
 **A centroid is arithmetic; a place is a claim, and they are not the same
-thing.** This is the part of the endpoint that cost the most to get right.
-A scene's pin is the match-weighted centre of its venues, which for 1,282 of
-1,302 production scenes is a city and for the rest is **open country or open
-sea** - the largest scene in the corpus (5,254 players, 325 venues) centres
-360km out in the Gulf of Thailand, and a 2,138-player one centres 2,080km into
-the Pacific. Publishing those would assert that a scene is somewhere it has
-never played.
+thing.** This is the part of the endpoint that cost the most to get right,
+and - usefully - it is the part the move to scenes mostly retires.
+
+The whole distribution `SCENE_CENTROID_MAX_KM` was measured on is a
+distribution over **components**, and the pathological entries are pathological
+because a component has no geometric bound: the largest (5,254 players, 325
+venues) centres 360km out in the Gulf of Thailand and a 2,138-player one
+centres 2,080km into the Pacific.
+
+**A scene is diameter-capped, so it cannot do that.** Every store in one is
+within `--max-diameter` (30km) of every other, and a weighted mean of mutually
+within-30km points lies within 30km of each of them - so the centroid is at most
+~30km from the scene's own nearest venue, against a 100km gate. Measured on the
+2026-10-31 production proposal the largest scene extent in the corpus is
+**29.9km**, and 0 of 1,432 proposed scenes (and 0 of 1,123 live ones) are
+`dispersed`. The 20 scenes holding 40% of recorded players that used to come off
+the map were components, and they are gone with the component keying.
+
+The gate is kept, not deleted, and `SCENE_CENTROID_MAX_KM`'s comment says why:
+`--max-diameter` is a knob an operator can raise, and `--method louvain` is
+still the engine's default and has no diameter bound at all. A gate that never
+fires costs one comparison per scene.
 
 `spreadKm` does **not** separate those cases, which is the trap: a 448km spread
 centred on Germany is a national scene whose centre has stores all around it,
@@ -317,6 +372,16 @@ fallbacks are both refused in `getSceneMap`:
   half-written item reports unlocated rather than landing in the Gulf of
   Guinea.
 
+**Deploy the scraper first.** Production's 1,123 `SCENE#` items exist and were
+rewritten by a refit as recently as 2026-10-31, and they carry **no place
+fields and no `componentId`** - the engine that writes them is the change beside
+this one. So an API deployed ahead of the scraper serves 1,123 scenes that are
+all unlocated and all unlinked, and the page honestly says so ("1,123 scenes,
+none of them locatable") for up to `RANKING_REFIT_INTERVAL_HOURS` (24). That is
+the same discipline every other null here follows and it is not a failure
+state - but it is a worse map than the one it replaces, so the order is: deploy
+the scraper, let one refit run, then the API and the frontend.
+
 **"We cannot tell" is not "nothing is located".** `coverage.catalogueUnavailable`
 is true when the catalogue could not be read at all - a store with no catalogue
 reader, or an engine that has never refitted - and the page renders a different
@@ -330,17 +395,23 @@ comes back unlocated and the map says so.
 because the ratio between them is the caveat the page prints, and it cannot be
 derived from a list that has already been filtered.
 
-`getComponent(componentId)` is the other access pattern on the same items: one
-`COMPONENT#<id>` GetItem for a caller that already holds the id, ~1 read unit
-against this Query's ~46. The event page's scene line is that caller - see
-"An event's scene" - and it is optional on the store for the same reason this
-is.
+`getComponent(componentId)` is the other access pattern on the `COMPONENT#`
+items, which is why `listSceneCatalogue` survives the move: one GetItem for a
+caller that already holds the id, ~1 read unit against this Query's ~46. The
+event page's rating-pool line is that caller - see "An event's scene" - and it
+is optional on the store for the same reason this is. `getScene(sceneId)` is the
+matching read on `SCENE#`, and it shares `listSceneDirectory`'s mapping
+verbatim, so a scene named on an event page and the same scene drawn on the map
+can never read two different labels, or two different places, off one item.
 
-`listSceneCatalogue` is **optional** on `RankingStore`, like `listSetCatalogue`
-and for the same reason: those items only became enumerable once they carried
-GSI1 keys. A store without it, or one whose Query fails, reports
-`catalogueUnavailable` rather than a 500 - a map is not worth taking a page
-down for.
+`listSceneDirectory` is **optional** on `RankingStore`, like `listSetCatalogue`
+and `listSceneCatalogue`, and for the same reason: those items only became
+enumerable once they carried GSI1 keys. A store without it, or one whose Query
+fails, reports `catalogueUnavailable` rather than a 500 - a map is not worth
+taking a page down for. An **empty** directory reports the same thing, and that
+is deliberate: no `SCENE#` item exists until an operator has accepted a
+re-clustering *and* a refit has run since, and "0 of 0 scenes" would claim there
+are none.
 
 Note what this deliberately does **not** change: `listComponents` still
 summarises the scenes on the global board's first page, which is what the

@@ -282,7 +282,7 @@ interface SceneMapProps {
    */
   selected: SceneMapEntry | null;
   selectedId: string | null;
-  onSelect: (componentId: string | null) => void;
+  onSelect: (sceneId: string | null) => void;
   /**
    * The scene to emphasise without selecting it - the other half of the scene
    * picker's split pane talking to this one. Null when nothing is pointed at.
@@ -297,7 +297,7 @@ interface SceneMapProps {
    * can light the matching row. Omitted on the map page, which has no such
    * list; the venue layer and the tooltips are unaffected either way.
    */
-  onHighlight?: (componentId: string | null) => void;
+  onHighlight?: (sceneId: string | null) => void;
   /**
    * Which surface this canvas is drawn on. Four behaviours hang off it, and
    * all four are about the difference between a page about every scene and a
@@ -749,7 +749,7 @@ function SceneMap({
     for (const scene of ordered) {
       if (scene.latitude === null || scene.longitude === null) continue;
       const position: L.LatLngExpression = [scene.latitude, scene.longitude];
-      const selected = scene.componentId === selectedId;
+      const selected = scene.sceneId === selectedId;
       const colour = selected ? COLOR_SELECTED : scene.comparable ? COLOR_COMPARABLE : COLOR_SMALL;
 
       // The ground disc: a real distance, so metres and no stroke weight that
@@ -779,7 +779,7 @@ function SceneMap({
         fillColor: colour,
         fillOpacity: 0.85,
       });
-      dots.current.set(scene.componentId, { dot, radius, stroke, weight });
+      dots.current.set(scene.sceneId, { dot, radius, stroke, weight });
       // The tooltip is the name alone. Everything else about the scene is in
       // the panel, which is reachable by keyboard and readable by a screen
       // reader; a tooltip is neither.
@@ -789,10 +789,10 @@ function SceneMap({
         // just made.
         L.DomEvent.stopPropagation(event);
         selfSelected.current = true;
-        onSelect(scene.componentId);
+        onSelect(scene.sceneId);
       });
       if (onHighlight) {
-        dot.on('mouseover', () => onHighlight(scene.componentId));
+        dot.on('mouseover', () => onHighlight(scene.sceneId));
         dot.on('mouseout', () => onHighlight(null));
       }
       dot.addTo(layer);
