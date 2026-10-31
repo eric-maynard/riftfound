@@ -29,7 +29,6 @@ import {
   loadEventFactsByDate,
   loadEventNames,
   loadMatchLogMarkers,
-  loadSceneAssignment,
   loadShopLabels,
   saveRankingSnapshot,
   setLastRankingRefit,
@@ -41,7 +40,8 @@ import { ObservationBuilder, type ObservationSet } from './observations.js';
 import { connectivityReport, venueKey, type ConnectivityReport } from './graph.js';
 import { buildSnapshot, DEFAULT_SNAPSHOT_OPTIONS, type SnapshotDiagnostics, type SnapshotOptions } from './snapshot.js';
 import { MATCH_LOG_VERSION } from './items.js';
-import type { SceneAssignment } from './scenes.js';
+import { assignScenesFromRegions, type SceneAssignment } from './scenes.js';
+import { loadRegionIndex, RegionDataError, type RegionIndex } from './regions.js';
 import {
   buildEras,
   DEFAULT_PRERELEASE_OPTIONS,
@@ -309,17 +309,23 @@ export async function runRankingPass(options: RankingPassOptions = {}): Promise<
 
   const venueLabels = await resolveVenueLabels(observations);
 
-  // Scenes are read, never fitted here. A missing or unreadable assignment is
-  // not a failure: every scene field comes out null and the ladder is
-  // unaffected, until an operator runs ./scene-recluster.sh.
+  // Scenes come from the drawn region polygons, by point-in-polygon test. No
+  // clustering runs here and nothing is read from the table: the polygons are
+  // checked into the repo, so the same coordinates and the same files always
+  // give the same answer. See ranking/regions.ts.
+  //
+  // Two failure modes, deliberately different. **No polygons at all** is not a
+  // failure - the map is drawn by hand and will be incomplete for a long time,
+  // so every scene field comes out null and the ladder is unaffected, exactly as
+  // it did before any assignment existed. **Polygons that are wrong** throws,
+  // because a file that exists and is invalid is a mistake somebody can fix and
+  // skipping it would file stores nowhere while looking like missing polygons.
   const sceneAssignment =
     options.sceneAssignment !== undefined
       ? options.sceneAssignment
-      : await loadSceneAssignment().catch(error => {
-          console.warn(
-            `[ranking] scene assignment unavailable: ${error instanceof Error ? error.message : error}`
-          );
-          return null;
+      : assignScenesFromRegions(observations, readRegions(), {
+          venueLabels,
+          generatedAt: now,
         });
 
   const eventIds = [...new Set(observations.events.map(event => event.externalId))];
@@ -362,12 +368,20 @@ export async function runRankingPass(options: RankingPassOptions = {}): Promise<
           .join('; ')
     );
   }
+  const sceneStats = sceneAssignment?.stats;
   console.log(
     diagnostics.scenesUnassigned
-      ? `[ranking] ${diagnostics.venueCount} venues, scenes unassigned ` +
-          '(run scripts/metrics/scene-recluster.sh to create an assignment)'
-      : `[ranking] ${diagnostics.venueCount} venues across ${diagnostics.sceneCount} scenes ` +
-          `(assignment of ${sceneAssignment?.generatedAt ?? 'unknown date'})`
+      ? `[ranking] ${diagnostics.venueCount} venues, no region holds one ` +
+          `(${sceneStats?.regions ?? 0} polygons loaded from ` +
+          `${sceneAssignment?.regionFiles.length ?? 0} files - add polygons under ` +
+          'scraper/src/ranking/regions/, then scripts/metrics/region-coverage.sh)'
+      : `[ranking] ${diagnostics.venueCount} venues across ${diagnostics.sceneCount} regions ` +
+          `(${sceneStats?.regions ?? 0} polygons loaded; ${sceneStats?.unplacedVenues ?? 0} venues ` +
+          `and ${sceneStats?.unplacedPlayers ?? 0} players in no region; ` +
+          `${sceneStats?.lowIntraShareScenes ?? 0} regions below the ` +
+          `${sceneAssignment?.minIntraShare ?? 0} play-share bar, holding ` +
+          `${sceneStats?.lowIntraSharePlayers ?? 0} players - their ladders carry a caveat, ` +
+          'the regions do not vanish)'
   );
 
   if (options.dryRun) {
@@ -417,6 +431,26 @@ export function refitDue(lastRefit: string | null, intervalHours: number, now = 
   const last = Date.parse(lastRefit);
   if (!Number.isFinite(last)) return true;
   return now.getTime() - last >= intervalHours * 3_600_000;
+}
+
+/**
+ * Load the region polygons, letting an absent map through and a broken one stop.
+ *
+ * The distinction is the whole of it, so it is stated here rather than inferred
+ * from a try/catch: **no files** is the normal early state of a hand-drawn map
+ * and must not hold the ladder hostage, while **invalid files** are a mistake a
+ * human can fix and silently ignoring them would place stores nowhere while
+ * looking identical to an empty map.
+ */
+function readRegions(): RegionIndex {
+  try {
+    return loadRegionIndex();
+  } catch (error) {
+    if (error instanceof RegionDataError) {
+      console.error(`[ranking] region polygons are invalid, refusing to assign scenes:\n${error.message}`);
+    }
+    throw error;
+  }
 }
 
 export type { ConnectivityReport };

@@ -595,8 +595,14 @@ arrived looks, and at the foot under 60 rows of list.
   is why the list read `Karlsruhe, Deutschland` and `Paris, France`, why
   `Peninsula` was not selectable, and why `?scene=s94af82a16f` showed the
   unfiltered world - the ids under the parameter came from another partition.
-  A scene is a cluster of **stores** within 30km of each other, named the way a
-  local names it, and the engine publishes it as `SCENE#<sceneId>`.
+  A scene is a **hand-drawn region polygon** - a boundary somebody drew around
+  a place, named the way they name it - and the engine publishes it as
+  `SCENE#<sceneId>`, placing a store in it by a point-in-polygon test. It was a
+  30km-diameter cluster until that churned: re-running an agglomeration on more
+  data moved 12.2% of shared stores to a different scene and retired 144 ids,
+  so labels moved and `?scene=` links died. A polygon does not move, and where
+  one succeeds a clustered scene it **carries that scene's id**, which is why
+  every link handed out before the change still resolves.
 - **A scene has a ladder now, and the panel offers two links.** The first is
   **"Open this scene's ladder"** (`sceneLadderPath`, `?scene=`), the second
   **"See the whole rating pool"** (`scenePath`, `?region=`), and the row's
@@ -618,11 +624,27 @@ arrived looks, and at the foot under 60 rows of list.
   yet" better than a withheld link did - and gets no pool link, because there
   genuinely is no pool.
 - **Some stores are in no scene at all**, and the coverage line is the only
-  place that can say so: a store that failed the engine's intra-scene
-  play-share gate is absent from a catalogue of scenes by construction, so there
-  is no row to render. 38 on the live assignment. `sceneCoverageSentence` counts
-  them, and says nothing at all when the API sends null (an older engine) rather
-  than implying every store is placed.
+  place that can say so: a catalogue of scenes cannot express an absence, so
+  there is no row to render. The *reason* changed with the regions and the
+  wording should not outlive it - it used to be a store that failed the engine's
+  intra-scene play-share **gate** (38 on the live assignment), and it is now a
+  store no polygon covers yet. So the figure is a **coverage** number that
+  starts large and shrinks as the map is drawn, rather than a small residue.
+  `sceneCoverageSentence` counts them, and says nothing at all when the API
+  sends null (an older engine) rather than implying every store is placed.
+- **A region whose ladder is thin says so, and stays on the map.** That gate is
+  gone: the engine publishes the play-share measurement instead
+  (`intraShare`, `ladderMeaningful`) and the region keeps its pin, its name and
+  its counts. `sceneLadderMeaningNote` is the one sentence - "this region's
+  ladder is not meaningful yet: the players here mostly play against people
+  outside it" with the share in it - and it is **contextual, not standing
+  copy**: it prints in the selected scene's panel, above the links it qualifies,
+  and nowhere else. It is silent for a healthy region and silent for
+  `ladderMeaningful: null`, which is an engine that never measured it; reading
+  null as `false` would put the caveat under every region on the site for a
+  refit interval after a deploy, the same rule `profile.known` follows. Note
+  what it must not say: the region is not wrong, not small and not going away -
+  only its board is thin.
 - **A pin is derived, never inferred.** A scene has no coordinates of its own;
   its pin is the match-weighted centroid of the venues *its own games* were
   played at, computed by the rating engine during its replay. Nothing in the
@@ -637,11 +659,13 @@ arrived looks, and at the foot under 60 rows of list.
   centroid sitting more than 100km from the scene's own nearest venue, which
   used to take 20 of 1,302 *components* off the map - they held 40% of recorded
   players, and the two biggest centred 360km into the Gulf of Thailand and
-  2,080km into the Pacific. A scene is capped at 30km across, so its centroid is
-  within 30km of its own stores by construction; measured on the 2026-10-31
-  production proposal the largest scene extent in the corpus is 29.9km and
-  nothing is dispersed. The branch stays because `--max-diameter` is a knob and
-  `--method louvain` has no bound: such a scene arrives `dispersed: true`,
+  2,080km into the Pacific. While a scene was a 30km-diameter cluster its
+  centroid was within 30km of its own stores *by construction* - measured on the
+  2026-10-31 proposal the largest extent was 29.9km and nothing was dispersed.
+  A scene is a drawn polygon now, which is only as compact as whoever drew it,
+  so the branch is **load-bearing rather than defensive**: a region the size of
+  a country would have a centroid far from its nearest store. Such a scene
+  arrives `dispersed: true`,
   flagged `spans several regions` rather than `not on the map` - one is a gap in
   our geocoding, the other a true statement about the scene - and selecting it
   draws its **venues**, the only honest picture of where it plays.

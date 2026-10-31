@@ -32,7 +32,6 @@ import type {
   UpsertShopResult,
 } from './database.js';
 import type { PlayerProfile, RankingRow, RankingSnapshot } from './ranking/items.js';
-import type { SceneAssignment } from './ranking/scenes.js';
 import { buildPlayerSearchIndex } from './ranking/searchIndex.js';
 import { preserveMergedFields, type MergeOwnedFields } from './merge.js';
 // Value import; everything on the way back here is type-only, so no cycle.
@@ -1558,8 +1557,18 @@ export const COMPONENT_CATALOGUE_PARTITION = 'COMPONENT';
 export const VENUE_CATALOGUE_PARTITION = 'VENUE';
 export const SCENE_CATALOGUE_PARTITION = 'SCENE';
 
-/** The single row holding the persisted venue -> scene assignment. */
-const SCENE_ASSIGNMENT_KEY = 'SCENE_ASSIGNMENT';
+/*
+ * There is no `SCENE_ASSIGNMENT` row any more.
+ *
+ * It held the venue -> scene assignment because a scene was a clustering, and a
+ * clustering has to be computed rarely and stored to stop a reader's label
+ * moving. A scene is a drawn polygon now (`ranking/regions.ts`), so the
+ * assignment is a point-in-polygon test over files checked into the repo -
+ * deterministic, with nothing to persist and no stored copy that can disagree
+ * with the files. The item is not read, not written and not migrated; it is
+ * simply left where it is until somebody deletes it by hand, because deleting it
+ * from a refit path would be a write this pass has no reason to make.
+ */
 
 /**
  * Enumeration index for the catalogue items (`SET#<id>`, `COMPONENT#<id>`).
@@ -2007,52 +2016,44 @@ export async function saveRankingSnapshotDynamoDB(
 }
 
 /**
- * The persisted venue -> scene assignment.
+ * Every store the engine has published, with the scene it is filed under today.
  *
- * One row, read in full at the start of every refit and written only when an
- * operator re-clusters, so a single item is the right shape and a Query would
- * be ceremony. Stored **gzipped** for the same reason `SCRAPE_CYCLE` is: the
- * payload is a list that scales with the number of stores, and the uncompressed
- * JSON for a national assignment (plus one level of rollback history) would run
- * at DynamoDB's 400KB item limit. Gzip buys roughly an order of magnitude on
- * this kind of repetitive JSON.
+ * One GSI1 Query over the `VENUE` catalogue partition, projecting three
+ * attributes - the same read `/api/rankings/map` makes over `SCENE`, at the
+ * same cost. It exists for one caller: the region coverage report, which has to
+ * be able to say *"this store is in no polygon, and it is currently filed as
+ * Peninsula"*, because that sentence is what tells a human which polygon to
+ * draw next.
+ *
+ * Read-only, and deliberately reading the **published items** rather than
+ * recomputing: the question is what a reader sees now, not what a fresh
+ * assignment would say.
  */
-export async function loadSceneAssignmentDynamoDB(): Promise<SceneAssignment | null> {
-  const response = await getDynamoClient().send(new GetCommand({
-    TableName: getTableName(),
-    Key: { PK: SCENE_ASSIGNMENT_KEY, SK: SCENE_ASSIGNMENT_KEY },
-  }));
-  const raw = response.Item?.assignmentGz;
-  if (!raw) return null;
-  try {
-    return JSON.parse(gunzipSync(Buffer.from(raw as Uint8Array)).toString()) as SceneAssignment;
-  } catch (error) {
-    // A corrupt assignment must not take the ladder down: the refit simply
-    // publishes null scenes until an operator re-clusters.
-    console.error(
-      `[scenes] stored assignment unreadable (${error instanceof Error ? error.message : error}); ` +
-        'treating scenes as unassigned'
-    );
-    return null;
-  }
-}
-
-export async function saveSceneAssignmentDynamoDB(assignment: SceneAssignment): Promise<void> {
-  const payload = Buffer.from(JSON.stringify(assignment));
-  await getDynamoClient().send(new PutCommand({
-    TableName: getTableName(),
-    Item: {
-      PK: SCENE_ASSIGNMENT_KEY,
-      SK: SCENE_ASSIGNMENT_KEY,
-      entityType: 'SCENE_ASSIGNMENT',
-      version: assignment.version,
-      generatedAt: assignment.generatedAt,
-      resolution: assignment.resolution,
-      venueCount: assignment.venues.length,
-      sceneCount: assignment.scenes.length,
-      assignmentGz: gzipSync(payload),
-    },
-  }));
+export async function loadVenueScenesDynamoDB(): Promise<
+  Map<number, { sceneId: string | null; sceneLabel: string | null }>
+> {
+  const client = getDynamoClient();
+  const scenes = new Map<number, { sceneId: string | null; sceneLabel: string | null }>();
+  let lastEvaluatedKey: Record<string, unknown> | undefined;
+  do {
+    const response = await client.send(new QueryCommand({
+      TableName: getTableName(),
+      IndexName: 'GSI1',
+      KeyConditionExpression: 'GSI1PK = :pk',
+      ExpressionAttributeValues: { ':pk': VENUE_CATALOGUE_PARTITION },
+      ProjectionExpression: 'shopExternalId, sceneId, sceneLabel',
+      ExclusiveStartKey: lastEvaluatedKey,
+    }));
+    for (const item of response.Items ?? []) {
+      if (typeof item.shopExternalId !== 'number') continue;
+      scenes.set(item.shopExternalId, {
+        sceneId: typeof item.sceneId === 'string' ? item.sceneId : null,
+        sceneLabel: typeof item.sceneLabel === 'string' ? item.sceneLabel : null,
+      });
+    }
+    lastEvaluatedKey = response.LastEvaluatedKey as Record<string, unknown> | undefined;
+  } while (lastEvaluatedKey);
+  return scenes;
 }
 
 /** When the rating pass last completed, for the refit-interval gate. */

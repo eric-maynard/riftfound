@@ -9,10 +9,8 @@ import {
   getPlayerProfile,
   getPlayerRatingHistory,
   loadMatchLogMarkers,
-  loadSceneAssignment,
   getRankingRows,
   saveRankingSnapshot,
-  saveSceneAssignment,
   setLastRankingRefit,
   supportsRankingWrites,
 } from '../database.js';
@@ -29,7 +27,6 @@ import { ObservationBuilder } from '../ranking/observations.js';
 import { buildEras, SET_TABLE } from '../ranking/sets.js';
 import { buildSnapshot, DEFAULT_SNAPSHOT_OPTIONS } from '../ranking/snapshot.js';
 import { refitDue } from '../ranking/pass.js';
-import { SCENE_ASSIGNMENT_VERSION, type SceneAssignment } from '../ranking/scenes.js';
 import type { EventResults } from '../database.js';
 
 /**
@@ -615,64 +612,19 @@ describe('the snapshot builder', () => {
   });
 });
 
-describe('the persisted scene assignment', () => {
-  /**
-   * The one piece of cross-refit state the rating pass has, and the reason the
-   * scene labels are stable: a refit reads this and never fits one.
-   */
-  function assignment(overrides: Partial<SceneAssignment> = {}): SceneAssignment {
-    return {
-      version: SCENE_ASSIGNMENT_VERSION,
-      generatedAt: '2026-10-26T00:00:00.000Z',
-      resolution: 1,
-      carryJaccard: 0.5,
-      venues: [
-        { venue: 'shop:1', shopExternalId: 1, sceneId: 's-aaa', purity: 0.993 },
-        { venue: 'shop:2', shopExternalId: 2, sceneId: 's-aaa', purity: 1 },
-      ],
-      scenes: [{ sceneId: 's-aaa', label: 'Oakland, CA' }],
-      stats: {
-        venues: 2,
-        scenes: 1,
-        players: 12,
-        matches: 30,
-        modularity: 0.83,
-        communities: 1,
-        medianPurity: 0.9965,
-        splitVenues: 0,
-      },
-      previous: null,
-      ...overrides,
-    };
-  }
-
-  it('is null until an operator writes one, and never invented', async () => {
-    // A refit on a fresh database must publish null scenes rather than
-    // clustering on the fly - that is the whole premise.
-    expect(await loadSceneAssignment()).toBeNull();
-  });
-
-  it('round-trips, and a second write replaces it rather than appending', async () => {
-    await saveSceneAssignment(assignment());
-    const stored = await loadSceneAssignment();
-    expect(stored?.generatedAt).toBe('2026-10-26T00:00:00.000Z');
-    expect(stored?.venues).toHaveLength(2);
-    expect(stored?.scenes[0].label).toBe('Oakland, CA');
-    expect(stored?.resolution).toBe(1);
-
-    // One level of undo: the replacement carries its predecessor, and the
-    // predecessor's own `previous` is not nested again.
-    const second = assignment({
-      generatedAt: '2026-10-27T00:00:00.000Z',
-      previous: { ...assignment(), previous: undefined } as Omit<SceneAssignment, 'previous'>,
-    });
-    await saveSceneAssignment(second);
-    const after = await loadSceneAssignment();
-    expect(after?.generatedAt).toBe('2026-10-27T00:00:00.000Z');
-    expect(after?.previous?.generatedAt).toBe('2026-10-26T00:00:00.000Z');
-    expect(after?.previous?.venues).toHaveLength(2);
-  });
-});
+/*
+ * There is no persisted scene assignment any more, so there is nothing here to
+ * round-trip.
+ *
+ * It was the rating pass's only cross-refit state, and it existed because a
+ * scene was a clustering: the only way to stop a reader's label moving as the
+ * corpus grew was to compute the partition rarely and store the answer. A scene
+ * is a drawn polygon now, so the assignment is a point-in-polygon test over
+ * files checked into the repo - recomputed every refit and identical unless
+ * somebody edited a polygon. `rankingRegions.test.ts` pins the loader and
+ * `rankingScenes.test.ts` the assignment it produces; a storage test would have
+ * nothing left to say.
+ */
 
 describe('cleanup', () => {
   it('closes the pool', async () => {

@@ -130,6 +130,9 @@ python analyze-logs.py        # Detailed analysis
 # Database metrics (shops/events)
 ./db-metrics.sh --remote      # Production stats
 
+# Region coverage (which stores the hand-drawn scene polygons cover)
+./region-coverage.sh --remote # Production, read-only
+
 # Geocoding metrics (cache vs Mapbox API usage)
 ./geocode-metrics.sh --remote # Analyze from CloudWatch logs
 
@@ -141,3 +144,5 @@ Key metrics tracked:
 - **Traffic**: unique visitors, page views, event clicks, location searches
 - **Database**: events/shops added per day, distribution by type/state
 - **Geocoding**: cache hit rate, Mapbox API calls (forward/reverse/autocomplete), error rates
+- **Regions**: stores placed by the hand-drawn scene polygons, stores in no
+  polygon (with coordinates, so one can be drawn), polygons holding no store

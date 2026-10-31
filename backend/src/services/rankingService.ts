@@ -577,6 +577,10 @@ async function getSceneRankings(
       playerCount: scene?.playerCount ?? null,
       ratedPlayers: scene?.ratedCount ?? null,
       venueCount: scene?.venueCount ?? null,
+      // The play-share caveat, on the header of the board it qualifies. Null
+      // for an engine that never measured it, which reads as no caveat.
+      intraShare: scene?.intraShare ?? null,
+      ladderMeaningful: scene?.ladderMeaningful ?? null,
       componentId: poolComponentId,
       componentSize: poolSize,
       componentCount,
@@ -735,6 +739,10 @@ export async function getSceneMap(): Promise<SceneMapResult> {
       matchCount: scene.matchCount ?? 0,
       venueCount: scene.venueCount ?? 0,
       medianPurity: scene.medianPurity,
+      // Published, never enforced. The engine draws the region; this number
+      // says whether ordering its players among themselves means anything.
+      intraShare: scene.intraShare,
+      ladderMeaningful: scene.ladderMeaningful,
       // Deliberately not `isGiant` off the item: a component's `isGiant` is a
       // statistical fact about the giant component, and a scene has no such
       // thing. This is the plain reading - the scene with the most recorded

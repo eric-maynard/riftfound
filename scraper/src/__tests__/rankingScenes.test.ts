@@ -4,32 +4,34 @@ import { buildEras } from '../ranking/sets.js';
 import { findComponents } from '../ranking/graph.js';
 import { buildSnapshot, DEFAULT_SNAPSHOT_OPTIONS } from '../ranking/snapshot.js';
 import {
-  DEFAULT_CARRY_JACCARD,
-  DEFAULT_SCENE_RESOLUTION,
-  diffSceneAssignments,
-  proposeScenes,
+  assignScenesFromRegions,
+  DEFAULT_MIN_INTRA_SHARE,
   SCENE_ASSIGNMENT_VERSION,
 } from '../ranking/scenes.js';
+import { parseRegions, type RegionDefinition } from '../ranking/regions.js';
 import type { EventResults } from '../database.js';
 
 /**
- * Scenes: the persisted venue -> scene assignment.
+ * Scenes: the venue -> scene assignment, derived from the drawn regions.
  *
  * The properties pinned here are the ones the design rests on, not the surface
  * of the API:
  *
- * - **a store belongs to one scene**, and the purity says how true that is.
+ * - **a store belongs to one scene**, by point-in-polygon test, and the purity
+ *   says how true that is of its play.
  * - **`componentId` is untouched.** A scene is an addition; redefining the
  *   component would silently corrupt `crossComponentUncertainty`, whose formula
  *   is only valid for a connected component.
- * - **ids survive a re-clustering** when the scene is recognisably the same
- *   scene, because they are carried by venue-set Jaccard rather than derived
- *   from membership. That is the entire reason this is persisted state.
+ * - **a region's id does not move when the membership does.** That is the
+ *   entire reason this replaced a clustering, and `carriesSceneId` is how the
+ *   ids a clustering already handed out survive the move.
+ * - **the play-share measurement is a health signal, not a gate.** A region
+ *   below the bar is published with `ladderMeaningful: false`; it does not
+ *   vanish, because a human drew it.
+ * - **a store in no region is null, and reported.** Nothing is snapped to the
+ *   nearest polygon.
  * - **a geocode is never a venue id.** `venueKey`'s `geo:` fallback moves if the
  *   geocode moves, so an unresolved organizer gets no venue item and no scene.
- * - **an unassigned scene is null, not invented.** A refit that has never seen
- *   a re-clustering publishes venues with no scene rather than clustering on
- *   the fly.
  */
 
 const eras = buildEras();
@@ -108,7 +110,11 @@ const east = ['e1', 'e2', 'e3', 'e4', 'e5', 'e6'];
 
 /**
  * Two dense local scenes, each with two stores, joined by one travelling
- * player. The component partition sees one blob; the scene partition sees two.
+ * player. The component partition sees one blob; the regions see two.
+ *
+ * The fixture's shops sit at latitude `37 + shopId * 0.5` on longitude -122, so
+ * shop:1 and shop:2 are at 37.5 and 38.0 and shop:3 and shop:4 at 38.5 and 39.0
+ * - which is what the two boxes below are drawn around.
  */
 function twoScenes() {
   return build([
@@ -120,22 +126,53 @@ function twoScenes() {
   ]);
 }
 
-describe('proposeScenes', () => {
+/** A closed-enough axis-aligned box, in `[lng, lat]` order. */
+function box(minLng: number, minLat: number, maxLng: number, maxLat: number): number[][] {
+  return [
+    [minLng, minLat],
+    [maxLng, minLat],
+    [maxLng, maxLat],
+    [minLng, maxLat],
+  ];
+}
+
+function regions(...definitions: RegionDefinition[]) {
+  return parseRegions([{ path: 'test.json', text: JSON.stringify(definitions) }]);
+}
+
+/** Two boxes: one over shop:1 and shop:2, one over shop:3 and shop:4. */
+function twoRegions() {
+  return regions(
+    {
+      id: 'r-west',
+      name: 'West Valley',
+      rings: [box(-122.5, 37.25, -121.5, 38.25)],
+      // The id a clustering already handed out, carried forward so a shared
+      // `?scene=` link and the stored items keep resolving.
+      carriesSceneId: 's94af82a16f',
+    },
+    { id: 'r-east', name: 'East Valley', rings: [box(-122.5, 38.25, -121.5, 39.25)] }
+  );
+}
+
+describe('assignScenesFromRegions', () => {
   const observations = twoScenes();
 
-  it('assigns every store to exactly one scene, and says how pure that is', () => {
-    const assignment = proposeScenes(observations, { generatedAt: new Date('2026-10-26T00:00:00.000Z') });
+  it('assigns every store to exactly one region, and says how pure that is', () => {
+    const assignment = assignScenesFromRegions(observations, twoRegions(), {
+      generatedAt: new Date('2026-10-26T00:00:00.000Z'),
+    });
 
     expect(assignment.version).toBe(SCENE_ASSIGNMENT_VERSION);
-    expect(assignment.resolution).toBe(DEFAULT_SCENE_RESOLUTION);
-    expect(assignment.carryJaccard).toBe(DEFAULT_CARRY_JACCARD);
-    expect(assignment.venues.map(row => row.venue).sort()).toEqual([
+    expect(assignment.minIntraShare).toBe(DEFAULT_MIN_INTRA_SHARE);
+    expect(assignment.venues.map(row => row.venue)).toEqual([
       'shop:1',
       'shop:2',
       'shop:3',
       'shop:4',
     ]);
-    // One row per venue: a store cannot be in two scenes.
+    // One row per venue: a store cannot be in two regions. The loader refuses
+    // overlapping polygons outright, so this is the downstream half of it.
     expect(new Set(assignment.venues.map(row => row.venue)).size).toBe(assignment.venues.length);
 
     const sceneOf = new Map(assignment.venues.map(row => [row.venue, row.sceneId]));
@@ -143,6 +180,8 @@ describe('proposeScenes', () => {
     expect(sceneOf.get('shop:3')).toBe(sceneOf.get('shop:4'));
     expect(sceneOf.get('shop:1')).not.toBe(sceneOf.get('shop:3'));
     expect(assignment.scenes).toHaveLength(2);
+    expect(assignment.unplaced).toEqual([]);
+    expect(assignment.stats.boundaryTies).toBe(0);
 
     // The stores with no visitors from the other scene are perfectly pure; the
     // bridge venue is not, which is exactly the signal purity exists to carry.
@@ -153,131 +192,164 @@ describe('proposeScenes', () => {
     expect(assignment.stats.medianPurity).toBeGreaterThan(0.9);
   });
 
+  it('publishes the carried scene id, and keeps the region id behind it', () => {
+    // This is the migration in one assertion. The polygon's own id is
+    // `r-west`; what every reader sees is the scene id the clustering had
+    // already handed out, so a bookmarked `?scene=s94af82a16f` still resolves
+    // and no stored item is orphaned.
+    const assignment = assignScenesFromRegions(observations, twoRegions());
+    const west = assignment.venues.find(row => row.venue === 'shop:1')!;
+    expect(west.sceneId).toBe('s94af82a16f');
+    expect(west.regionId).toBe('r-west');
+
+    const scene = assignment.scenes.find(row => row.sceneId === 's94af82a16f')!;
+    expect(scene.regionId).toBe('r-west');
+    expect(scene.label).toBe('West Valley');
+
+    // A region that succeeds nothing publishes under its own id, which is
+    // deliberately distinguishable from a scene id at a glance.
+    const east = assignment.venues.find(row => row.venue === 'shop:3')!;
+    expect(east.sceneId).toBe('r-east');
+    expect(east.regionId).toBe('r-east');
+  });
+
+  it('takes a region name verbatim, never deriving one from the stores in it', () => {
+    // The old rule was the match-weighted modal city label of a cluster's
+    // venues, corrected by a table keyed on the cluster's busiest shop id -
+    // which detached the first time a busier store opened. A polygon carries
+    // its own name, so no city label can change it.
+    const assignment = assignScenesFromRegions(observations, twoRegions(), {
+      venueLabels: new Map([
+        ['shop:1', 'Oakland, CA'],
+        ['shop:2', 'Oakland, CA'],
+      ]),
+    });
+    expect(assignment.scenes.map(scene => scene.label).sort()).toEqual([
+      'East Valley',
+      'West Valley',
+    ]);
+  });
+
   it('does not change what componentId means - the whole graph is still one component', () => {
     expect(findComponents(observations).components).toHaveLength(1);
-    expect(proposeScenes(observations).scenes).toHaveLength(2);
+    expect(assignScenesFromRegions(observations, twoRegions()).scenes).toHaveLength(2);
+  });
+
+  it('is deterministic - the same inputs give byte-identical assignments', () => {
+    const at = new Date('2026-10-26T00:00:00.000Z');
+    const a = assignScenesFromRegions(observations, twoRegions(), { generatedAt: at });
+    const b = assignScenesFromRegions(observations, twoRegions(), { generatedAt: at });
+    expect(JSON.stringify(a)).toBe(JSON.stringify(b));
+  });
+
+  it('is unmoved by a store opening outside every region', () => {
+    // The whole point of the change. Under the clustering, adding a store
+    // re-ran an agglomeration and moved boundaries elsewhere; here the two
+    // regions report the identical membership and the new store is reported as
+    // unplaced rather than absorbed by whichever polygon is nearest.
+    const before = assignScenesFromRegions(observations, twoRegions());
+    const after = assignScenesFromRegions(
+      build([
+        ...clique('w', west, 1),
+        ...clique('w2nd', west, 2, 1),
+        ...clique('e', east, 3),
+        ...clique('e2nd', east, 4, 1),
+        ...clique('f', ['f1', 'f2', 'f3', 'f4'], 5),
+        event('bridge', '2026-10-05', [['w1', 'e1']], 1),
+      ]),
+      twoRegions()
+    );
+
+    expect(after.venues.map(row => `${row.venue}=${row.sceneId}`)).toEqual(
+      before.venues.map(row => `${row.venue}=${row.sceneId}`)
+    );
+    expect(after.scenes.map(scene => scene.sceneId)).toEqual(
+      before.scenes.map(scene => scene.sceneId)
+    );
+    // shop:5 sits at 39.5, north of both boxes.
+    expect(after.unplaced.map(row => row.venue)).toEqual(['shop:5']);
+    expect(after.stats.unplacedVenues).toBe(1);
+    expect(after.stats.unplacedPlayers).toBe(4);
+    expect(after.unplaced[0].latitude).toBeCloseTo(39.5, 6);
+    expect(after.unplaced[0].longitude).toBeCloseTo(-122, 6);
   });
 
   it('never assigns a scene to a venue without a real shop id', () => {
     // An organizer that never resolved to a shop: venueKey falls back to a 1km
-    // coordinate rounding, which would move if the geocode moved.
+    // coordinate rounding, which would move if the geocode moved. The fixture
+    // puts such an event at latitude 41.5, so it is also outside both boxes -
+    // the assertion is that it is not even a candidate.
     const withUnresolved = build([
       ...clique('w', west, 1),
       ...clique('u', ['u1', 'u2', 'u3', 'u4'], null),
     ]);
-    const assignment = proposeScenes(withUnresolved);
+    const assignment = assignScenesFromRegions(withUnresolved, twoRegions());
     expect(assignment.venues.every(row => row.venue.startsWith('shop:'))).toBe(true);
+    expect(assignment.unplaced.every(row => row.venue.startsWith('shop:'))).toBe(true);
     expect(assignment.venues.every(row => Number.isFinite(row.shopExternalId))).toBe(true);
   });
 
-  it('is deterministic - the same observations give byte-identical assignments', () => {
-    const at = new Date('2026-10-26T00:00:00.000Z');
-    const a = proposeScenes(observations, { generatedAt: at });
-    const b = proposeScenes(observations, { generatedAt: at });
-    expect(JSON.stringify(a)).toBe(JSON.stringify(b));
+  it('reports the extent of the stores actually in a region, not of the polygon', () => {
+    const assignment = assignScenesFromRegions(observations, twoRegions());
+    // shop:1 and shop:2 are half a degree of latitude apart, ~55km.
+    const west = assignment.scenes.find(scene => scene.regionId === 'r-west')!;
+    expect(west.extentKm).toBeGreaterThan(50);
+    expect(west.extentKm).toBeLessThan(60);
+    expect(assignment.stats.maxExtentKm).toBe(
+      Math.max(...assignment.scenes.map(scene => scene.extentKm))
+    );
   });
+});
 
-  it('names a scene from its venues and keeps the old name when nothing is geocoded', () => {
-    const labels = new Map([
-      ['shop:1', 'Oakland, CA'],
-      ['shop:2', 'Oakland, CA'],
+describe('the play-share measurement is a health signal, not a gate', () => {
+  it('publishes a region whose players mostly play elsewhere, flagged', () => {
+    // Four locals who only ever play visitors from the eastern scene: their
+    // store's internal play share is 0, which under the clustering deleted the
+    // scene and published its venues with no scene at all. A human drew this
+    // boundary, so it stays - with the measurement attached.
+    const visitors: [string, string][] = [
+      ['h1', 'e1'],
+      ['h2', 'e2'],
+      ['h3', 'e3'],
+      ['h4', 'e4'],
+    ];
+    const observations = build([
+      ...clique('e', east, 3),
+      ...clique('e2nd', east, 4, 1),
+      event('away0', '2026-10-01', visitors, 1),
+      event('away1', '2026-10-02', visitors, 1),
     ]);
-    const named = proposeScenes(observations, { venueLabels: labels });
-    const sceneOf = new Map(named.venues.map(row => [row.venue, row.sceneId]));
-    const labelOf = new Map(named.scenes.map(scene => [scene.sceneId, scene.label]));
-    expect(labelOf.get(sceneOf.get('shop:1')!)).toBe('Oakland, CA');
-    // The other scene has no geocoded venue yet, so it is honestly unlabelled.
-    expect(labelOf.get(sceneOf.get('shop:3')!)).toBeNull();
+    const assignment = assignScenesFromRegions(observations, twoRegions());
 
-    // Re-clustering without labels keeps the name a carried scene already had,
-    // so a label does not flicker to null between runs.
-    const again = proposeScenes(observations, { previous: named });
-    const labelAgain = new Map(again.scenes.map(scene => [scene.sceneId, scene.label]));
-    const sceneAgain = new Map(again.venues.map(row => [row.venue, row.sceneId]));
-    expect(labelAgain.get(sceneAgain.get('shop:1')!)).toBe('Oakland, CA');
+    const hollow = assignment.scenes.find(scene => scene.regionId === 'r-west')!;
+    expect(hollow.intraShare).toBe(0);
+    expect(hollow.ladderMeaningful).toBe(false);
+    // Published, named, and holding its store - the two assertions that say
+    // this is not a gate.
+    expect(assignment.venues.find(row => row.venue === 'shop:1')!.sceneId).toBe('s94af82a16f');
+    expect(assignment.unplaced).toEqual([]);
+
+    const healthy = assignment.scenes.find(scene => scene.regionId === 'r-east')!;
+    expect(healthy.ladderMeaningful).toBe(true);
+    expect(healthy.intraShare).toBeGreaterThan(0.5);
+
+    expect(assignment.stats.lowIntraShareScenes).toBe(1);
+    expect(assignment.stats.lowIntraSharePlayers).toBe(4);
+  });
+
+  it('reads the flag against the published threshold, so the bar is visible', () => {
+    const observations = twoScenes();
+    const strict = assignScenesFromRegions(observations, twoRegions(), { minIntraShare: 1.1 });
+    expect(strict.minIntraShare).toBe(1.1);
+    expect(strict.scenes.every(scene => scene.ladderMeaningful)).toBe(false);
+    expect(strict.stats.lowIntraShareScenes).toBe(2);
+    // And still nothing is withheld: every store keeps its region.
+    expect(strict.venues).toHaveLength(4);
+    expect(strict.unplaced).toEqual([]);
   });
 });
 
-describe('ids survive a re-clustering', () => {
-  it('carries an id forward when the scene is recognisably the same scene', () => {
-    const before = proposeScenes(twoScenes());
-    // A new store joins the western scene and the two scenes play a bit more.
-    // The membership changed, so a membership-derived id would be renamed.
-    const after = proposeScenes(
-      build([
-        ...clique('w', west, 1),
-        ...clique('w2nd', west, 2, 1),
-        ...clique('w3rd', west, 5, 1),
-        ...clique('e', east, 3),
-        ...clique('e2nd', east, 4, 1),
-        event('bridge', '2026-10-05', [['w1', 'e1']], 1),
-      ]),
-      { previous: before }
-    );
-
-    const beforeIds = new Set(before.scenes.map(scene => scene.sceneId));
-    const afterIds = new Set(after.scenes.map(scene => scene.sceneId));
-    expect([...afterIds].filter(id => beforeIds.has(id))).toHaveLength(2);
-
-    const diff = diffSceneAssignments(before, after);
-    expect(diff.churn).toBe(0);
-    expect(diff.added.map(move => move.venue)).toEqual(['shop:5']);
-    expect(diff.newScenes).toEqual([]);
-    expect(diff.retiredScenes).toEqual([]);
-    expect(diff.carriedScenes).toBe(2);
-  });
-
-  it('gives a genuinely new scene a new id rather than inheriting a name', () => {
-    const before = proposeScenes(build([...clique('w', west, 1), ...clique('w2nd', west, 2, 1)]));
-    const after = proposeScenes(
-      build([
-        ...clique('w', west, 1),
-        ...clique('w2nd', west, 2, 1),
-        // A second scene appears, with no venue in common with the first.
-        ...clique('e', east, 3),
-        ...clique('e2nd', east, 4, 1),
-      ]),
-      { previous: before }
-    );
-    const diff = diffSceneAssignments(before, after);
-    expect(diff.newScenes).toHaveLength(1);
-    expect(diff.carriedScenes).toBe(1);
-    expect(diff.churn).toBe(0);
-  });
-
-  it('keeps one level of rollback and never nests it twice', () => {
-    const first = proposeScenes(twoScenes());
-    expect(first.previous).toBeNull();
-    const second = proposeScenes(twoScenes(), { previous: first });
-    expect(second.previous?.generatedAt).toBe(first.generatedAt);
-    const third = proposeScenes(twoScenes(), { previous: second });
-    expect(third.previous?.generatedAt).toBe(second.generatedAt);
-    expect((third.previous as Record<string, unknown>).previous).toBeUndefined();
-  });
-
-  it('reports the churn and the stores that would move', () => {
-    const before = proposeScenes(twoScenes());
-    // Force a re-partition by handing the diff a proposal whose venues are
-    // deliberately shuffled between the two scene ids.
-    const [sceneA, sceneB] = before.scenes.map(scene => scene.sceneId);
-    const swapped = {
-      ...before,
-      venues: before.venues.map(row => ({
-        ...row,
-        sceneId: row.sceneId === sceneA ? sceneB : sceneA,
-      })),
-    };
-    const diff = diffSceneAssignments(before, swapped);
-    expect(diff.shared).toBe(4);
-    expect(diff.moved).toHaveLength(4);
-    expect(diff.churn).toBe(1);
-    // Highest purity first: those are the real changes of mind, not close calls.
-    expect(diff.moved[0].purity).toBeGreaterThanOrEqual(diff.moved[3].purity);
-    expect(diff.moved[0].fromSceneId).not.toBe(diff.moved[0].toSceneId);
-  });
-});
-
-describe('the refit reads the assignment, it does not fit one', () => {
+describe('the refit places stores in regions, it does not fit a partition', () => {
   const observations = twoScenes();
   const venueLabels = new Map([
     ['shop:1', 'Oakland, CA'],
@@ -299,7 +371,7 @@ describe('the refit reads the assignment, it does not fit one', () => {
     generatedAt: new Date('2026-10-26T00:00:00.000Z'),
   };
 
-  it('publishes venue items with null scenes until a re-clustering exists', () => {
+  it('publishes venue items with null scenes until a polygon contains them', () => {
     const { snapshot, diagnostics } = buildSnapshot(observations, { ...base, sceneAssignment: null });
     expect(diagnostics.scenesUnassigned).toBe(true);
     expect(snapshot.scenes).toHaveLength(0);
@@ -312,8 +384,8 @@ describe('the refit reads the assignment, it does not fit one', () => {
     for (const profile of snapshot.profiles) expect(profile.sceneId).toBeNull();
   });
 
-  it('carries the stored scene onto the venue, the profile and the ladder row', () => {
-    const assignment = proposeScenes(observations, { venueLabels });
+  it('carries the region onto the venue, the profile and the ladder row', () => {
+    const assignment = assignScenesFromRegions(observations, twoRegions(), { venueLabels });
     const { snapshot, diagnostics } = buildSnapshot(observations, { ...base, sceneAssignment: assignment });
 
     expect(diagnostics.scenesUnassigned).toBe(false);
@@ -324,8 +396,10 @@ describe('the refit reads the assignment, it does not fit one', () => {
     const one = venues.get('shop:1')!;
     expect(one.shopExternalId).toBe(1);
     expect(one.name).toBe('Oakland, CA');
-    expect(one.sceneId).not.toBeNull();
-    expect(one.sceneLabel).toBe('Oakland, CA');
+    // The *store's* city label and the *region's* name are different things,
+    // and the region's is what the scene fields carry.
+    expect(one.sceneId).toBe('s94af82a16f');
+    expect(one.sceneLabel).toBe('West Valley');
     expect(one.scenePurity).toBeGreaterThan(0.9);
     expect(one.latitude).toBeCloseTo(37.5, 6);
     expect(one.events).toBe(3); // two clique rounds plus the bridge event
@@ -354,14 +428,28 @@ describe('the refit reads the assignment, it does not fit one', () => {
     expect(new Set(snapshot.profiles.map(profile => profile.componentId)).size).toBe(1);
   });
 
+  it('publishes the play-share measurement on the SCENE# item', () => {
+    // The API and UI say "this region's ladder is not meaningful yet" off these
+    // two fields, which is only possible because the region is still here to
+    // say it about.
+    const assignment = assignScenesFromRegions(observations, twoRegions(), { venueLabels });
+    const { snapshot } = buildSnapshot(observations, { ...base, sceneAssignment: assignment });
+    for (const scene of snapshot.scenes) {
+      expect(scene.regionId).toMatch(/^r-/);
+      expect(typeof scene.intraShare).toBe('number');
+      expect(scene.ladderMeaningful).toBe(true);
+    }
+    const west = snapshot.scenes.find(scene => scene.regionId === 'r-west')!;
+    expect(west.sceneId).toBe('s94af82a16f');
+    expect(west.label).toBe('West Valley');
+  });
+
   it('gives each scene a place, from the same derivation a component gets', () => {
     // `scenePlace` takes venue tallies and knows nothing about which partition
     // produced them, which is why the map could move from `COMPONENT#` to
-    // `SCENE#` without a line of arithmetic changing. This pins that the scene
-    // item actually carries the result - an empty place here is a map with no
-    // pins on it, which is what the component-keyed version was protecting
-    // against and is no longer a reason to stay on components.
-    const assignment = proposeScenes(observations, { venueLabels });
+    // `SCENE#` without a line of arithmetic changing, and why the move to
+    // polygons did not touch it either.
+    const assignment = assignScenesFromRegions(observations, twoRegions(), { venueLabels });
     const { snapshot } = buildSnapshot(observations, { ...base, sceneAssignment: assignment });
 
     for (const scene of snapshot.scenes) {
@@ -395,7 +483,7 @@ describe('the refit reads the assignment, it does not fit one', () => {
     // therefore writes no `RANKING#scene:<id>` board - the API's `scene:<id>`
     // scope filters this pool's board instead - so the item carries the pool as
     // a separate field and `componentId` keeps its meaning.
-    const assignment = proposeScenes(observations, { venueLabels });
+    const assignment = assignScenesFromRegions(observations, twoRegions(), { venueLabels });
     const { snapshot } = buildSnapshot(observations, { ...base, sceneAssignment: assignment });
 
     const pools = new Set(snapshot.profiles.map(profile => profile.componentId));
@@ -416,7 +504,7 @@ describe('the refit reads the assignment, it does not fit one', () => {
   });
 
   it('caps the denormalised roster and says it was cut short', () => {
-    const assignment = proposeScenes(observations, { venueLabels });
+    const assignment = assignScenesFromRegions(observations, twoRegions(), { venueLabels });
     const { snapshot } = buildSnapshot(observations, {
       ...base,
       sceneAssignment: assignment,

@@ -278,6 +278,35 @@ export function scenePurityHint(scene: SceneMapEntry): string | null {
   );
 }
 
+/**
+ * Why this region's ladder is thin, or null when it is not.
+ *
+ * **The caveat the regions made necessary.** The engine used to *withhold* a
+ * scene whose players mostly play elsewhere: there was no row, no pin and no
+ * label, so the only thing a page could say was the coverage line's "38 stores
+ * are in no scene yet". A scene is a hand-drawn region now, which means it is
+ * on the map whatever its play looks like - so the honest thing to say is that
+ * the *ladder* is not meaningful yet, beside the region that is.
+ *
+ * Silent in two cases, and they are different. `ladderMeaningful: true` is the
+ * common one and needs no sentence. **`null` means the engine never measured
+ * it** - an older deploy - and reads as no caveat rather than a failing one,
+ * the same rule `profile.known` and `coverage` follow.
+ *
+ * It states the number because the number is the whole content of the claim: a
+ * region at 31% is a place whose players mostly travel, and that is worth
+ * knowing about the place as well as about the board.
+ */
+export function sceneLadderMeaningNote(scene: SceneMapEntry): string | null {
+  if (scene.ladderMeaningful !== false) return null;
+  const share =
+    scene.intraShare === null ? '' : ` Only ${Math.round(scene.intraShare * 100)}% of their games are.`;
+  return (
+    'This region’s ladder is not meaningful yet: the players here mostly play against people ' +
+    `outside it, so ordering them among themselves says little.${share}`
+  );
+}
+
 /** The same fact as the figure itself: `96%`, or null when there is none. */
 export function scenePurityLabel(scene: SceneMapEntry): string | null {
   if (scene.medianPurity === null || scene.medianPurity >= 0.999) return null;

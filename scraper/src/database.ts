@@ -38,10 +38,9 @@ import {
   loadEventFactsByDateDynamoDB,
   loadEventNamesDynamoDB,
   loadMatchLogMarkersDynamoDB,
-  loadSceneAssignmentDynamoDB,
   loadShopLabelsDynamoDB,
+  loadVenueScenesDynamoDB,
   saveRankingSnapshotDynamoDB,
-  saveSceneAssignmentDynamoDB,
   getLastRankingRefitDynamoDB,
   setLastRankingRefitDynamoDB,
   getPlayerProfileDynamoDB,
@@ -56,7 +55,6 @@ import type {
   RankingRow,
   RankingSnapshot,
 } from './ranking/items.js';
-import type { SceneAssignment } from './ranking/scenes.js';
 import { buildPlayerSearchIndex } from './ranking/searchIndex.js';
 import type { MergeOwnedFields } from './merge.js';
 import type { ScrapeCycle } from './cancellations.js';
@@ -496,12 +494,12 @@ function initSqliteSchema(db: Database.Database) {
       payload TEXT NOT NULL
     );
 
-    -- The persisted venue -> scene assignment: one row, rewritten only when an
-    -- operator re-clusters. This is the rating pass's only cross-refit state.
-    CREATE TABLE IF NOT EXISTS ranking_scene_assignment (
-      key TEXT PRIMARY KEY,
-      payload TEXT NOT NULL
-    );
+    -- There is no scene-assignment table any more. A scene used to be a
+    -- clustering, which had to be computed rarely and stored; it is a drawn
+    -- polygon now (ranking/regions.ts), so the assignment is recomputed from
+    -- files on every refit and the pass carries no cross-refit state at all.
+    -- An existing dev database keeps its now-unread ranking_scene_assignment
+    -- table: dropping it here would make opening a database a destructive act.
 
     -- The display-name index: the SQLite mirror of the PLAYER_SEARCH /
     -- SHARD#<nnn> items. Stored uncompressed here, because the reason to gzip
@@ -1821,36 +1819,35 @@ export async function saveRankingSnapshot(
 }
 
 /**
- * The persisted venue -> scene assignment.
+ * Every published store's current scene, for the region coverage report.
  *
- * The rating pass only ever **reads** this; it is written by the re-clustering
- * CLI (`ranking/recluster.ts`). That split is the whole design: a scene has to
- * be stable between deliberate re-clusterings, and a partition recomputed every
- * refit moves 12-18% of its labels (see ranking/scenes.ts).
+ * Reads the **published** `VENUE#` items rather than recomputing an assignment:
+ * the report's job is to say what a reader sees today beside what the polygons
+ * would say, and recomputing both sides would make the comparison vacuous.
+ * Empty on PostgreSQL, which has no ranking reader - the same rule
+ * `supportsRankingWrites()` follows.
  */
-export async function loadSceneAssignment(): Promise<SceneAssignment | null> {
-  if (useDynamoDB()) return loadSceneAssignmentDynamoDB();
-  if (!useSqlite()) return null;
-  const row = getSqliteDb()
-    .prepare("SELECT payload FROM ranking_scene_assignment WHERE key = 'current'")
-    .get() as { payload: string } | undefined;
-  if (!row) return null;
-  try {
-    return JSON.parse(row.payload) as SceneAssignment;
-  } catch {
-    return null;
+export async function loadVenueScenes(): Promise<
+  Map<number, { sceneId: string | null; sceneLabel: string | null }>
+> {
+  if (useDynamoDB()) return loadVenueScenesDynamoDB();
+  if (!useSqlite()) return new Map();
+  const rows = getSqliteDb()
+    .prepare('SELECT shop_external_id, payload FROM ranking_venues')
+    .all() as { shop_external_id: number; payload: string }[];
+  const scenes = new Map<number, { sceneId: string | null; sceneLabel: string | null }>();
+  for (const row of rows) {
+    try {
+      const item = JSON.parse(row.payload) as { sceneId?: string | null; sceneLabel?: string | null };
+      scenes.set(row.shop_external_id, {
+        sceneId: item.sceneId ?? null,
+        sceneLabel: item.sceneLabel ?? null,
+      });
+    } catch {
+      scenes.set(row.shop_external_id, { sceneId: null, sceneLabel: null });
+    }
   }
-}
-
-export async function saveSceneAssignment(assignment: SceneAssignment): Promise<void> {
-  if (useDynamoDB()) return saveSceneAssignmentDynamoDB(assignment);
-  if (!useSqlite()) throw new Error('saveSceneAssignment is not implemented for PostgreSQL');
-  getSqliteDb()
-    .prepare(`
-      INSERT INTO ranking_scene_assignment (key, payload) VALUES ('current', ?)
-      ON CONFLICT(key) DO UPDATE SET payload = excluded.payload
-    `)
-    .run(JSON.stringify(assignment));
+  return scenes;
 }
 
 /** When the rating pass last completed. Gates the refit interval. */

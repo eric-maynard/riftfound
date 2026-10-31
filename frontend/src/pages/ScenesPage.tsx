@@ -10,6 +10,7 @@ import {
   sceneComparableHint,
   sceneCoverageSentence,
   sceneLabel,
+  sceneLadderMeaningNote,
   sceneLadderNote,
   scenePlaceHint,
   scenePurityHint,
@@ -300,6 +301,7 @@ function SceneDetail({
   const located = scene.latitude !== null && scene.longitude !== null;
   const tooSmall = sceneComparableHint(scene, minSceneSize);
   const ladder = sceneLadderNote(scene);
+  const thin = sceneLadderMeaningNote(scene);
   const purity = scenePurityHint(scene);
   const purityLabel = scenePurityLabel(scene);
   const place = scenePlaceHint(scene);
@@ -369,6 +371,14 @@ function SceneDetail({
       {(!located || scene.dispersed) && <p className="scene-place-note">{place}</p>}
 
       {tooSmall && <p className="scene-place-note">{tooSmall}</p>}
+
+      {/* Why this region's ladder is thin, where it is. Silent otherwise, and
+          silent for an engine that never measured it - a caveat met before the
+          thing it qualifies is the failure this page has already been caught
+          in once. It sits above the links, with the other sentences that
+          qualify them, rather than on the figures: this is a statement about
+          the board the button opens, not about the region's own numbers. */}
+      {thin && <p className="scene-place-note">{thin}</p>}
 
       {/* How honestly the scene holds together, where it does not hold
           outright. Silent at 100%, which is almost every scene. */}

@@ -632,6 +632,12 @@ export function createFixtureRankingStore(data: FixtureData = LAUNCH_FIXTURE_DAT
       ratedCount: rated.size,
       matchCount: Math.round(halfMatches / 2),
       medianPurity: purities.length === 0 ? null : purities[purities.length >> 1],
+      // The fixture's scenes are dense by construction, so the in-scene play
+      // share is 1 and every ladder is meaningful. The *null* case - an engine
+      // that never measured it - is exercised by the API tests directly, since
+      // a fixture that sent null would hide the normal path.
+      intraShare: 1,
+      ladderMeaningful: true,
       assignedAt: FIXTURE_GENERATED_AT,
       ...place,
       locatedVenues: venues.length,

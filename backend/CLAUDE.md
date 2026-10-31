@@ -376,6 +376,17 @@ qualifies: the rows shown are all in one pool, so **their order is real** and
 scene*. Mixing the pools would be the cross-scale board the ladder already
 declines to call a placement, and it is not done.
 
+**The play-share caveat rides this header, and it is not a gate.** `scene`
+carries `intraShare` and `ladderMeaningful` off the `SCENE#` item.
+`ladderMeaningful: false` says the rows below are real ratings whose games were
+mostly played against people *outside* this region, so their order among
+themselves is thin evidence - **milder and different from `comparable: false`**,
+which says the pool cannot be ordered at all; a region below the bar inside a
+large pool is still comparable. The engine used to withhold such a scene
+entirely, so there was no board to caveat; a region is drawn by a human now, so
+the board is served with the caveat attached. Null on both is an engine that
+never measured it, and reads as no caveat.
+
 **Coverage comes from the scene, not from the board.** The board holds a row
 only for a rated player, so it structurally cannot say how many people play in
 the scene; the `SCENE#` item can, and `coverage.totalPlayers` is its
@@ -442,16 +453,38 @@ allow that - a scene board is this pool's board *filtered* - and the pool link
 is still published, under its own name. See "A scene board is a filter, not a
 fit".
 
-**What is in no scene.** A catalogue of scenes cannot express an absence: a
-store whose regulars only ever play visitors fails the engine's intra-scene
-play-share gate and is simply not in the directory, so there is nothing for a
-page to render. 38 venues and 172 of 39,390 players on the live assignment; 97
-venues and 527 of 63,951 on the 2026-10-31 proposal. The figures therefore ride
-on `coverage`, off the engine's scope directory (`getSceneCoverage`, one
-GetItem, ~1 read unit on an already edge-cached route), and they are **null**
-rather than 0 for an engine that does not publish them - 0 would claim every
-store is placed. They travel even when the directory is empty, which is the one
-state in which they are the only numbers there are.
+**What is in no scene.** A catalogue of scenes cannot express an absence, so
+the count has to ride beside it. The absence used to have two causes and now has
+one, which is worth keeping straight:
+
+- **it was** a store whose regulars only ever play visitors, which failed the
+  engine's intra-scene play-share **gate** and was therefore not in the
+  directory at all - 38 venues and 172 of 39,390 players on the live
+  assignment, 97 and 527 on the 2026-10-31 proposal;
+- **it is** a store that no hand-drawn region polygon covers. The play-share
+  figure is no longer a gate: it is published on the `SCENE#` item as
+  `intraShare` / `ladderMeaningful` and a caller says "this region's ladder is
+  not meaningful yet" instead, because a drawn boundary must not disappear
+  because of a match count.
+
+So this figure is now purely a **coverage** number, and it will start large and
+shrink as polygons are drawn; the engine's `region-coverage.sh` lists the stores
+behind it, with their coordinates.
+
+The figures ride on `coverage`, off the engine's scope directory
+(`getSceneCoverage`, one GetItem, ~1 read unit on an already edge-cached route),
+and they are **null** rather than 0 for an engine that does not publish them -
+0 would claim every store is placed. They travel even when the directory is
+empty, which is the one state in which they are the only numbers there are.
+
+**And a region whose ladder is thin is now a row rather than an absence.**
+`SceneMapEntry.intraShare` / `ladderMeaningful` carry the play-share measurement
+that used to be the gate, so a caller can say "this region's ladder is not
+meaningful yet" beside a region that is still named, still pinned and still
+counted. Null on both means an engine that never measured it, and reads as **no
+caveat** - coercing absent to `false` would caveat every region on the site for
+up to one refit interval after a deploy, the same discipline `profile.known` and
+`coverage.catalogueUnavailable` follow.
 
 **The place is read, never derived here.** A component has no coordinates of
 its own; they live on the per-player `MATCH#` items, and there is no index from
@@ -464,7 +497,8 @@ match-weighted *spherical* centroid with a spread published beside it.
 
 **A centroid is arithmetic; a place is a claim, and they are not the same
 thing.** This is the part of the endpoint that cost the most to get right,
-and - usefully - it is the part the move to scenes mostly retires.
+and - usefully - it is the part the move to scenes mostly retired, though the
+regions have handed some of it back: see below.
 
 The whole distribution `SCENE_CENTROID_MAX_KM` was measured on is a
 distribution over **components**, and the pathological entries are pathological
@@ -472,19 +506,26 @@ because a component has no geometric bound: the largest (5,254 players, 325
 venues) centres 360km out in the Gulf of Thailand and a 2,138-player one
 centres 2,080km into the Pacific.
 
-**A scene is diameter-capped, so it cannot do that.** Every store in one is
-within `--max-diameter` (30km) of every other, and a weighted mean of mutually
-within-30km points lies within 30km of each of them - so the centroid is at most
-~30km from the scene's own nearest venue, against a 100km gate. Measured on the
-2026-10-31 production proposal the largest scene extent in the corpus is
-**29.9km**, and 0 of 1,432 proposed scenes (and 0 of 1,123 live ones) are
-`dispersed`. The 20 scenes holding 40% of recorded players that used to come off
-the map were components, and they are gone with the component keying.
+**A scene is a bounded place, so it mostly cannot do that** - and the strength
+of that claim has changed, which matters for this gate.
 
-The gate is kept, not deleted, and `SCENE_CENTROID_MAX_KM`'s comment says why:
-`--max-diameter` is a knob an operator can raise, and `--method louvain` is
-still the engine's default and has no diameter bound at all. A gate that never
-fires costs one comparison per scene.
+While a scene was a complete-linkage cluster at a 30km diameter cap, it was a
+*proof*: every store was within 30km of every other, a weighted mean of
+mutually-within-30km points is within 30km of each of them, so the centroid was
+at most ~30km from the scene's nearest venue against a 100km gate. Measured on
+the 2026-10-31 proposal the largest extent in the corpus was **29.9km** and 0 of
+1,432 scenes were `dispersed`.
+
+A scene is a **hand-drawn region polygon** now (scraper `ranking/regions.ts`),
+and a polygon is only as compact as the person who drew it: a region the size of
+a country would have a centroid far from its nearest store. **So this gate is
+load-bearing rather than belt-and-braces.** It is unchanged - it was already
+measured, and the distribution it was read off is still in
+`SCENE_CENTROID_MAX_KM`'s comment - but a `dispersed: true` scene is now
+reachable by a drawing mistake rather than only by a knob, which is why the
+engine's `region-coverage.sh` flags any region whose own stores span more than
+30km. The 20 scenes holding 40% of recorded players that used to come off the
+map were components, and they are gone with the component keying.
 
 `spreadKm` does **not** separate those cases, which is the trap: a 448km spread
 centred on Germany is a national scene whose centre has stores all around it,
@@ -556,9 +597,9 @@ and `listSceneCatalogue`, and for the same reason: those items only became
 enumerable once they carried GSI1 keys. A store without it, or one whose Query
 fails, reports `catalogueUnavailable` rather than a 500 - a map is not worth
 taking a page down for. An **empty** directory reports the same thing, and that
-is deliberate: no `SCENE#` item exists until an operator has accepted a
-re-clustering *and* a refit has run since, and "0 of 0 scenes" would claim there
-are none.
+is deliberate: a `SCENE#` item exists only for a region some replayed store
+falls in, so a map nobody has drawn polygons for yet has none, and "0 of 0
+scenes" would claim there are none.
 
 Note what this deliberately does **not** change: `listComponents` still
 summarises the scenes on the global board's first page, which is what the
@@ -831,7 +872,7 @@ coverage separates them again. Measured on production, `ce3da9bead6` held 1,688
 players across 110 venues with a 1,514km spread, carried the label `New York,
 New York`, and had all five of its busiest venues in California. So a shop in
 Redwood City, CA displayed **"Scene: New York, New York"** on its own event
-page. The venue's scene is bounded to 30km by construction and cannot do that.
+page. The venue's scene is a drawn boundary around a place and cannot do that.
 
 **`componentId` still means a connected component, and still travels.** That is
 deliberate, not leftover: `crossComponentUncertainty` is only correct for a
@@ -850,9 +891,9 @@ fit".
 **Four statuses, and only one of them prints a line.** `no-matches` (nothing
 was paired here), `no-venue` (games, but no resolved store - a Riot organiser
 `shopMatch.ts` never tied to a shop row), `unassigned` (the store is known and
-has no scene **yet** - the normal value, since no venue has one until an
-operator accepts a re-clustering, and a store whose cluster fails the
-rankability gate keeps none afterwards), and `scene`. `getVenue` and `getScene`
+has no scene **yet** - the normal value for a store no polygon covers, which
+the engine *reports* rather than resolving by snapping the store to the nearest
+region), and `scene`. `getVenue` and `getScene`
 are optional on `RankingStore` on the same terms as `getComponent`, and a
 missing method or a failed read reports `unassigned` rather than a 500 - a
 whole event page is not worth losing for one line on it. Note the direction:

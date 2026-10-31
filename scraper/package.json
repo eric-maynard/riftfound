@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "tsx watch src/index.ts",
-    "build": "tsc",
+    "build": "tsc && node scripts/copy-regions.mjs",
     "start": "node dist/index.js",
     "scrape": "tsx src/index.ts",
     "lint": "eslint src --ext .ts",
