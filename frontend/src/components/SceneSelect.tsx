@@ -478,20 +478,40 @@ function SceneSelect({ components, value, onChange, hint, selectedLabel }: Scene
                       chooseIndex(index);
                     }}
                   >
+                    {/* The name, on its own line and first in the source.
+                        Everything else on the row is secondary to it and the
+                        layout now says so - see `.scene-option` in index.css
+                        for the measurement that forced that, where the name was
+                        being ellipsised to zero pixels by its own metadata. */}
                     <span className="scene-option-label">{option.label}</span>
+                    {/* The second line: everything secondary, together. `metaHint`
+                        carries the figure the short copy leaves out - how many
+                        scenes share this ladder - for a reader who wants it, in
+                        the same word-on-the-row/reason-in-a-title idiom as the
+                        flag beside it. */}
+                    <span className="scene-option-meta" title={option.metaHint ?? undefined}>
+                      {option.meta}
+                    </span>
                     {/* Words, not colour, and only on the rows it applies to: a
                         scene with no pin would otherwise simply fail to appear
                         on the map beside it, which reads as the map having lost
                         it. The reason is the flag's title; the selected scene
-                        gets it in full under the map. A sibling of the label
-                        rather than inside it, so the ellipsis that truncates a
-                        long name cannot eat the flag. */}
+                        gets it in full under the map.
+
+                        It sits on the **detail** line rather than beside the
+                        name, and after the meta rather than before it. A
+                        sibling of the label was already right - an ellipsis
+                        inside the name must not be able to eat the flag - but
+                        while it shared the name's line it could still take ~45px
+                        off it, which on a 35-character label is the difference
+                        between a legible name and a truncated one. Line one is
+                        the name and nothing else; this is a fact about the
+                        scene, so it belongs with the other facts. */}
                     {option.located === false && (
                       <span className="scene-flag" title={option.pinHint ?? undefined}>
                         {NO_PIN_FLAG}
                       </span>
                     )}
-                    <span className="scene-option-meta">{option.meta}</span>
                   </div>
                 );
               })

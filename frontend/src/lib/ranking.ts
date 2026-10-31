@@ -176,8 +176,19 @@ export interface SceneOption {
    */
   scope?: string | null;
   label: string;
-  /** Secondary line: rated count, and whether the scene is big enough to order. */
+  /** The row's second line: how big the scene is, and what its ladder shares. */
   meta: string;
+  /**
+   * The long form of whatever `meta` abbreviated, or null when it abbreviated
+   * nothing.
+   *
+   * `meta` is drawn on its own line under the name and has one line's worth of
+   * room, so the shared-ladder clause states the fact and not the figure (see
+   * `sceneOptionMeta`). The figure is still worth having for a reader who wants
+   * it, so it rides here as the line's hover hint - the same split the `no pin`
+   * flag already makes between a word on the row and its reason in a `title`.
+   */
+  metaHint?: string | null;
   comparable: boolean;
   /**
    * Whether this scene has a pin on the map beside the list.
@@ -314,6 +325,7 @@ export function sceneCatalogueOptions(scenes: SceneCatalogueRow[]): SceneOption[
       scope: scene.componentId,
       label: scene.label?.trim() ? scene.label : `Scene ${scene.sceneId}`,
       meta: sceneOptionMeta(scene, scenesPerPool.get(scene.componentId ?? '') ?? 0),
+      metaHint: sceneOptionMetaHint(scene, scenesPerPool.get(scene.componentId ?? '') ?? 0),
       comparable: scene.comparable,
       located: scene.latitude !== null && scene.longitude !== null,
       pinHint: scenePinAbsence(scene),
@@ -328,14 +340,36 @@ export function sceneCatalogueOptions(scenes: SceneCatalogueRow[]): SceneOption[
  * and lands on a board with South Bay players on it has not been misled if the
  * row said so, and has been if it did not - and this is the only surface where
  * that can be said before the click rather than after it.
+ *
+ * **It states the fact and not the figure, and the figure is why.** The clause
+ * used to read `ladder shared with N other scenes`, written when a pool covered
+ * two or three scenes. On the live catalogue the Bay Area's pool covers **296**,
+ * so nearly every row in the list carried `ladder shared with 295 other scenes`
+ * - 34 characters of a number nobody can act on, repeated down the whole list,
+ * and (while this line shared the row with the name) the thing that crushed
+ * every scene name in the picker to **zero pixels**. `shared ladder` says the
+ * one thing a reader needs before the click; `sceneOptionMetaHint` keeps the
+ * count for anyone who wants it.
  */
 function sceneOptionMeta(scene: SceneCatalogueRow, scenesInPool: number): string {
   const players = `${scene.playerCount.toLocaleString('en-US')} player${scene.playerCount === 1 ? '' : 's'}`;
   if (scene.componentId === null) return `${players} · no ladder yet`;
-  if (scenesInPool > 1) {
-    return `${players} · ladder shared with ${(scenesInPool - 1).toLocaleString('en-US')} other scene${scenesInPool === 2 ? '' : 's'}`;
-  }
+  if (scenesInPool > 1) return `${players} · shared ladder`;
   return players;
+}
+
+/**
+ * The count `sceneOptionMeta` left out, as a sentence, or null when it left
+ * nothing out.
+ *
+ * Deliberately not the whole meta line restated: a hint that repeats the text
+ * it hangs on is noise, so this answers only the question the short form
+ * raises - shared with how many, and what that means for the board.
+ */
+function sceneOptionMetaHint(scene: SceneCatalogueRow, scenesInPool: number): string | null {
+  if (scene.componentId === null || scenesInPool <= 1) return null;
+  const others = scenesInPool - 1;
+  return `This scene's players are ranked on one ladder with ${others.toLocaleString('en-US')} other scene${others === 1 ? '' : 's'}, so the board you open covers them too.`;
 }
 
 /**

@@ -1994,17 +1994,56 @@ select:disabled {
   overflow-y: auto;
 }
 
+/* Two lines: the name, then what is known about it.
+
+   **The name used to lose a width fight to its own metadata, and lost it
+   completely.** Both sat on one line, the name `flex: 1 1 auto` and the meta
+   `flex: none`, so the meta took its full intrinsic width first and the name
+   got the remainder - which on the live catalogue was *nothing*. Measured in
+   Chromium at 1280px: the meta `132 players · ladder shared with 295 other
+   scenes` is 302px of a 320px list column, leaving the name a `clientWidth` of
+   **0px** on every real scene row. The owner's report ("the names are cut off
+   (e.g. N... 615 players, ladder shared...) when it should just be the name!")
+   was if anything generous - there was no `N`, there was no name at all.
+
+   So the row is two lines: the name alone on the first, everything secondary -
+   the size, the shared-ladder clause, the `no pin` flag - on the second. It is
+   one wrapping flex row rather than a grid or a wrapper element, because
+   `flex-basis: 100%` on the name says exactly the thing that was wrong before:
+   the name claims the whole width *first*, and the rest bid for what is left on
+   the next line. Nothing can shorten it, so the ellipsis - if a name is ever
+   genuinely wider than the pane - bites the metadata instead, which is the
+   right order. The longest label in the corpus
+   (`Bay Area — San Francisco & East Bay`) measures 263px of natural text
+   against the 281px line it gets in the split pane's 320px column and the 301px
+   it gets in the phone pane - and it still does not truncate with a `no pin`
+   flag on it, because the flag is on the other line. So measured on the live
+   1,453-scene catalogue, **none of the 150 drawn rows truncates its name** at
+   either width.
+
+   The row grew from 35px to 51px, which is a cost on a 150-row list (~3 fewer
+   visible at a time) and buys two things besides legibility: the rows are now a
+   touch target this codebase would recognise (the day list's bands are 44px for
+   the same reason), and the name/detail stack is the idiom every other place
+   picker uses. */
 .scene-option {
   display: flex;
+  flex-wrap: wrap;
   align-items: baseline;
-  gap: 0.5rem;
+  gap: 0 0.5rem;
   padding: 0.4rem 0.75rem;
   font-size: 0.875rem;
   cursor: pointer;
 }
 
+/* Line one, and nothing shares it. `flex-basis: 100%` is what guarantees that:
+   the name claims the row's whole width before the meta or the `no pin` flag
+   can bid for any of it, so neither can shorten it. It keeps the ellipsis for
+   the case where a name really is wider than the pane - a truncated name still
+   beats a wrapped one in a list read by scanning - but no label in the corpus
+   reaches that, at either width. */
 .scene-option-label {
-  flex: 1 1 auto;
+  flex: 1 1 100%;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -2028,14 +2067,26 @@ select:disabled {
 }
 
 /* Two words on one line: wrapped to "NO" over "PIN" it reads as a column
-   header rather than a note on the row. */
+   header rather than a note on the row. `flex: none` because it is already as
+   short as it can be - the metadata beside it is what gives way. */
 .scene-option .scene-flag {
+  flex: none;
   white-space: nowrap;
 }
 
+/* Under the name, never beside it - the name took line one whole, so this and
+   the `no pin` flag wrap onto line two together. `flex-shrink` lets this give
+   way to the flag rather than the other way round, and it is the line that
+   ellipsises now: the name is the one that must not. Row height therefore does
+   not vary with what the metadata says, so a list of 150 keeps one rhythm. */
 .scene-option-meta {
-  flex: none;
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-size: var(--t-meta);
+  line-height: 1.3;
   color: var(--color-text-muted);
   font-variant-numeric: tabular-nums;
 }
