@@ -10,11 +10,12 @@
  *    `South Bay` were not selectable anywhere on it, and a `?scene=<sceneId>`
  *    link resolved to nothing because the ids came from another partition.
  *    Every id this endpoint publishes is now a `sceneId`.
- * 2. **A scene is not a ladder, and the payload keeps them apart.**
- *    `componentId` is the *pool* the scene's players are ranked on, carried
- *    beside the scene rather than as its identity, because the ladder's scope
- *    syntax is `component:<id>` and there is no `scene:` scope. Two scenes
- *    sharing a pool is the normal case and must read as one board, not two.
+ * 2. **A scene is not a rating scale, and the payload keeps them apart.**
+ *    `componentId` is the *pool* the scene's players are rated in, carried
+ *    beside the scene rather than as its identity. A scene does have a board
+ *    now (`scope=scene:<id>`), but it is that pool's board **filtered** to the
+ *    scene's rows - a filter, not a fit - so this field keeps its meaning
+ *    exactly. Two scenes sharing a pool is the normal case.
  * 3. **An unlocated scene is never drawn.** The whole promise of this endpoint
  *    is that a pin means "this scene's own venues are here", so a scene with
  *    no coordinates has to arrive in a list the map cannot accidentally

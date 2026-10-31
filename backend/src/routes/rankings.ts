@@ -39,7 +39,18 @@ router.get('/map', async (_req: Request, res: Response, next: NextFunction) => {
 });
 
 // GET /api/rankings - a leaderboard page for one scope
-// scope = all | set:<id> | component:<id> | set:<id>#component:<id>
+//
+// scope = all | set:<id> | component:<id> | scene:<id>
+//       | set:<id>#component:<id> | set:<id>#scene:<id>
+//
+// The first four are partitions the engine wrote. `scene:<id>` is not: it is
+// the scene's rows filtered out of one pool's board and re-ranked among
+// themselves - see `getSceneRankings` for the design, the cost and what was
+// declined. It is served on **this** route rather than on a `/scene/:id` of
+// its own precisely so it inherits `cacheRanking` above: a new route would
+// have had to opt in, and CloudFront's `/api/*` policies carry
+// `default_ttl = 0`, so a route that forgets the header is uncached at the
+// edge and pays a Lambda invocation plus a ~250-read-unit Query per visitor.
 router.get('/', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const queryResult = RankingQuerySchema.safeParse(req.query);
@@ -55,7 +66,10 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
     const scope = parseScope(queryResult.data.scope);
     if (!scope) {
       res.status(400).json({
-        error: 'Invalid scope. Expected all, set:<id>, component:<id> or set:<id>#component:<id>',
+        error:
+          'Invalid scope. Expected all, set:<id>, component:<id>, scene:<id>, ' +
+          'set:<id>#component:<id> or set:<id>#scene:<id>. A scene names its own ' +
+          'pool, so component: and scene: cannot both be given.',
       });
       return;
     }
@@ -67,6 +81,10 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
         scope: result.scope,
         entries: result.entries,
         coverage: result.coverage,
+        // The scene and the pool travel as two fields because they are two
+        // facts - *this is the Peninsula scene* and *these ratings are on one
+        // scale with these others'*. `scene` is null on every stored scope.
+        scene: result.scene,
         component: result.component,
         components: result.components,
       },

@@ -15,7 +15,13 @@ import {
   scenePurityHint,
   sceneSummary,
 } from '../lib/sceneMap';
-import { SCENE_MAP_PARAM, scenePath } from '../lib/ranking';
+import {
+  POOL_LINK_HINT,
+  POOL_LINK_LABEL,
+  SCENE_MAP_PARAM,
+  sceneLadderPath,
+  scenePath,
+} from '../lib/ranking';
 import { carryPreview } from '../lib/preview';
 
 /**
@@ -346,27 +352,36 @@ function SceneDetail({
           outright. Silent at 100%, which is almost every scene. */}
       {purity && <p className="scene-place-note">{purity}</p>}
 
-      {/* The link out, and the sentence that keeps it honest.
+      {/* The links out, and the sentence that keeps them honest.
 
-          **A scene has no ladder.** A ladder is scoped to a rating pool - a
-          connected component - because that is the only thing two ratings can
-          be compared inside; a scene is a cluster of stores and is additive.
-          One pool covers several scenes, so a reader who opens this from
-          Peninsula lands on a board with South Bay players on it, and the note
-          says so before the click rather than leaving them to notice. The
-          button used to read "See this scene's ladder", which asserted
-          something that does not exist.
+          **The pin leads to this scene's board now**, which is what a reader
+          clicking `Peninsula` was asking for all along. It used to lead to the
+          pool's, because a scene had no board - and a pool is named after the
+          modal city of a reachability closure, so this control opened a ladder
+          headed `North West Community Development Council`, a Singapore CDC
+          label, from a San Francisco scene.
 
-          A scene with no pool has no board at all, so there is no link - just
-          the note. That is not an error and the scene is still a fact about
-          its stores. */}
+          **The pool is still one click away, and labelled as the pool.** It is
+          the honest answer to "who else is on this scale", and the scene board
+          is deliberately the narrower question, so it is the second link rather
+          than the first. `sceneLadderNote` is the sentence that says the two
+          apart, and it is above both because it qualifies both.
+
+          A scene with no pool still has a board - the API answers it with the
+          scene named and nothing on it, which says "nobody who plays here has
+          been placed yet" better than a withheld link does - so the scene link
+          is unconditional and only the pool link is gated. */}
       <p className="scene-place-note">{ladder}</p>
+      <Link className="scene-ladder-link" to={carryPreview(sceneLadderPath(scene.sceneId), search)}>
+        Open this scene&rsquo;s ladder
+      </Link>
       {scene.componentId !== null && (
         <Link
-          className="scene-ladder-link"
+          className="scene-pool-link"
           to={carryPreview(scenePath(scene.componentId), search)}
+          title={POOL_LINK_HINT}
         >
-          Open the ladder for these players
+          {POOL_LINK_LABEL}
         </Link>
       )}
     </div>
@@ -427,16 +442,17 @@ function SceneRow({
         </span>
         <span className="scene-row-summary">{sceneSummary(scene)}</span>
       </button>
-      {/* `Ladder`, not `This scene's ladder`: the link opens the pool these
-          players are ranked in, which is wider than the scene. A scene whose
-          players are in no pool yet has no board to open, and gets no link
-          rather than a dead one - the row's `too small to order` flag already
-          carries the reason. */}
-      {scene.componentId !== null && (
-        <Link className="scene-row-link" to={carryPreview(scenePath(scene.componentId), search)}>
-          Ladder
-        </Link>
-      )}
+      {/* `Ladder` means **this scene's** ladder now, which is what the word
+          was always read as. It used to open the pool's board - wider than the
+          scene, and named after a city somewhere else - and that mismatch is
+          the bug this release fixes. The scene board exists even for a scene
+          whose players are in no pool: it comes back named and empty, which
+          says "nobody here has been placed yet" where a withheld link said
+          nothing at all. So the link is unconditional; the pool is reached from
+          the detail panel. */}
+      <Link className="scene-row-link" to={carryPreview(sceneLadderPath(scene.sceneId), search)}>
+        Ladder
+      </Link>
     </li>
   );
 }

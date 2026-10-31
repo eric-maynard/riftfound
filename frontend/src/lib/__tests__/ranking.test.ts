@@ -46,7 +46,7 @@ import {
   pickDefaultComponent,
   shouldUseSetPills,
   SET_PILL_LIMIT,
-  sceneOptionScope,
+  sceneOptionSelection,
   sceneOptions,
   sceneCatalogueOptions,
   searchCaption,
@@ -64,7 +64,12 @@ import {
   UNRANKED_NO_GAMES_EXPLANATION,
   winRate,
   scenePath,
+  sceneLadderPath,
   sceneMapPath,
+  sceneBoardLabel,
+  sceneBoardNotice,
+  sceneUnknownNotice,
+  GLOBAL_OPTION,
   SCENE_MAP_PARAM,
 } from '../ranking';
 
@@ -104,23 +109,63 @@ describe('scope round-tripping', () => {
     expect(buildScope('radiance', 'c-bay')).toBe('set:radiance#component:c-bay');
   });
 
-  it('parses them back', () => {
-    expect(parseScope('set:radiance#component:c-bay')).toEqual({ setId: 'radiance', componentId: 'c-bay' });
-    expect(parseScope('all')).toEqual({ setId: null, componentId: null });
-    expect(parseScope(null)).toEqual({ setId: null, componentId: null });
+  /**
+   * A scene outranks a pool, and both parameters are kept. Every `?region=`
+   * link predates the scene scope and has to mean what it always meant; a
+   * `?scene=` link - which the map pin, the picker row and the event page all
+   * build - now opens that scene's board. A link carrying both, which the
+   * picker used to write on every choice, resolves to the scene, which is what
+   * its author meant and what the reader expected.
+   */
+  it('prefers a scene over a pool, and never sends one as the other', () => {
+    expect(buildScope(null, null, 's-pen')).toBe('scene:s-pen');
+    expect(buildScope('radiance', null, 's-pen')).toBe('set:radiance#scene:s-pen');
+    // Both given: the scene wins, and the pool is not smuggled in beside it -
+    // the API rejects `component:` and `scene:` together.
+    expect(buildScope(null, 'c-bay', 's-pen')).toBe('scene:s-pen');
+    // No scene: byte-for-byte the scope this built before.
+    expect(buildScope(null, 'c-bay', null)).toBe('component:c-bay');
+    expect(buildScope(null, 'c-bay')).toBe('component:c-bay');
   });
 
-  it('builds the two links into one scene', () => {
-    // The ladder, and the map with that scene already selected. Both are
-    // spelled once, here, because three surfaces now generate them - the
-    // scene map's list, its detail panel, and an event page's scene line.
+  it('parses them back', () => {
+    expect(parseScope('set:radiance#component:c-bay')).toEqual({
+      setId: 'radiance',
+      componentId: 'c-bay',
+      sceneId: null,
+    });
+    expect(parseScope('set:radiance#scene:s-pen')).toEqual({
+      setId: 'radiance',
+      componentId: null,
+      sceneId: 's-pen',
+    });
+    expect(parseScope('all')).toEqual({ setId: null, componentId: null, sceneId: null });
+    expect(parseScope(null)).toEqual({ setId: null, componentId: null, sceneId: null });
+  });
+
+  it('builds the three links into one scene', () => {
+    // The scene's own ladder, the pool's, and the map with that scene already
+    // selected. All spelled once, here, because four surfaces generate them -
+    // the scene map's list, its detail panel, the ladder's own pool link, and
+    // an event page's scene line.
+    //
+    // **The scene link takes a `sceneId` and the pool link a `componentId`**,
+    // and the first is what a scene's name, pin and row all use now. They used
+    // to use the second, which is a pool - named after the modal city of a
+    // reachability closure - so clicking `Peninsula` opened `North West
+    // Community Development Council`.
+    expect(sceneLadderPath('s94af82a16f')).toBe('/rankings?scene=s94af82a16f');
     expect(scenePath('c00a489935b')).toBe('/rankings?region=c00a489935b');
     expect(sceneMapPath('c00a489935b')).toBe('/rankings/map?scene=c00a489935b');
     expect(SCENE_MAP_PARAM).toBe('scene');
+    // The ladder's scene parameter and the map's are one spelling, or a link
+    // from one page selects nothing on the other.
+    expect(sceneLadderPath('x')).toContain(`${SCENE_MAP_PARAM}=`);
   });
 
   it('encodes an id that needs it', () => {
     expect(scenePath('a b&c')).toBe('/rankings?region=a%20b%26c');
+    expect(sceneLadderPath('a b&c')).toBe('/rankings?scene=a%20b%26c');
     expect(sceneMapPath('a b&c')).toBe('/rankings/map?scene=a%20b%26c');
   });
 });
@@ -427,15 +472,21 @@ describe('sceneCatalogueOptions', () => {
     expect(one.meta).toBe('1 player');
   });
 
-  it('keeps the row id and the ladder scope apart', () => {
-    // The whole correction in one assertion: the row is identified by the
-    // scene (what `?scene=` carries and what the map highlights) and scoped by
-    // the pool (what `/api/rankings` is fetched with). A control that
-    // collapsed them asked for `component:<a scene id>` and got nothing.
+  it('keeps the row id and the pool apart, and picks the scene', () => {
+    // The row is identified by the scene (what `?scene=` carries and what the
+    // map highlights) and still knows its pool (what the board's "see the whole
+    // rating pool" link leads to). Picking it writes the **scene**, because the
+    // ladder has a scene scope now - this used to write the pool and land the
+    // reader on a board named after a city somewhere else.
     const [, peninsula] = sceneCatalogueOptions([row('s94af82a16f', 'Peninsula', 111)]);
     expect(peninsula.id).toBe('s94af82a16f');
     expect(peninsula.scope).toBe('pool-s94af82a16f');
-    expect(sceneOptionScope(peninsula)).toBe('pool-s94af82a16f');
+    expect(sceneOptionSelection(peninsula)).toEqual({ sceneId: 's94af82a16f', region: null });
+  });
+
+  it('clears both parameters for Global', () => {
+    expect(sceneOptionSelection(GLOBAL_OPTION)).toEqual({ sceneId: null, region: null });
+    expect(sceneOptionSelection(null)).toEqual({ sceneId: null, region: null });
   });
 
   it('says when two scenes lead to one board, before the click', () => {
@@ -452,26 +503,27 @@ describe('sceneCatalogueOptions', () => {
     expect(elsewhere.meta).toBe('100 players');
   });
 
-  it('offers no board for a scene whose players are in no pool', () => {
+  it('still picks the scene when that scene has no pool', () => {
     // A real state: the scene is a fact about its stores, and nobody who plays
-    // there has been replayed. An explicit null scope is not the same as "the
-    // id is the scope" - `sceneOptionScope` has to tell them apart, or the
-    // ladder is fetched with a scene id.
+    // there has been replayed. It is picked as a scene anyway - the board comes
+    // back named and empty and says so, which is better than the old behaviour
+    // of clearing the scope and silently serving Global.
     const [, orphan] = sceneCatalogueOptions([row('s-new', 'Vacaville', 4, { componentId: null })]);
     expect(orphan.scope).toBeNull();
-    expect(sceneOptionScope(orphan)).toBeNull();
+    expect(sceneOptionSelection(orphan)).toEqual({ sceneId: 's-new', region: null });
     expect(orphan.meta).toBe('4 players · no ladder yet');
   });
 
-  it('reads a fallback row built from the ladder as its own scope', () => {
-    // `sceneOptions` rows are pools: their `id` *is* the scope and they carry
-    // no `scope` field. `scope ?? id` would be wrong for the row above, so the
-    // resolver distinguishes undefined from null.
+  it('writes a fallback row built from the ladder as a pool', () => {
+    // `sceneOptions` rows are pools: their `id` *is* a `componentId` and they
+    // carry no `scope` field at all. Writing one under `?scene=` would be an id
+    // from the wrong partition under the right parameter name - the shape of
+    // the bug this release fixes - so `undefined` and `null` must not collapse.
     const [, pool] = sceneOptions([
       { componentId: 'c-bay', regionLabel: 'Bay Area', componentSize: 23, ratedPlayers: 6, comparable: true },
     ]);
     expect(pool.scope).toBeUndefined();
-    expect(sceneOptionScope(pool)).toBe('c-bay');
+    expect(sceneOptionSelection(pool)).toEqual({ sceneId: null, region: 'c-bay' });
   });
 
   it('marks the rows with no pin, and says nothing about the rest', () => {
@@ -542,6 +594,90 @@ describe('sceneCountSummary', () => {
     expect(sceneCountSummary(12, 1307)).toBe('12 of 1,307 scenes');
     expect(sceneCountSummary(1, 1)).toBe('1 scene');
     expect(sceneCountSummary(0, 1307)).toBe('0 of 1,307 scenes');
+  });
+});
+
+/**
+ * The copy on a scene's own board. What these pin is which **set** each
+ * sentence does arithmetic about, because the previous version of this page's
+ * equivalent line got that wrong: it read "a position needs a scene of at least
+ * 8 players, and this one has 3", quoting the scene's count against a threshold
+ * that measures the pool.
+ */
+describe('a scene board explains itself', () => {
+  const scene = (overrides: Partial<Parameters<typeof sceneBoardNotice>[0]> = {}) => ({
+    componentCount: 1,
+    singlePool: true,
+    omittedPoolRows: 0,
+    comparable: true,
+    ...overrides,
+  });
+
+  it('says nothing when there is nothing to say', () => {
+    expect(sceneBoardNotice(scene(), 8, 500)).toBeNull();
+  });
+
+  it('quotes the pool against the gate, never the scene', () => {
+    const line = sceneBoardNotice(scene({ comparable: false }), 8, 6);
+    expect(line).toContain('pool of at least 8 players');
+    expect(line).toContain('pool has 6');
+    expect(line).not.toContain('scene of at least');
+  });
+
+  it('answers "we cannot say how big" without printing a number it does not have', () => {
+    expect(sceneBoardNotice(scene({ comparable: false }), 8, null)).toContain('pool has fewer');
+  });
+
+  /**
+   * The honest caveat the whole design needs. A scene board is comparable
+   * *internally* only because the scene sits inside one pool; this is the case
+   * where it does not, and `componentCount` is on the `SCENE#` item precisely
+   * so it can be told rather than smoothed over.
+   */
+  it('says when a scene straddles two pools, and how many rows that costs', () => {
+    const line = sceneBoardNotice(scene({ componentCount: 2, singlePool: false, omittedPoolRows: 3 }), 8, 500);
+    expect(line).toContain('2 rating pools');
+    expect(line).toContain('3 rated players are on another board');
+  });
+
+  it('leaves the row count out when nothing was left out', () => {
+    const line = sceneBoardNotice(scene({ componentCount: 2, singlePool: false, omittedPoolRows: 0 }), 8, 500);
+    expect(line).toContain('2 rating pools');
+    expect(line).not.toContain('another board');
+  });
+
+  /**
+   * A pool below the gate and a split pool are different problems, and the
+   * first is the one that stops positions. Only one line shows, and it is that
+   * one - two banners saying different things about the same board would leave
+   * a reader to decide which applies.
+   */
+  it('reports the gate before the split when both are true', () => {
+    const line = sceneBoardNotice(
+      scene({ comparable: false, componentCount: 2, singlePool: false, omittedPoolRows: 2 }),
+      8,
+      6
+    );
+    expect(line).toContain('No positions yet');
+    expect(line).not.toContain('rating pools');
+  });
+
+  it('names an unlabelled scene after its id rather than borrowing a city', () => {
+    expect(sceneBoardLabel({ sceneId: 's-pen', label: 'Peninsula' })).toBe('Peninsula');
+    expect(sceneBoardLabel({ sceneId: 's-pen', label: null })).toBe('Scene s-pen');
+    expect(sceneBoardLabel({ sceneId: 's-pen', label: '  ' })).toBe('Scene s-pen');
+  });
+
+  /**
+   * `known: false` is the state of every scene id until a refit has run with
+   * an accepted assignment, so this is what a shared link shows for up to a day
+   * after a deploy. It must not read as an error or as a broken link.
+   */
+  it('explains a scene the engine has no item for yet, without blaming the link', () => {
+    expect(sceneUnknownNotice({ known: true, sceneId: 's-pen' })).toBeNull();
+    const line = sceneUnknownNotice({ known: false, sceneId: 's-pen' });
+    expect(line).toContain('s-pen');
+    expect(line).toContain('once it has');
   });
 });
 

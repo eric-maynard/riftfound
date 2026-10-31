@@ -3,6 +3,7 @@ import {
   PlayerMatchesQuerySchema,
   PlayerRatingsQuerySchema,
   PlayerSearchQuerySchema,
+  isStoredScope,
   isValidPlayerId,
   parseScope,
 } from '../models/ranking.js';
@@ -130,6 +131,20 @@ router.get('/:playerId/ratings', async (req: Request, res: Response, next: NextF
     if (!scope) {
       res.status(400).json({
         error: 'Invalid scope. Expected all, set:<id>, component:<id> or set:<id>#component:<id>',
+      });
+      return;
+    }
+    // A scene scope is a filter over a *board*, and a rating curve is not a
+    // board - the engine writes `RATING#<scope>#<date>` for the scopes it
+    // fitted, and it does not fit a scene. Refused rather than served empty,
+    // because an empty series reads as "no history" where the truth is "that
+    // is not a thing this has a history for", and silently answering nothing
+    // is the failure mode this API has already shipped twice.
+    if (!isStoredScope(scope)) {
+      res.status(400).json({
+        error:
+          'A rating history has no scene scope: a scene filters a board, and a ' +
+          'player\'s curve comes from the fit. Use all or set:<id>.',
       });
       return;
     }

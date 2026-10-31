@@ -51,7 +51,11 @@ src/
 - `GET /api/events/info` - Scrape stats (last updated, total count)
 - `GET /api/events/geocode?q=` - Geocode city/zip for location filtering
 - `GET /api/rankings` - Leaderboard page for one `scope` (`all`, `set:<id>`,
-  `component:<id>`, `set:<id>#component:<id>`), plus coverage and the component list
+  `component:<id>`, `scene:<id>`, `set:<id>#component:<id>`,
+  `set:<id>#scene:<id>`), plus coverage and the component list. `scene:<id>`
+  is the one scope the engine did **not** write a partition for - it is a
+  filter over a pool's board, and it carries a `scene` header beside the
+  `component` one (see "A scene board is a filter, not a fit")
 - `GET /api/rankings/map` - Every scene with a place, for the map of scenes.
   One GSI1 Query over the engine's whole `COMPONENT#` catalogue, no
   parameters. Located and unlocated scenes come back in **separate lists**
@@ -252,6 +256,145 @@ A component's own `comparable: false` is still served on the scope - the
 engine's `component-too-small` is a comparison problem, not an evidence one, and
 the rating is published either way.
 
+### A scene board is a filter, not a fit
+
+`GET /api/rankings?scope=scene:<id>`, `getSceneRankings` in
+`services/rankingService.ts`. **This is what a scene's pin, its picker row and
+an event page's scene line all link at now.**
+
+**The bug.** *"when i click peninsula in the map i expect it to go to that
+scene but its on like northw est community ..."* - and that is exactly what the
+code did. A scene's pin linked to `component:<the pool those players sit in>`,
+and a pool's `regionLabel` is the modal city name of a reachability closure, so
+a San Francisco scene opened a board headed `North West Community Development
+Council`, which is a **Singapore** CDC label. Each half was honest and the pair
+was indefensible.
+
+**Why a filter.** The engine's storage contract says it outright: *"Scenes do
+not add a scope: the player profile and every ladder row carry `sceneId` /
+`sceneLabel` so a board can be filtered by scene without a new ladder."* So a
+scene board is the scene's rows taken out of **one pool's board** and re-ranked
+among themselves. Nothing is re-fitted, no rating moves, `componentId` keeps its
+meaning permanently, and `crossComponentUncertainty` is still claimed only for a
+connected component. The statistical point is that a scene's players are a
+**subset of one component**: they were on one scale before the filter and still
+are after it, which is precisely what a cross-component board is not. The
+engine writes no `RANKING#scene:<id>` item and this change did not ask it to -
+`isStoredScope()` is the guard that keeps `Scope.raw` from being used as a key
+for one.
+
+**Grammar.** Six shapes now: `all`, `set:<id>`, `component:<id>`, `scene:<id>`,
+`set:<id>#component:<id>`, `set:<id>#scene:<id>`. `component:` and `scene:`
+together is a **400**: a scene names its own pool off the engine's `SCENE#`
+item, so a caller offering both is either repeating itself or disagreeing with
+the engine, and quietly preferring one is how a link lands on a board nobody
+asked for. A scene scope is also refused on `/api/players/:id/ratings`, because
+a rating curve comes from the fit and nothing fits a scene - served empty it
+would read as "no history" rather than "not a thing this has a history for".
+
+**What it costs, per request.** One `GetItem` on `SCENE#<sceneId>` for the pool
+(~1 read unit), then that pool's board **in full**. It cannot be a `Limit`ed
+Query with a `FilterExpression`, and that is not a performance note - it is the
+correctness bug this API has already shipped once: **`Limit` caps the items
+examined before the filter, not the matches** (see "Searching for a player"),
+so on a ~6,000-row board in rank order a `Limit` of 25 returns the scene's best
+players and calls it the scene. A `FilterExpression` is also declined: it saves
+no capacity, and `RANKING#<scope>` may be a page item holding an `entries`
+array with no top-level `sceneId`, so `sceneId = :id` would discard a whole
+board. The filter runs in memory over the expanded records, on **`sceneId` and
+`componentId` both** - a multi-pool scene's rows would otherwise arrive from two
+components at once off a set-wide partition, which is the cross-scale board
+this design exists to avoid.
+
+Derived - not measured, and it says so - from two figures that were: the live
+global board holds **6,117 rated rows** with a **97.4%** giant component share,
+and the one read-unit measurement on a comparable partition is **46 units for
+1,235 `COMPONENT#` items** (~305 bytes an item). So a scene board reads ~2MB
+over 2-3 Query pages, around **250 eventually-consistent read units**, against
+~46 for the whole scene map and ~2 for a 25-row page of a stored board. Note it
+is ~6,000 rows *whichever* pool is asked for: the engine writes at most
+`RANKING_MAX_COMPONENT_LADDERS` (50) component ladders and only for pools of at
+least `minComponentSize`, so most of the 1,235 pools have no `component:`
+partition and the read falls back to the set-wide board - which is the giant
+component plus 2.6%. `SCENE_BOARD_MAX_ROWS` (20,000, 3.2x the current board)
+bounds it, and past the cap the answer reports `coverageComplete: false` rather
+than truncating silently, because the partition is in rank order and what is
+lost is the scene's low-rated tail. Re-measure with `scripts/metrics/` against
+production before treating these as anything but arithmetic.
+
+The route inherits `cacheRanking` (300s browser / 3600s edge) because it *is*
+`/api/rankings` - deliberately, rather than a `/scene/:id` of its own, which
+would have had to opt in. CloudFront's `/api/*` policies carry `default_ttl =
+0`, so a route that forgets the header is uncached at the edge and pays this
+read per visitor. One other honest wart: **page two of a scene board costs the
+same pool read as page one**, because the filtered list lives for one request
+and the cursor is an offset into it. It is left that way rather than papered
+over with `Limit` + filter, and in practice it almost never happens - a scene's
+rated population is tens of players against a page size of 25.
+
+**What was declined, with its price.** A stored `RANKING#scene:<id>` board in
+the engine would make this ~2 read units. Per refit it costs one row per rated
+player per scene plus one `RANKING_META#` header per scene; scenes partition
+players by home store, so ~6,100 rows and ~1,123 headers - about **7,200 extra
+writes on a refit that already writes ~27,000 profiles and ~17,000 rating
+points**, ~15% more write traffic, plus a scraper change and a refit before a
+single scene board exists. The storage contract already hands this decision to
+the API ("whether scenes deserve ladders of their own is a decision to take
+with the API rather than by writing them"), and at this read volume behind an
+hour of edge cache the filter is cheaper. If `SCENE_BOARD_MAX_ROWS` ever binds,
+that is the trade to revisit - not a bigger cap.
+
+**Ranks: a dense re-rank inside the scene.** `rank` is 1..N over the scene's
+own rows that earn a position, not the pool's numbers with the other scenes' rows
+cut out - a board opening on `#37` and climbing in gaps is the pool's board with
+holes in it, not "this scene's ladder". It is safe because the restriction is
+**order-preserving**: the rows are a subset of one component sorted on the same
+posterior mean, so the scene's order can never contradict the pool's about who
+is ahead of whom. `LeaderboardEntry.poolRank` carries the pool's own number
+beside it - the engine's `rank` off the row it wrote, not a figure re-derived
+here - so a reader sees both and can check one against the other ("2nd in
+Peninsula, 37th in the pool"). It is null on every stored scope, where `rank`
+already *is* the board's position.
+
+**The gate is unchanged and still measures the component.** `earnsPosition`
+tests `isComparable(componentSize)`, and `CONFIDENCE.minComponentSize` is a
+threshold on the **pool**: a 3-store scene inside a 2,000-player pool gets
+positions, and a 40-player scene whose pool is 6 gets none. Re-pointing it at
+the scene's own `playerCount` would be a different claim about identifiability,
+measured from nothing, and it is not made. `coverage.minComponentSize` is
+published unchanged so the page quotes the right number - the frontend's old
+wording, "a position needs a scene of at least 8 players, and this one has 3",
+is the mistake this avoids.
+
+**A scene whose players span more than one pool.** `SCENE#` carries
+`componentCount` precisely so this can be told rather than smoothed over. The
+board holds the rows of the **modal** pool only, and the header says so:
+`singlePool: false`, `componentCount`, and `omittedPoolRows` - how many of the
+scene's rated rows are on another board. Be precise about which claim that
+qualifies: the rows shown are all in one pool, so **their order is real** and
+`comparable` is unaffected. What is incomplete is the board's *coverage of the
+scene*. Mixing the pools would be the cross-scale board the ladder already
+declines to call a placement, and it is not done.
+
+**Coverage comes from the scene, not from the board.** The board holds a row
+only for a rated player, so it structurally cannot say how many people play in
+the scene; the `SCENE#` item can, and `coverage.totalPlayers` is its
+`playerCount` - the same figure the event page's scene line prints, so the two
+agree.
+
+**Three absences, all 200, none an error.** No `SCENE#` item for the id
+(`known: false`), no pool (`componentId: null`, board named and empty), and no
+scene reader on the store at all. Each is also the state of a healthy deploy
+whose engine has not refitted since the assignment was accepted, and a shared
+`?scene=` link must not die for a deploy order - same rule as "Never seen is not
+absent".
+
+**The pool board is untouched and still reachable.** `component:<id>` serves
+exactly what it always did, `scene` is null on it, and it carries no `poolRank`
+column. It is the honest answer to "who else is on this scale", so the scene
+board links to it ("See the whole rating pool") - it is simply no longer the
+thing a scene link lands on.
+
 ### The scene map
 
 `GET /api/rankings/map` answers "where are the competitive scenes" in one
@@ -281,19 +424,23 @@ shares, and a viewport parameter would fragment the edge cache into a key per
 pan for a payload a browser can filter itself. `cacheRanking` applies, because
 the directory only moves when the engine refits.
 
-**A scene is not a ladder, and the payload keeps them apart.** The ladder's
-scope syntax is `all`, `set:<id>`, `component:<id>` or
-`set:<id>#component:<id>`. There is no `scene:` scope and this change did not
-add one, because `crossComponentUncertainty` is only correct for a connected
-component and a scene is additive. So a scene entry carries `componentId`,
-`componentSize` and `componentCount` - the **pool** holding most of its home
-players - and `comparable` is `isComparable(componentSize)`, a statement about
-that pool's board rather than about the scene's own player count. A caller
-presents the two as two facts; the frontend's `sceneLadderNote` is that
-sentence and the picker's row meta says "ladder shared with 3 other scenes".
-`componentId: null` is a normal value - nobody who plays there has been
-replayed - and means there is no board to link at, not that the scene is
-defective.
+**A scene is not a rating scale, and the payload keeps them apart.** A scene
+entry carries `componentId`, `componentSize` and `componentCount` - the **pool**
+holding most of its home players - and `comparable` is
+`isComparable(componentSize)`, a statement about that pool's board rather than
+about the scene's own player count. A caller presents the two as two facts;
+the frontend's `sceneLadderNote` is that sentence and the picker's row meta
+says "ladder shared with 3 other scenes". `componentId: null` is a normal
+value - nobody who plays there has been replayed - and means the scene's board
+comes back empty, not that the scene is defective.
+
+A scene's pin now links at **its own board** (`scope=scene:<id>`), which it did
+not when this endpoint was written: it linked at `component:<id>`, and the
+measured consequence was a San Francisco scene opening a ladder headed `North
+West Community Development Council`. Nothing in the paragraph above changed to
+allow that - a scene board is this pool's board *filtered* - and the pool link
+is still published, under its own name. See "A scene board is a filter, not a
+fit".
 
 **What is in no scene.** A catalogue of scenes cannot express an absence: a
 store whose regulars only ever play visitors fails the engine's intra-scene
@@ -694,8 +841,11 @@ statement about the component. The tally is also free - the profiles were
 fetched for the field anyway, and `componentSize` is denormalised onto every
 one. Two facts therefore travel side by side: *this event was held in the
 Peninsula scene*, and *these players' ratings are on one scale with these
-others'*. The ladder the page links to is still scoped to the component,
-because a scene does not define a rating scale.
+others'*. The ladder the page links to is the **scene's** now
+(`scope=scene:<id>`), which is that component's board filtered to the scene -
+so `componentId` is no longer what either link is built from, and is still what
+the second of those two facts is made of. See "A scene board is a filter, not a
+fit".
 
 **Four statuses, and only one of them prints a line.** `no-matches` (nothing
 was paired here), `no-venue` (games, but no resolved store - a Riot organiser

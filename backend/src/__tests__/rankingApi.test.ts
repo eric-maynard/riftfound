@@ -29,7 +29,7 @@ describe('GET /api/rankings', () => {
   it('serves the all-sets scope by default', async () => {
     const { status, body, headers } = await get('/api/rankings');
     expect(status).toBe(200);
-    expect(body.data.scope).toEqual({ raw: 'all', setId: null, componentId: null });
+    expect(body.data.scope).toEqual({ raw: 'all', setId: null, componentId: null, sceneId: null });
     expect(body.data.entries.length).toBeGreaterThan(0);
 
     // The cache header is the whole caching mechanism: CloudFront's /api/*

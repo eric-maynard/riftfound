@@ -555,9 +555,8 @@ export function createFixtureRankingStore(data: FixtureData = LAUNCH_FIXTURE_DAT
    * component catalogue uses, because the engine shares one `scenePlace` for
    * both partitions and a fixture that located a scene some other way would
    * stop standing in for it. `componentId` is the modal component of the home
-   * players, which is what the scene item carries so a map can point a reader
-   * at the board their rating is actually on - a scene has no ladder of its
-   * own.
+   * players, which is what the scene item carries so a scene board knows which
+   * pool to filter - only a connected component names a rating scale.
    */
   function sceneDirectoryRow(sceneId: string): SceneDirectoryEntry | null {
     const shops = VENUES.filter((row) => row.sceneId === sceneId);
@@ -678,6 +677,12 @@ export function createFixtureRankingStore(data: FixtureData = LAUNCH_FIXTURE_DAT
           componentId: player?.componentId ?? null,
           componentSize: player?.componentSize ?? null,
           regionLabel: player?.regionLabel ?? null,
+          // The engine denormalises the player's scene onto every ladder row
+          // so a board can be filtered without profile fetches. The fixture
+          // has to carry it or the scene board cannot be exercised here at
+          // all - and a scene scope would read as "nobody plays there".
+          sceneId: player?.sceneId ?? null,
+          sceneLabel: player?.sceneLabel ?? null,
         };
       });
 
@@ -686,6 +691,73 @@ export function createFixtureRankingStore(data: FixtureData = LAUNCH_FIXTURE_DAT
         cursor: start + limit < ids.length ? encodeCursor(start + limit) : null,
         updatedAt: ids.length > 0 ? '2026-10-25T06:00:00.000Z' : null,
         totalPlayers: ids.length,
+      };
+    },
+
+    /**
+     * One scene's rows out of one pool's board.
+     *
+     * Read the same way the DynamoDB adapter reads it - the *whole* pool board,
+     * then filtered in memory on the scene **and** the pool - rather than by
+     * indexing into the fixture's own data by scene. If this took the short
+     * cut the fixture could not catch the bug it exists to catch: a cap that
+     * truncates the board, or a multi-pool scene whose rows arrive from two
+     * components at once, both have to be reachable here.
+     */
+    async getSceneBoard(pool: Scope, sceneId: string, componentId: string, maxRows: number) {
+      const ids = data.boards[pool.raw] ?? [];
+      const examined = ids.slice(0, maxRows);
+      const items: LeaderboardRecord[] = [];
+      let omittedPoolRows = 0;
+      // The engine writes a board row only for a *rated* player, so its own
+      // `rank` - the number `poolRank` publishes - counts those and nothing
+      // else. This fixture's boards hold every player, so the position has to
+      // be counted rather than taken from the index, or `poolRank` would be a
+      // place among people the real board does not list.
+      let ratedSeen = 0;
+
+      for (const playerId of examined) {
+        const player = byId.get(playerId);
+        const onBoard = player !== undefined && !resolveVerdict(player).provisional;
+        if (onBoard) ratedSeen += 1;
+        if ((player?.sceneId ?? null) !== sceneId) continue;
+        if (player?.componentId != null && player.componentId !== componentId) {
+          omittedPoolRows += 1;
+          continue;
+        }
+        const setRating = pool.setId
+          ? player?.setRatings.find((entry) => entry.setId === pool.setId)
+          : undefined;
+        const source = pool.setId ? setRating : player;
+        items.push({
+          playerId,
+          provisional: source?.provisional ?? undefined,
+          provisionalReason: source?.provisionalReason ?? undefined,
+          gamesUntilRated: source?.gamesUntilRated ?? undefined,
+          rating: pool.setId ? setRating?.rating ?? null : player?.rating ?? null,
+          uncertainty: pool.setId ? setRating?.uncertainty ?? null : player?.uncertainty ?? null,
+          gamesPlayed: pool.setId ? setRating?.gamesPlayed ?? null : player?.gamesPlayed ?? null,
+          matchesPlayed: pool.setId ? setRating?.matchesPlayed ?? null : player?.matchesPlayed ?? null,
+          displayName: player?.displayName ?? null,
+          tagLine: player?.tagLine ?? null,
+          componentId: player?.componentId ?? null,
+          componentSize: player?.componentSize ?? null,
+          regionLabel: player?.regionLabel ?? null,
+          sceneId: player?.sceneId ?? null,
+          sceneLabel: player?.sceneLabel ?? null,
+          // The engine's own position on this board, which is what `poolRank`
+          // publishes. 1-based over the rows it wrote, in board order.
+          rank: onBoard ? ratedSeen : null,
+        });
+      }
+
+      return {
+        items,
+        poolScope: pool.raw,
+        poolRowsRead: examined.length,
+        complete: examined.length === ids.length,
+        omittedPoolRows,
+        updatedAt: ids.length > 0 ? '2026-10-25T06:00:00.000Z' : null,
       };
     },
 
