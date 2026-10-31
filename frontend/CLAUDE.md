@@ -1092,13 +1092,39 @@ own element and invisible to that test.
   day. `dayStringToLocalDate` parses it - with the `Date(y, m, d)`
   constructor, because `new Date('2025-11-07')` is UTC midnight by spec and
   reads back as the 6th west of UTC.
-- **A click on a cell's background focuses the date number before opening.**
-  `dateClick`'s target is a plain `<div>`, so focus would stay on `<body>` and
-  Escape would drop the reader at the top of the document; this makes the
-  return landing the day they just opened. Measured, not assumed: Chromium does
-  not match `:focus-visible` on a programmatic focus whose last real
-  interaction was a pointer, so a click leaves no ring, while the same element
-  does show one after Escape. No branch needed, including on touch.
+- **A pointer click moves no focus, and the ring is the browser's alone.**
+  `dateClick` used to `focus()` the cell's date number on the way in, so that
+  `DayEventsModal`'s restore would land Escape on the day just opened rather
+  than on `<body>`. That is what the owner saw as "after clicking a calendar
+  cell the date is highlighted in like a box", and the measurement it rested on
+  was taken at the wrong moment: **Chromium judges `:focus-visible` for a
+  restored focus by the gesture that *dismissed* the dialog, not the one that
+  opened it.** Measured in Chromium on the real grid at 1280px and 390px -
+  click a cell, press Escape, and the date wears the 2px cyan ring, on an
+  ordinary cell, on today's and on an other-month one alike; close with the X
+  or the backdrop and it does not, which is why this got through review.
+  - The fix is the deletion, not a selector. `:focus-visible` was already the
+    only rule, and nothing CSS can say distinguishes the two readers at the
+    moment of the restore - the one an override would get wrong is the
+    keyboard reader. Carrying "this was opened by a pointer" into the dialog
+    and suppressing the ring for one restore would work, at the price of an
+    attribute with a lifetime whose failure mode is a keyboard reader with no
+    visible focus. Without the focus move a pointer reader had focus nowhere,
+    so there is nothing to restore and nothing to ring; a keyboard reader
+    focused the number for real, so Escape returns them to it, ringed.
+  - The cost, stated: a mouse reader who presses Escape and then Tab resumes
+    at the top of the document rather than inside the day. That is where they
+    were before they clicked. **"+N more" was measured and needs nothing** - a
+    desktop mouse click does not focus an `<a tabindex="0">` in Chromium, so
+    that route leaves focus on `<body>` either way.
+  - **The phone was measured too, and is clean.** Tapping a cell leaves no
+    ring on any dismissal, and tapping the date *number* - which a touch does
+    focus, where a desktop mouse click does not - leaves none either on the
+    two dismissals a phone has, the close button and the backdrop. It rings
+    only if an Escape key follows, which is a touchscreen *laptop*: there the
+    reader focused the control by touching the control, so the ring is the
+    browser describing focus they really established, and nothing here
+    scripted it.
 - **An other-month day with events lifts its day-top out of FullCalendar's
   `opacity: .3`.** That rule predates there being a control in the day-top; our
   own rule already mutes those numbers with `--color-text-muted`, measured for

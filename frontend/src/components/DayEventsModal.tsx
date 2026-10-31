@@ -80,10 +80,17 @@ function DayEventsModal({
    * Read at mount rather than passed down: this opens from three different
    * places - a click anywhere in a day cell, the cell's date number, and
    * FullCalendar's own "+N more" anchor - and none of the three is an element
-   * this app made. Whatever had focus is the thing to hand it back to. A click
-   * on a cell's *background* has no focusable target at all, which is why
-   * `handleDateClick` focuses the date number on the way in: Escape then lands
-   * the reader back on the day they opened rather than on `<body>`.
+   * this app made. Whatever had focus is the thing to hand it back to.
+   *
+   * **A pointer reader has focus nowhere, and that is left alone.** A click on
+   * a cell's background has no focusable target, so the opener is `<body>` and
+   * the restore is a no-op. `handleDateClick` used to `focus()` the date
+   * number on the way in so this had something to return to; it drew a focus
+   * ring on the date after a mouse click, because Chromium judges a restored
+   * focus by the gesture that *dismissed* the dialog - Escape - rather than
+   * the one that opened it. The reasoning, and what was measured, is in
+   * `CalendarPage`'s `handleDateClick`. A keyboard reader focused the date
+   * number for real on the way in, so they are returned to it with its ring.
    *
    * The dialog itself takes focus rather than its first row, because the
    * heading names the day the list is for and a reader dropped straight onto

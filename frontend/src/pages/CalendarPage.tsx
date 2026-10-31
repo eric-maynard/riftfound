@@ -976,24 +976,40 @@ function CalendarPage({ active = true }: CalendarPageProps) {
    * (The `+` did need one - it was our own element, invisible to that test,
    * and on touch `dateClick` opened the list a second time behind it.)
    *
-   * **Focus moves to the day number first.** `dateClick`'s target is a plain
-   * `<div>`, so a click on the cell's background leaves focus on `<body>` -
-   * and `DayEventsModal` hands focus back to whatever had it, which would mean
-   * Escape dropping the reader at the top of the document. Focusing the day
-   * number makes the return landing the day they just looked at. It is also
-   * the control a keyboard reader would have used to get here, so both routes
-   * end up in the same place.
+   * **Focus is not moved.** This used to `focus()` the cell's date number on
+   * the way in, so that `DayEventsModal` - which hands focus back to whatever
+   * had it - would land Escape on the day just opened rather than on `<body>`.
+   * That is the bug the owner reported as "after clicking a calendar cell the
+   * date is highlighted in like a box", and the measurement the old comment
+   * rested on was taken at the wrong moment.
    *
-   * It costs the mouse nothing, and that was measured rather than hoped for:
-   * Chromium does not match `:focus-visible` on a programmatic focus when the
-   * last real interaction was a pointer, so a click leaves no ring - while the
-   * *same* element does show one after Escape, because by then the last
-   * interaction was a key. Neither case needed a branch, and neither did
-   * touch.
+   * Measured in Chromium, on the real grid, at 1280px and 390px: Chromium
+   * decides `:focus-visible` for a *restored* focus from the gesture that
+   * **dismissed** the dialog, not the one that opened it. So the ring was
+   * absent at the instant of the click - which is all the old note checked -
+   * and present as soon as the reader pressed Escape, on an ordinary cell, on
+   * today's, and on an other-month one alike. Closing with the X or the
+   * backdrop left no ring, which is why this survived review: the two mouse
+   * dismissals that are themselves pointer gestures look correct.
+   *
+   * Knowing *how* the day was opened is therefore the only lever, and this is
+   * the only place that knows. Rather than carry that fact into the dialog and
+   * suppress the ring for one restore - an attribute with a lifetime, whose
+   * failure mode is a keyboard reader with no visible focus - the focus move
+   * simply goes. A pointer reader had focus nowhere, so there is nothing for
+   * the dialog to restore and nothing to draw a ring on; a keyboard reader
+   * focused the date number for real on the way in, so Escape returns them to
+   * it with the ring intact, which is the case that needs it. The ring is left
+   * entirely to the browser's own heuristic over focus the reader really
+   * established, which is the direction that fails safe.
+   *
+   * The cost, stated plainly: a mouse reader who dismisses with Escape and
+   * then presses Tab resumes at the top of the document rather than inside the
+   * day they just looked at. That is where they were before they clicked, and
+   * a focus position the reader never established is not one worth inventing.
    */
   const handleDateClick = useCallback((info: DateClickArg) => {
     if (getEventsForDate(info.date).length === 0) return;
-    info.dayEl.querySelector<HTMLElement>('.fc-daygrid-day-number')?.focus();
     openDayList(info.date);
   }, [getEventsForDate, openDayList]);
 

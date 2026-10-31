@@ -1054,6 +1054,16 @@ select:disabled {
    hover card's link - so it needs a focus ring of its own. Cyan, 2px, as
    everywhere else here.
 
+   **`:focus-visible` is the whole rule, and nothing scripts around it.** The
+   selector was never the bug behind "after clicking a calendar cell the date
+   is highlighted in like a box": `handleDateClick` was *calling* `focus()` on
+   the number after a mouse click, and Chromium judges a focus restored when a
+   dialog closes by the gesture that dismissed it, so Escape made it match.
+   That call is gone rather than being fought here with a second selector - a
+   `:focus:not(:focus-visible)` override cannot tell the two readers apart
+   either, and the one it would get wrong is the keyboard reader. See
+   `CalendarPage`'s `handleDateClick`.
+
    **A day with events lifts its day-top out of FullCalendar's `opacity: .3`
    for other-month cells.** That rule predates there being a *control* in the
    day-top: our own rule two screens up already mutes those numbers with
