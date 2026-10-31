@@ -48,10 +48,19 @@ deploy_frontend() {
         --region "$AWS_REGION" \
         --cache-control "no-cache, no-store, must-revalidate"
 
-    echo "==> Invalidating CloudFront cache for index.html..."
+    # `/basemap/*` is here because those files are **not content-hashed** and
+    # are uploaded with `max-age=31536000, immutable` like everything else in
+    # `dist`. Their `-v1` suffix is the intended guard, but it only works if
+    # somebody remembers to bump it, and `places-v1.json` has already shipped
+    # changed content under an unchanged name - so a browser that had opened
+    # the scene picker before that deploy holds the old file for a year, and
+    # the edge serves it to everyone else until the object expires. Two paths
+    # cost one invalidation request; the alternative failure mode is a basemap
+    # fix that looks like it never shipped.
+    echo "==> Invalidating CloudFront cache for index.html and the basemap..."
     aws cloudfront create-invalidation \
         --distribution-id "$CLOUDFRONT_DISTRIBUTION_ID" \
-        --paths "/index.html" "/" \
+        --paths "/index.html" "/" "/basemap/*" \
         --region "$AWS_REGION" > /dev/null
 
     echo "==> Frontend deployed!"

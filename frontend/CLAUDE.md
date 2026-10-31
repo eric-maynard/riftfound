@@ -549,11 +549,22 @@ the heading, where a reader who has just arrived looks, and at the foot under
   gzipped**, 90th percentile 14.7 KB, worst (Finland and the Baltic, all lakes
   and islands) 51 KB.
 
-  **What a first metro view costs**: 43.9 KB for the world tier plus the cells
-  on screen - measured, San Francisco Bay is **one** cell at 3.8 KB, so
-  **47.7 KB**; the Rhine-Main corner, where a scene's own spread straddles two
-  cell boundaries in both axes, is four cells and 134 KB. Everything is cached
-  for the session and by the browser after that.
+  **What a first metro view costs**, re-measured in Chromium at 1280px on both
+  surfaces: 43.9 KB for the world tier (`land` 39.4 + `places` 3.5 + manifest
+  0.9) plus the cells on screen. The map page frames a scene in an 871x538
+  canvas and the picker's pane in a 349x320 one, and because the frame is a
+  **distance** - 30km, or the scene's own spread - the bigger canvas spends its
+  extra room on zoom rather than on ground, so both ask for the same cells:
+
+  | first metro view | page | pane |
+  |---|---|---|
+  | San Francisco Bay (Berkeley, CA) | zoom 10, 1 cell, **47.6 KB** | zoom 9, 1 cell, **47.6 KB** |
+  | Rhine-Main (Karlsruhe, 65.5km spread) | zoom 8, 4 cells, **132.2 KB** | zoom 7, 4 cells, **132.2 KB** |
+
+  A world view - the map page with nothing selected, the pane on `Global` -
+  costs the 43.9 KB and **no** cells, which is correct: 110m is the right data
+  for a view of continents. Everything is cached for the session and by the
+  browser after that.
 
   - **Why tiers: 110m does not contain the thing being looked for.** Natural
     Earth 110m is 1:110,000,000, where San Francisco Bay is 60km end to end and
@@ -598,6 +609,37 @@ the heading, where a reader who has just arrived looks, and at the foot under
     decides what "show me this scene" means, and the 6km it used to be framed a
     corner of the Bay. At 30km the Bay is on screen with San Francisco, Oakland
     and San Jose named.
+    - **There is exactly one such figure, and `sceneBounds` used to hold a
+      second one.** Its single-pin pad was a flat **one degree** - 222km of
+      latitude - against `sceneFocusBounds`' 30km, so the same question had two
+      answers depending on whether the one pin arrived as a search result or as
+      a selection. Measured in the 349x320 pane: typing `santiago, chile`
+      framed at **zoom 6**, which is `DETAIL_ZOOM` itself, so the 10m tier
+      switched on by a single level and at a scale where it is
+      indistinguishable from 110m. It is `MIN_FRAME_KM` on both paths now -
+      **zoom 8** for the same query - and a test asserts the two agree rather
+      than pinning either to a number.
+  - **Framing a selection is both surfaces' job, not just the pane's.** This is
+    the bug behind the owner's "i havent seen the fidelity of the map get any
+    better", reported after the tiering shipped and verified correct at the
+    edge. Nothing was wrong with the geometry: measured in Chromium at 1280px
+    on production, `/rankings/map` opened at **zoom 1** - one fit to a corpus
+    spanning California to Singapore - and *stayed* there, because the framing
+    effect was `mini` only, so `?scene=` arriving from an event page's `Map`
+    link or from the pane's expand control recoloured one of 1,331 dots and
+    moved nothing. The picker's pane opened at **zoom 0** on its default
+    `Global` scope for the same reason. With `DETAIL_ZOOM` at 6, the detail
+    tier was unreachable on either surface except through Leaflet's own zoom
+    control: **0 cells fetched on every entry point the owner has.** The effect
+    now runs on both variants, keeping its `selfSelected` guard - a reader who
+    clicked the pin can already see it, and moving the ground under their
+    finger buys nothing - so what flies is the case that needs it: a `?scene=`
+    arrival, and a row chosen from the list *below* the map, which is the
+    keyboard surface and previously had no effect on the canvas at all. It also
+    tests that the selection is framable before skipping the corpus fit for it:
+    a scene with no pin and no located venue has no box to fly to, and skipping
+    one fit for another that does not happen would leave the canvas on its
+    constructed `WORLD_VIEW` centre.
   - **Minimal by construction.** Nobody picks a Riftbound scene by looking at a
     park. With our own geometry you cannot accidentally ship a road: the only
     things on the map are the things we drew.
@@ -612,14 +654,28 @@ the heading, where a reader who has just arrived looks, and at the foot under
     marker contrast measurements are untouched because nothing filters
     anything.
   - **Versioned filenames**, for the reason the Rankings mark is versioned:
-    `deploy.sh frontend` only invalidates `index.html`. Bump the suffix in
-    `build-basemap.py` and `SceneMap.tsx` together.
+    these files are not content-hashed and go up with
+    `max-age=31536000, immutable` like everything else in `dist`. Bump the
+    suffix in `build-basemap.py` and `SceneMap.tsx` together.
+    - **`deploy.sh frontend` now also invalidates `/basemap/*`**, because the
+      suffix is a convention and a convention is not a mechanism:
+      `places-v1.json` has already shipped changed content under an unchanged
+      name (7,005 bytes live against the pre-tiering file), so any browser that
+      had opened the picker before that deploy holds the old one for a year and
+      the edge hands it to everyone else until the object expires. Two paths
+      cost one invalidation request. Checked while hunting the fidelity bug
+      above and **not** its cause - `land-v1.json` is unchanged, every
+      `detail/` path is new, and all of them serve 200 - but it is the same
+      failure mode, and the next basemap fix is the one it would eat.
   - **No geometry enters a JS bundle.** Everything is `fetch`ed at runtime -
     an `import` of JSON is inlined by Rollup into the importing chunk. Verified
     after this change: the eager chunk is byte-identical at **155.21KB gzipped**
     (nothing eager was touched) and contains no `leaflet`, no coastline and no
     city names; the tiering logic costs **0.81KB** in the lazy map chunk
-    (46.82 → 47.63KB).
+    (46.82 → 47.63KB). Re-measured after the framing fix on this branch: eager
+    **155.93KB gzipped before and after**, map chunk 47.63 → **47.62KB**, and
+    the eager chunk still greps zero for `leaflet`, `MultiPolygon`,
+    `coordinates` and `Natural Earth`.
   - At high zoom there is still no imagery, and that is the trade: the question
     is which city a scene is in, not which street, and the venue pins carry the
     local context.

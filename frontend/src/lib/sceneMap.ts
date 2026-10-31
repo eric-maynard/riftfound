@@ -240,13 +240,18 @@ export function sceneBounds(
     if (scene.longitude > east) east = scene.longitude;
   }
 
-  // A single pin has no extent, so pad it to something Leaflet can fit
-  // without zooming to street level.
+  /* A single pin has no extent, so the pad alone decides what the frame means
+     - the same question `MIN_FRAME_KM` below already answers, and it must not
+     be answered twice. This used to be a flat **one degree**: 222km of
+     latitude, which in the picker's pane fits at exactly zoom 6, the threshold
+     `DETAIL_ZOOM` sits on - so a reader who typed one scene's name got the 10m
+     tier by a single level, at a scale where 10m and 110m look alike. Measured
+     in Chromium at 1280px, typing `santiago, chile` framed at **zoom 6**
+     before and at **zoom 8** now. At `MIN_FRAME_KM` it is the metro that
+     figure was measured for, and the two single-pin frames in this file
+     agree - which is what the test asserts, rather than either number. */
   if (south === north && west === east) {
-    return [
-      [south - 1, west - 1],
-      [north + 1, east + 1],
-    ];
+    return padBounds(south, west, north, east, MIN_FRAME_KM);
   }
   return [
     [south, west],

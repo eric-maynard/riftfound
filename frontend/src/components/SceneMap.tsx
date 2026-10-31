@@ -299,14 +299,14 @@ interface SceneMapProps {
    */
   onHighlight?: (componentId: string | null) => void;
   /**
-   * Which surface this canvas is drawn on. Four behaviours hang off it, and
-   * all four are about the difference between a page about every scene and a
+   * Which surface this canvas is drawn on. Three behaviours hang off it, and
+   * all three are about the difference between a page about every scene and a
    * canvas inside a filter control (`SceneSelect`'s pane):
    *
-   * - **the first frame.** `page` fits the whole corpus once, because its
-   *   question is "where are the scenes". `mini` frames the *selected* scene
-   *   when there is one, because its question is "is this the one I meant" -
-   *   and a 1,286-pin world view in a thumbnail answers neither.
+   * - **the first frame with nothing selected.** `page` fits the whole corpus,
+   *   because its question is "where are the scenes"; so does `mini`, whose
+   *   default scope is `Global`. A *selected* scene is framed on **either**
+   *   surface and that is not a variant behaviour - see the framing effect.
    * - **refitting.** `mini` refits whenever the `scenes` array changes, because
    *   in the pane that array *is* the search result: typing `berlin` should
    *   take the map to Berlin, the way the list goes to Berlin. `page` fits once
@@ -810,10 +810,20 @@ function SceneMap({
     // *selection* or a hover must not move anything, which is why this tests
     // the array's identity rather than simply running.
     //
-    // Skipped on a mini map that already has a scene to show, because the
-    // framing effect below is about to open on that scene and fitting the world
-    // first would be a camera move the reader watches happen for nothing.
-    const framingSelection = variant === 'mini' && selected !== null && !fitted.current;
+    // Skipped on **either** surface when there is already a scene to show,
+    // because the framing effect below is about to open on that scene and
+    // fitting the world first would be a camera move the reader watches happen
+    // for nothing. On the page that is the `?scene=` arrival - a link in from
+    // an event page or from the pane's expand control - which used to land on
+    // a world fit with one cyan dot somewhere in it.
+    //
+    // It tests that the selection can *actually* be framed rather than merely
+    // that there is one: a scene with no pin and no located venue has no box
+    // to fly to, and skipping the corpus fit for a flight that then does not
+    // happen would leave the canvas on its constructed `WORLD_VIEW` - a
+    // guessed centre, which is the one view this map is never allowed to show.
+    const framingSelection =
+      selected !== null && sceneFocusBounds(selected) !== null && !fitted.current;
     const wantsFit = variant === 'mini' ? fittedTo.current !== scenes : !fitted.current;
     if (wantsFit && !framingSelection && scenes.length > 0) {
       const bounds = sceneBounds(scenes);
@@ -884,21 +894,50 @@ function SceneMap({
     }
   }, [selected]);
 
-  // Framing one scene - `mini` only. See `variant`.
-  //
-  // A selection the reader did not make on this map is the case that needs it:
-  // the picker opens with whatever scene the ladder is already scoped to, and a
-  // **dispersed** scene can only be chosen off the chip list, because it has no
-  // pin to click. Both would otherwise leave the canvas showing wherever it
-  // happened to be - which for a dispersed scene would look exactly like the
-  // map having lost it.
+  /*
+   * Framing one scene - **both surfaces**, and this is the only thing on
+   * either of them that takes the view to a place.
+   *
+   * A selection the reader did not make *on this map* is the case that needs
+   * it. In the pane: the picker opens with whatever scene the ladder is
+   * already scoped to, and a **dispersed** scene can only be chosen off the
+   * chip list, because it has no pin to click. On the page: `?scene=` arriving
+   * in the URL - an event page's `Map` link, the pane's expand control, a
+   * shared view of one scene - and a row chosen from the list below the map,
+   * which is the keyboard surface and had no effect on the canvas at all
+   * beyond recolouring one of 1,286 dots.
+   *
+   * This used to be `mini` only, and that was the bug behind "I havent seen
+   * the fidelity of the map get any better". Measured on production at 1280px:
+   * `/rankings/map` opened at **zoom 1** and stayed there - fitted once to a
+   * corpus spanning California to Singapore - and `?scene=` did not move it,
+   * so with `DETAIL_ZOOM` at 6 the 10m tier was unreachable on that page
+   * except through Leaflet's own zoom control. The geometry had shipped and
+   * nothing framed a place to show it at.
+   *
+   * The reader clicking a pin themselves is the case that mostly does *not*
+   * need it, and "mostly" is the whole of the condition below.
+   */
   useEffect(() => {
     const instance = map.current;
-    if (!instance || variant !== 'mini') return;
+    if (!instance) return;
     if (selfSelected.current) {
-      // The reader clicked this pin; they can see it. Reset and leave the view.
       selfSelected.current = false;
-      return;
+      /* The reader clicked this pin. In the pane that ends the interaction -
+         a pin click sets the scope and closes the popover (`selectFromMap`) -
+         so there is no canvas left to show them anything on.
+
+         On the page the canvas stays, and whether they can already see what
+         they picked depends entirely on how far out they are. At zoom 9 they
+         clicked a dot they could read, and moving the ground under their
+         finger buys no information - the original rule, and it still holds.
+         But the page *opens* at zoom 1, fitted to a corpus spanning
+         California to Singapore, where a dot is one of 1,331 specks over a
+         continent and "they clicked it, so they can see it" is simply false.
+         So below `DETAIL_ZOOM` - which is also the depth at which this map
+         starts carrying real coastline - a click on a pin is read as "show me
+         this one", and above it the view stays the reader's. */
+      if (variant === 'mini' || instance.getZoom() >= DETAIL_ZOOM) return;
     }
     if (!selected) return;
     const bounds = sceneFocusBounds(selected);

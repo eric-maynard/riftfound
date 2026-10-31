@@ -206,22 +206,27 @@ describe('sceneBounds', () => {
   });
 
   it('ignores unlocated scenes rather than folding 0,0 into the box', () => {
-    expect(
-      sceneBounds([
-        scene({ componentId: 'a', latitude: 51.5, longitude: -0.12 }),
-        scene({ componentId: 'b', latitude: null, longitude: null }),
-      ])
-    ).toEqual([
-      [50.5, -1.12],
-      [52.5, 0.88],
-    ]);
+    const london = scene({ componentId: 'a', latitude: 51.5, longitude: -0.12, spreadKm: 0 });
+    const box = sceneBounds([london, scene({ componentId: 'b', latitude: null, longitude: null })]);
+    // Centred on the one located pin, not on the midpoint between it and the
+    // Gulf of Guinea.
+    expect(box).not.toBeNull();
+    expect((box![0][0] + box![1][0]) / 2).toBeCloseTo(51.5, 10);
+    expect((box![0][1] + box![1][1]) / 2).toBeCloseTo(-0.12, 10);
   });
 
-  it('pads a single pin so the map does not open at street level', () => {
-    expect(sceneBounds([scene({ componentId: 'a', latitude: 10, longitude: 20 })])).toEqual([
-      [9, 19],
-      [11, 21],
-    ]);
+  /**
+   * One pin has no extent, so the pad alone says what the frame means - and
+   * there must be exactly one answer to that in this module. `sceneBounds`
+   * used to pad a flat degree (222km) where `sceneFocusBounds` pads
+   * `MIN_FRAME_KM` (30km), which in the picker's 349x320 pane is the
+   * difference between zoom 6 - the threshold the detail tier switches on at,
+   * where 10m and 110m coastline look alike - and zoom 9, the metro the 30km
+   * figure was measured for.
+   */
+  it('frames a single pin at the same scale as framing that scene', () => {
+    const only = scene({ componentId: 'a', latitude: 10, longitude: 20, spreadKm: 0 });
+    expect(sceneBounds([only])).toEqual(sceneFocusBounds(only));
   });
 
   it('has nothing to fit when nothing is located', () => {
