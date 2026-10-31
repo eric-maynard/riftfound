@@ -2165,7 +2165,7 @@
   "carriesSceneId": "s300a1d2052"
  },
  {
-  "id": "r-santiago",
+  "id": "r-santiago-es",
   "name": "Santiago de Compostela",
   "rings": [
    [
@@ -2310,8 +2310,8 @@
   "carriesSceneId": "sec1c66219a"
  },
  {
-  "id": "r-leon",
-  "name": "León",
+  "id": "r-leon-es",
+  "name": "León, España",
   "rings": [
    [
     [
@@ -2687,8 +2687,8 @@
   "carriesSceneId": "s3d7bd0bbe8"
  },
  {
-  "id": "r-guadalajara",
-  "name": "Guadalajara",
+  "id": "r-guadalajara-es",
+  "name": "Guadalajara, Castilla-La Mancha",
   "rings": [
    [
     [
@@ -2920,7 +2920,7 @@
  },
  {
   "id": "r-cordoba",
-  "name": "Córdoba",
+  "name": "Córdoba, Andalucía",
   "rings": [
    [
     [
@@ -4462,8 +4462,8 @@
   "carriesSceneId": "sf12d2eaf62"
  },
  {
-  "id": "r-laval",
-  "name": "Laval",
+  "id": "r-laval-fr",
+  "name": "Laval, Mayenne",
   "rings": [
    [
     [
