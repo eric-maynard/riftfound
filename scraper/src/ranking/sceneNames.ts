@@ -164,14 +164,32 @@ export const SCENE_NAME_OVERRIDES: SceneNameOverride[] = [
   // 30km proposal: 7 labels are shared by 16 scenes, and these are them. Each
   // override is read off the member councils and the scene's centroid, so the
   // compass directions are measured rather than guessed.
-  // Bangkok is three scenes at 30km and all three default to `Bangkok, 10`.
-  // The core keeps the bare name and the other two are named by their
-  // position relative to it, measured from the clusters' own centroids rather
-  // than guessed: the core sits at 13.766/100.535, east at 13.729/100.651 and
-  // north at 13.860/100.584.
-  { shopExternalId: 18715, name: 'Bangkok', insteadOf: 'Bangkok, 10 (shared with 2 other scenes)' },
-  { shopExternalId: 2862394495, name: 'East Bangkok', insteadOf: 'Bangkok, 10 (shared with 2 other scenes)' },
-  { shopExternalId: 53438, name: 'North Bangkok', insteadOf: 'Bangkok, 10 (shared with 2 other scenes)' },
+  // Bangkok is four scenes at 30km and all four default to `Bangkok, 10`.
+  // The core keeps the bare name and the others are named by their position
+  // relative to it, measured from the clusters' own centroids rather than
+  // guessed.
+  //
+  // **Re-read against the 2026-10-31 proposal, and two of these three moved.**
+  // The clusters changed shape, and because an override follows its *store*,
+  // `Bangkok` and `East Bangkok` had swapped places: shop 18715 is now in the
+  // west-bank cluster and shop 2862394495 in the central one. Measured
+  // centroids and membership under that proposal:
+  //
+  //   se57d9a0e66  35 stores  1,290 matches  13.748/100.593  the central core
+  //   sb38c72f854  21 stores    670 matches  13.793/100.456  west bank + Nonthaburi
+  //   se4b72835bf  17 stores    552 matches  13.869/100.583  north, into Pathum Thani
+  //   sb5bd9bfddc   1 store      53 matches  13.723/100.799  Lat Krabang, far east
+  //
+  // So the names are re-keyed: the 35-store cluster that holds the inner city
+  // (Siam/Sukhumvit/Silom, 100.50-100.69) is `Bangkok`, and the one at
+  // 100.456 - Bangkok's west bank plus Bang Yai, Bang Kruai, Mueang
+  // Nonthaburi and Pak Kret across the provincial line - is named for both
+  // halves on this table's own cross-border rule. Thais call the west bank
+  // "ฝั่งธน" / the Thonburi side, and Nonthaburi is a separate province, so
+  // `Thonburi & Nonthaburi` is what a player there would say.
+  { shopExternalId: 2862394495, name: 'Bangkok', insteadOf: 'Bangkok, 10 (shared with 3 other scenes)' },
+  { shopExternalId: 18715, name: 'Thonburi & Nonthaburi', insteadOf: 'Bangkok, 10 (shared with 3 other scenes)' },
+  { shopExternalId: 53438, name: 'North Bangkok', insteadOf: 'Bangkok, 10 (shared with 3 other scenes)' },
   { shopExternalId: 53311, name: 'West Jakarta & Tangerang', insteadOf: 'Jakarta, JK (shared with 1 other scene)' },
   { shopExternalId: 2694491100, name: 'East Jakarta & Bekasi', insteadOf: 'Jakarta, JK (shared with 1 other scene)' },
   { shopExternalId: 1449, name: 'Mississauga', insteadOf: 'Toronto, Canada (shared with the Toronto scene)' },
@@ -186,7 +204,13 @@ export const SCENE_NAME_OVERRIDES: SceneNameOverride[] = [
   { shopExternalId: 2270792425, name: 'Cuautitlán Izcalli', insteadOf: 'Mexico City, CMX (shared with the Mexico City scene)' },
   { shopExternalId: 30398, name: 'North Shore', insteadOf: 'Sydney, NSW (shared with 2 other scenes)' },
   { shopExternalId: 27095, name: 'Penrith & Blue Mountains', insteadOf: 'Sydney, NSW (shared with 2 other scenes)' },
-  { shopExternalId: 2679668660, name: 'Macarthur', insteadOf: 'Sydney, NSW (shared with 2 other scenes)' },
+  // Camden plus Campbelltown, which is the Macarthur region. Re-keyed from
+  // shop 2679668660 to 2243 against the 2026-10-31 proposal: 2243 (Camden, 45
+  // matches) is now the cluster's busiest store and 2679668660 (25) is not, so
+  // the old key was relying on being the only *overridden* store in the
+  // cluster rather than on the table's own "key it on the busiest" rule. The
+  // default label moved with it, from `Sydney, NSW` to `Camden Council`.
+  { shopExternalId: 2243, name: 'Macarthur', insteadOf: 'Camden Council, Australia' },
 
   // Administrative council names, which are correct and unreadable.
   { shopExternalId: 17686, name: 'Western Sydney', insteadOf: 'City of Parramatta Council, Australia' },
@@ -202,6 +226,221 @@ export const SCENE_NAME_OVERRIDES: SceneNameOverride[] = [
   // Cavite plus the southern edge of Metro Manila, the same shape.
   { shopExternalId: 53922, name: 'Cavite & South Metro Manila', insteadOf: 'Imus City, CAV' },
   { shopExternalId: 61249, name: 'Klang & Shah Alam', insteadOf: 'Subang Jaya, 10' },
+
+  // =======================================================================
+  // ASIA-PACIFIC (East/Southeast/South Asia and Oceania)
+  // =======================================================================
+  //
+  // Read off the 2026-10-31 geo proposal (403-day replay, 139,692 matches,
+  // 3,811 placed venues in 1,453 scenes): 135 of those scenes have their
+  // centroid in this region. Every row below names a cluster whose *store
+  // membership and centroid were checked*, and the key is the cluster's
+  // busiest store in that proposal. The Bangkok, Jakarta, Sydney and
+  // Melbourne entries above are the rest of this region; they are not
+  // repeated here.
+  //
+  // Three things this region does not need, worth recording so the next
+  // reader does not go looking:
+  //
+  // - **No CJK scene exists yet.** Not one cluster in Japan, Korea, Taiwan,
+  //   Hong Kong, mainland China or India. The script question ("endonym or
+  //   Latin?") therefore has no instance to decide: every label in the region
+  //   today is Latin, including the Thai, Malay and Indonesian ones, so these
+  //   names stay Latin to match the corpus rather than introducing a second
+  //   convention for one row.
+  // - **`X, New Zealand / Aotearoa` is left alone** where the city name is
+  //   right (Wellington, Hamilton, Dunedin, Nelson, Palmerston North). It is
+  //   long, but it is the geocoder's *country* field doing what it does for
+  //   `Berlin, Deutschland` and `Madrid, España`, and overriding it per-city
+  //   would both desync New Zealand from every other country's default and
+  //   put bare `Hamilton` and `Nelson` into a worldwide picker that already
+  //   holds `Hamilton, Canada`. Only the rows where the *place* is wrong are
+  //   overridden below.
+  // - **`Singapore`, `Metro Manila`, `Klang Valley`, `Jurong & Johor Bahru`,
+  //   `Cavite & South Metro Manila` and `Klang & Shah Alam` are unchanged**,
+  //   and each was re-checked: every one of those keys is still inside the
+  //   cluster it names.
+
+  // --- Thailand ----------------------------------------------------------
+  // The far-east Bangkok singleton, which defaults to `Bangkok, 10` and so
+  // collides with the `Bangkok` row above one string short of being caught.
+  // Its one store sits at 13.723/100.799, which is Lat Krabang - the district
+  // a Bangkok player names, not "east Bangkok", which is 20km west of it.
+  { shopExternalId: 55115, name: 'Lat Krabang', insteadOf: 'Bangkok, 10' },
+  //
+  // `Mueang X` is the geocoder's answer, not a Thai player's: เมือง is the
+  // *city district* of a province, so `Mueang Khon Kaen` is "Khon Kaen's
+  // central district" and the trailing number is the province code. Nobody
+  // says either half out loud, and in each of these clusters every store is
+  // in that one province, so the province's own city name is both shorter and
+  // what a local would use.
+  { shopExternalId: 53445, name: 'Khon Kaen', insteadOf: 'Mueang Khon Kaen, 40' },
+  // 4 stores at 13.31/100.96: the central district plus Si Racha, i.e. the
+  // Chonburi coastal strip. Spelled as Thai signage and shops spell it,
+  // rather than the royal transcription `Chon Buri` the geocoder returns.
+  { shopExternalId: 2504163878, name: 'Chonburi', insteadOf: 'Mueang Chon Buri, 20' },
+  // San Sai is a district of Chiang Mai province and the cluster's third
+  // store is in Mueang Chiang Mai itself: the scene is Chiang Mai.
+  { shopExternalId: 54154, name: 'Chiang Mai', insteadOf: 'San Sai, 50' },
+  { shopExternalId: 53997, name: 'Nakhon Pathom', insteadOf: 'Mueang Nakhon Pathom, 73' },
+  { shopExternalId: 20730, name: 'Chiang Rai', insteadOf: 'Mueang Chiang Rai, 57' },
+  { shopExternalId: 53436, name: 'Rayong', insteadOf: 'Mueang Rayong, 21' },
+  { shopExternalId: 53474, name: 'Roi Et', insteadOf: 'Mueang Roi Et, 45' },
+  { shopExternalId: 54763, name: 'Phetchabun', insteadOf: 'Mueang Phetchabun, 67' },
+  { shopExternalId: 54519, name: 'Phitsanulok', insteadOf: 'Mueang Phitsanulok, 65' },
+  { shopExternalId: 59665, name: 'Nakhon Si Thammarat', insteadOf: 'Mueang Nakhon Si Thammarat, 80' },
+
+  // --- Malaysia ----------------------------------------------------------
+  // 13 stores at 3.067/101.715 - Cheras, Balakong, Kajang, Beranang,
+  // Seri Kembangan, Puchong and Putrajaya, i.e. the south-east corridor out
+  // of Kuala Lumpur. Its default label is `Kuala Lumpur, 14`, which is the
+  // same string the `Klang Valley` scene would have taken: two scenes, one
+  // city name, and this is the one that is not the Klang Valley core. Named
+  // for the two hubs its players actually name. Its intra-scene play share is
+  // 57.4%, the lowest in the region after Jurong/Johor Bahru, so this is a
+  // corridor of half-scenes and naming it after either end alone would be
+  // wrong.
+  { shopExternalId: 59041, name: 'Cheras & Kajang', insteadOf: 'Kuala Lumpur, 14' },
+  // 8 stores: George Town and Gelugor on the island plus Butterworth on the
+  // mainland. `Pulau Pinang` is the state's name in Malay; Malaysians writing
+  // in English - and every shop listing in the corpus - say Penang.
+  { shopExternalId: 20956, name: 'Penang', insteadOf: 'Pulau Pinang, 07' },
+  // Ayer Keroh is a suburb of Melaka and the other two stores are labelled
+  // Melaka outright.
+  { shopExternalId: 15743, name: 'Melaka', insteadOf: 'Ayer Keroh, 04' },
+  // Lutong is a township inside Miri; the city is what a Sarawakian says.
+  { shopExternalId: 2661621158, name: 'Miri', insteadOf: 'Lutong, 13' },
+
+  // --- Indonesia ---------------------------------------------------------
+  // One store at -7.726/110.396, in Sleman regency immediately north of
+  // Yogyakarta city and inside its built-up area. The regency is the
+  // administrative answer; Yogyakarta (Jogja) is the scene.
+  { shopExternalId: 2265042443, name: 'Yogyakarta', insteadOf: 'Sleman, YO' },
+
+  // --- Philippines -------------------------------------------------------
+  // 5 stores, 9.2km across, 97.9% internal play: Cebu City plus Mandaue.
+  // Metro Cebu is the name the conurbation has and the one a Cebuano uses.
+  { shopExternalId: 53915, name: 'Metro Cebu', insteadOf: 'Cebu City, Cebu City' },
+  // 5 stores at 14.746/121.029: Novaliches/Lagro in northern Quezon City
+  // plus Meycauayan, Marilao and Santa Maria across the Bulacan line - the
+  // northern edge of the Manila conurbation, the mirror image of
+  // `Cavite & South Metro Manila` and named on the same rule. The default
+  // names it after Quezon City, which is 3 of its 5 stores' *province* and
+  // not where the scene is.
+  { shopExternalId: 53236, name: 'North Metro Manila & Bulacan', insteadOf: 'Quezon City, Quezon City' },
+  // 4 stores across Angeles, Mabalacat and Mexico in Pampanga, 203 of 227
+  // matches in the contiguous Angeles-Mabalacat urban area. `Metro Clark` is
+  // the planning name for it; `Angeles City` is what players say, and it also
+  // disambiguates from Los Angeles in a worldwide picker.
+  { shopExternalId: 53263, name: 'Angeles City', insteadOf: 'Angeles, Angeles' },
+  // 4 stores in central Bulacan - Plaridel, Baliwag, Malolos and San
+  // Ildefonso, 26km apart. Named for the two towns a Bulakenyo orients by
+  // rather than after Plaridel, which only holds the busiest store, and
+  // deliberately not "Bulacan", which would read as the same scene as the row
+  // above.
+  { shopExternalId: 59058, name: 'Malolos & Baliwag', insteadOf: 'Plaridel, BUL' },
+  // Cabuyao plus San Pedro: the northern Laguna stretch of the South Luzon
+  // corridor. Locals say Laguna.
+  { shopExternalId: 35015, name: 'Laguna', insteadOf: 'Cabuyao City, LAG' },
+  // Lipa (2 stores) plus Batangas City. Named for both because the bare
+  // province name `Batangas` and the city `Batangas City` are the same word
+  // to a reader and different places to a player.
+  { shopExternalId: 53302, name: 'Lipa & Batangas City', insteadOf: 'Lipa City, BTG' },
+  //
+  // The Philippine independent cities are their own province, so reverse
+  // geocoding renders them twice - `Davao City, Davao City` - which reads as
+  // a bug rather than as a name. Same place, said once. These are the rows
+  // most likely to retire themselves: fix the duplication in the label and
+  // the default rule agrees with every one of them.
+  { shopExternalId: 14618, name: 'Baguio', insteadOf: 'Baguio, Baguio' },
+  { shopExternalId: 54583, name: 'Iloilo City', insteadOf: 'Iloilo City, Iloilo City' },
+  { shopExternalId: 2757205521, name: 'Davao City', insteadOf: 'Davao City, Davao City' },
+  { shopExternalId: 53296, name: 'Bacolod', insteadOf: 'Bacolod, Bacolod' },
+  { shopExternalId: 53299, name: 'General Santos', insteadOf: 'General Santos, General Santos' },
+  { shopExternalId: 64158, name: 'Olongapo', insteadOf: 'Olongapo, Olongapo' },
+  { shopExternalId: 53240, name: 'Cagayan de Oro', insteadOf: 'Cagayan de Oro, Cagayan de Oro' },
+  { shopExternalId: 53234, name: 'Zamboanga City', insteadOf: 'Zamboanga City, Zamboanga City' },
+
+  // --- Australia: the council names nobody says aloud --------------------
+  // Australian local-government areas are correct, printed on the bins, and
+  // not what anyone calls the place they play. Each of these is read off the
+  // member stores' positions, not off the council name.
+  //
+  // 6 stores spread across metro Perth - Bayswater/Morley, Leederville,
+  // Stirling, Dianella, East Perth and one down at Jandakot, 22km across.
+  // The council holding the busiest store is not the scene; Perth is.
+  { shopExternalId: 2242, name: 'Perth', insteadOf: 'City of Bayswater, Australia' },
+  // Wangara/Landsdale plus Joondalup, 8km apart and 20km north of the Perth
+  // cluster above. Joondalup is the urban centre of Perth's outer north, and
+  // the metro prefix is what keeps the two rows apart in a picker.
+  { shopExternalId: 3630, name: 'Perth — Northern Suburbs', insteadOf: 'City of Wanneroo, Australia' },
+  // Rockingham plus Mandurah, 27km apart down the coast. The default names
+  // only the half with the busiest store.
+  { shopExternalId: 2245, name: 'Rockingham & Mandurah', insteadOf: 'Rockingham, Australia' },
+  //
+  // 5 stores at -37.762/144.821: Keilor Park, Airport West, Moonee Ponds,
+  // Caroline Springs (Melton) and Werribee (Wyndham). "Western suburbs" is
+  // the established Melbourne term for that arc, and `Western Melbourne`
+  // reads beside the `Western Sydney` already in this table.
+  { shopExternalId: 4778, name: 'Western Melbourne', insteadOf: 'City of Moonee Valley, Australia' },
+  // 5 stores at -37.822/145.182: Box Hill (two), Vermont South, Wantirna
+  // (Knox) and Mooroolbark (Yarra Ranges) - Melbourne's eastern suburbs, and
+  // a different place from the `South East Melbourne` row above, whose
+  // centroid is 19km south at -37.995/145.164.
+  { shopExternalId: 2227, name: 'Eastern Melbourne', insteadOf: 'City of Whitehorse, Australia' },
+  // Melton plus Sunbury, 17km apart on Melbourne's outer north-west edge.
+  { shopExternalId: 24168, name: 'Melton & Sunbury', insteadOf: 'City of Melton, Australia' },
+  // One store at -38.059/145.463, which is Pakenham. The shire is the
+  // administrative container.
+  { shopExternalId: 17675, name: 'Pakenham', insteadOf: 'Shire of Cardinia, Australia' },
+  //
+  // 6 stores at -27.659/153.151 - Loganholme, Springwood, Shailer Park and
+  // Yarrabilba, 20km across, south of Brisbane. South-east Queenslanders say
+  // "Logan"; "Logan City" is the council's own name for itself.
+  { shopExternalId: 16338, name: 'Logan', insteadOf: 'Logan City, Australia' },
+  // One store at -27.085/152.950, which is Caboolture, 38km north of the
+  // Brisbane cluster. `Greater Brisbane, Australia` is a region label on a
+  // single store and collides with the `Brisbane, Australia` scene.
+  { shopExternalId: 17966, name: 'Caboolture', insteadOf: 'Greater Brisbane, Australia' },
+  //
+  // Gosford, Wyong and Tuggerah: the Central Coast, which is what it is
+  // called with or without the word "Council".
+  { shopExternalId: 3611, name: 'Central Coast', insteadOf: 'Central Coast Council, Australia' },
+  // Newcastle plus Maitland, 26km apart up the Hunter. Named for both rather
+  // than bare `Newcastle`, which in a worldwide picker sits next to
+  // `Newcastle-under-Lyme, United Kingdom`.
+  { shopExternalId: 2244, name: 'Newcastle & Maitland', insteadOf: 'City of Newcastle, Australia' },
+  // 7 stores across Gungahlin, Belconnen, Tuggeranong, Woden and North
+  // Canberra, 23km across and 100% internal play. Those are Canberra's
+  // districts; the city is the scene, and naming it after one district is the
+  // clearest case in this table of the default rule's one failure mode.
+  { shopExternalId: 2686, name: 'Canberra', insteadOf: 'Gungahlin, Australia' },
+  //
+  // **A business name, not a place.** The default label for this cluster is
+  // `Foodland` - a supermarket chain - and its second store's label is
+  // `Aldinga Central Shopping Centre`. Both stores are in Adelaide's southern
+  // suburbs (-35.14/138.53 and -35.28/138.46), 25-40km south of the Adelaide
+  // cluster, so the scene is the south. Note its 50.0% intra-scene share: it
+  // sits exactly on the publishing gate and may not appear at all next run.
+  { shopExternalId: 4664, name: 'Southern Adelaide', insteadOf: 'Foodland, Australia' },
+
+  // --- New Zealand: where the local board is not the place ---------------
+  // 8 stores at -36.773/174.713, 29.9km across: Albany and Upper Harbour
+  // (155 matches), Devonport-Takapuna (81) and Silverdale (20) on the North
+  // Shore, plus Henderson-Massey and Te Atatu (72) across the harbour in west
+  // Auckland. The weight is the North Shore and the metro prefix is doing two
+  // jobs: it separates this from the `Auckland, AUK` scene (central and south
+  // Auckland, -36.918/174.829), and it keeps `North Shore` unambiguous
+  // against Sydney's North Shore row above.
+  { shopExternalId: 16311, name: 'Auckland — North Shore', insteadOf: 'Upper Harbour, New Zealand / Aotearoa' },
+  // Franklin is the local board; two of the three stores are in Pukekohe and
+  // that is what south Aucklanders call it.
+  { shopExternalId: 16901, name: 'Pukekohe', insteadOf: 'Franklin, New Zealand / Aotearoa' },
+  // Rangiora (70 matches) plus a store in Halswell-Hornby-Riccarton (42),
+  // which is Christchurch, 23km apart. Named for both: the busiest store is
+  // in North Canterbury and the city is what a Cantabrian orients by, so
+  // naming it after either alone misses half the scene.
+  { shopExternalId: 2617, name: 'Christchurch & Rangiora', insteadOf: 'Rangiora, New Zealand / Aotearoa' },
 ];
 
 /**
