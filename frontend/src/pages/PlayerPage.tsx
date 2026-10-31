@@ -41,8 +41,7 @@ import { carryPreview } from '../lib/preview';
  *
  * A rating below the confidence gate is never printed. The page says
  * "Unranked" - one word, with the reason as its tooltip - instead of the banner
- * of prose it used to carry; the general rule lives in "How rankings work" at
- * the foot of the Rankings page.
+ * of prose it used to carry; the general rule is the site footer's one note.
  *
  * The shape is op.gg's: one summary block carrying identity, the headline
  * number, the record and recent form together, then a match list whose rows are
@@ -183,8 +182,7 @@ function PlayerPage() {
         <section className="panel empty-state">
           <p title={UNRANKED_NO_GAMES_EXPLANATION}>
             {UNRANKED_LABEL} &mdash; no games by {profile.displayName ?? 'this player'}
-            {profile.tagLine ? `#${profile.tagLine}` : ''} have been recorded yet. A rating appears
-            once they have played at an event whose organiser recorded it.
+            {profile.tagLine ? `#${profile.tagLine}` : ''} have been recorded yet.
           </p>
         </section>
       </div>
@@ -436,10 +434,7 @@ function PlayerPage() {
         </div>
         {matches.length === 0 ? (
           <div className="panel empty-state">
-            <p className="muted">
-              No recorded games{setFilter ? ' in this set' : ''} yet. Results only appear once an
-              event&apos;s pairings have been published.
-            </p>
+            <p className="muted">No recorded games{setFilter ? ' in this set' : ''} yet.</p>
           </div>
         ) : (
           <>

@@ -252,15 +252,28 @@ export function sceneLadderNote(scene: SceneMapEntry): string | null {
  * The engine stores a purity per store - the share of that store's play that
  * sat inside the scene at clustering time - and the median over a scene's
  * stores is 100% for almost all of them. A low number is a genuinely split
- * scene, which is worth showing rather than hiding, and it is only worth a line
- * when it is not 1.
+ * scene, which is worth showing rather than hiding.
+ *
+ * **It is a figure now, not a paragraph.** This used to be two sentences
+ * standing under the map, and "almost all" turned out to mean the *giant*
+ * scenes: Singapore 96%, Toronto 99%, Klang Valley 98% - so a line that was
+ * meant to be rare was under most of the scenes anybody opens. The panel
+ * already has a row of figures beside it, so the percentage goes there
+ * (`scenePurityLabel`) and the sentence that read the number out loud is gone;
+ * what the number *means* is this function, as that row's hover hint.
  */
 export function scenePurityHint(scene: SceneMapEntry): string | null {
   if (scene.medianPurity === null || scene.medianPurity >= 0.999) return null;
   return (
-    `Its stores play a median ${Math.round(scene.medianPurity * 100)}% of their games inside this scene. ` +
+    'The median store here plays this share of its games inside this scene. ' +
     'A store that plays more outside it is a genuinely split store rather than a mistake.'
   );
+}
+
+/** The same fact as the figure itself: `96%`, or null when there is none. */
+export function scenePurityLabel(scene: SceneMapEntry): string | null {
+  if (scene.medianPurity === null || scene.medianPurity >= 0.999) return null;
+  return `${Math.round(scene.medianPurity * 100)}%`;
 }
 
 /*

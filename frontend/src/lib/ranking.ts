@@ -148,7 +148,7 @@ export function parseScope(raw: string | null | undefined): { setId: string | nu
  * identified against the players it was earned among - so the ladder dropped
  * its `#` column entirely. That withheld an order that exists rather than
  * reporting it with its caveat, and it did so on the page a reader lands on.
- * `GLOBAL_POSITION_HINT` and `GLOBAL_POSITION_NOTICE` carry the caveat now.
+ * `GLOBAL_POSITION_HINT` on the `#` column carries the caveat now.
  */
 export const GLOBAL_SCENE_LABEL = 'Global';
 
@@ -550,14 +550,17 @@ export const GLOBAL_POSITION_HINT =
   `and no recorded game crosses one - so each scene's level rests on the ${RATING_ANCHOR.toLocaleString()} starting ` +
   `rating, and only the order within a scene is earned. Pick a scene for places that are.`;
 
-/**
- * The same fact as the page's one banner line.
+/*
+ * There is no `GLOBAL_POSITION_NOTICE` any more.
  *
- * It replaces "No positions in Global - pick a scene", which was true of the
- * old behaviour and is now wrong. One line, like every other notice here: it
- * reports, and the reason is the hover hint. No paragraph.
+ * It was one line in a banner above the ladder, and the landing scope is
+ * Global - so it was a sentence every first-time reader met before they had
+ * seen a single thing it qualified. The caveat itself is not gone: it is
+ * `GLOBAL_POSITION_HINT` on the `#` header, which is the number it is about,
+ * and the Scene column beside the rows shows the same fact rather than
+ * asserting it. The banner now fires only where there is no `#` column to
+ * hang a hint on.
  */
-export const GLOBAL_POSITION_NOTICE = 'Global places every scene on one ladder — no recorded game crosses a scene.';
 
 /**
  * What to say under the player search box, given what the API says it

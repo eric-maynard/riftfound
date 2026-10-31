@@ -2203,10 +2203,10 @@ select:disabled {
 
 .scene-summary {
   display: grid;
+  /* No `note` row any more: the floor caveat that used to live under this
+     block is the hint on the coverage figure it qualifies. */
   grid-template-columns: minmax(0, 1.2fr) minmax(190px, 0.9fr) auto;
-  grid-template-areas:
-    'identity coverage figures'
-    'note     note     note';
+  grid-template-areas: 'identity coverage figures';
   gap: 1rem 1.75rem;
   align-items: start;
   padding: 1rem 1.25rem;
@@ -2310,14 +2310,6 @@ select:disabled {
 .event-figure-text {
   font-size: 0.85rem !important;
   font-weight: 500 !important;
-}
-
-.coverage-note {
-  grid-area: note;
-  padding-top: 0.6rem;
-  border-top: 1px solid var(--panel-sep);
-  font-size: var(--t-meta);
-  color: var(--color-text-muted);
 }
 
 .notice-banner {
@@ -3354,8 +3346,7 @@ td.is-unsettled .rating-value,
     grid-template-columns: minmax(0, 1fr) auto;
     grid-template-areas:
       'identity identity'
-      'coverage figures'
-      'note     note';
+      'coverage figures';
   }
 
   .match-row {

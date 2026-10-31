@@ -22,6 +22,7 @@ import {
   sceneFocusBounds,
   sceneLadderNote,
   scenePurityHint,
+  scenePurityLabel,
   sceneScope,
   filterScenes,
   formatSpread,
@@ -214,12 +215,19 @@ describe('labels and copy', () => {
   });
 
   it('stays quiet about purity unless the scene is genuinely split', () => {
-    // The median venue plays 100% of its games inside its scene, so a line
-    // about it on every scene would be furniture.
+    // 100% means nothing to say, so neither half is offered at all.
     expect(scenePurityHint(scene({ sceneId: 's', medianPurity: 1 }))).toBeNull();
+    expect(scenePurityLabel(scene({ sceneId: 's', medianPurity: 1 }))).toBeNull();
     expect(scenePurityHint(scene({ sceneId: 's', medianPurity: null }))).toBeNull();
+    expect(scenePurityLabel(scene({ sceneId: 's', medianPurity: null }))).toBeNull();
+
+    // The figure is the figure; the hint says what it is a share *of*, and
+    // that a split store is a real thing rather than a defect. The two halves
+    // were one sentence that read the number out loud, which is the shape
+    // this pass exists to remove.
+    expect(scenePurityLabel(scene({ sceneId: 's', medianPurity: 0.76 }))).toBe('76%');
     const hint = scenePurityHint(scene({ sceneId: 's', medianPurity: 0.76 }));
-    expect(hint).toContain('76%');
+    expect(hint).not.toContain('76%');
     expect(hint).toContain('rather than a mistake');
   });
 

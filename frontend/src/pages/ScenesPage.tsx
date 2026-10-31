@@ -13,6 +13,7 @@ import {
   sceneLadderNote,
   scenePlaceHint,
   scenePurityHint,
+  scenePurityLabel,
   sceneSummary,
 } from '../lib/sceneMap';
 import { SCENE_MAP_PARAM, scenePath } from '../lib/ranking';
@@ -79,9 +80,9 @@ const LIST_LIMIT = 60;
 
 const HINTS = {
   scene:
-    'A scene is a group of stores close enough together that the players at them really play each other. It is where you play, not a ranking: ratings are only comparable between players whose games chain together, which is a wider pool and covers several scenes.',
+    'A group of stores close enough together that the players at them really play each other. It is where you play, not a ranking: ratings are only comparable between players whose games chain together, which is a wider pool covering several scenes.',
   place:
-    'Each pin is the centroid of the venues that scene’s games were played at, weighted by how many were played at each, and the disc around it is how far those venues spread. A scene whose venues have never been geocoded has no pin and is listed under the map. A store whose players only ever play visitors is in no scene at all, and is counted here rather than drawn.',
+    'Each pin is the centroid of the venues that scene’s games were played at, weighted by how many were played at each, and the disc around it is how far those venues spread. A scene with no geocoded venue has no pin and is listed below instead; a store whose players only ever play visitors is in no scene at all, and is counted here rather than drawn.',
   spread:
     'The mean distance from the pin to the venues it was computed from. A small figure is a city; a large one is a travel circuit, and the pin is its middle rather than a place anyone plays.',
 } as const;
@@ -294,6 +295,8 @@ function SceneDetail({
   const tooSmall = sceneComparableHint(scene, minSceneSize);
   const ladder = sceneLadderNote(scene);
   const purity = scenePurityHint(scene);
+  const purityLabel = scenePurityLabel(scene);
+  const place = scenePlaceHint(scene);
 
   return (
     <div className="scene-detail">
@@ -317,9 +320,13 @@ function SceneDetail({
         <div>
           <dt>Venues</dt>
           <dd>
-            {located && scene.locatedVenues < scene.venueCount
-              ? `${formatCount(scene.locatedVenues)} of ${formatCount(scene.venueCount)} on the map`
-              : formatCount(scene.venueCount)}
+            {/* What the pin was computed from is the caveat on this figure,
+                so it rides the figure rather than a paragraph below. */}
+            <abbr className="col-hint" title={place}>
+              {located && scene.locatedVenues < scene.venueCount
+                ? `${formatCount(scene.locatedVenues)} of ${formatCount(scene.venueCount)} on the map`
+                : formatCount(scene.venueCount)}
+            </abbr>
           </dd>
         </div>
         {/* The spread is shown for a dispersed scene too, and matters more
@@ -334,37 +341,47 @@ function SceneDetail({
             <dd>{formatSpread(scene.spreadKm)}</dd>
           </div>
         )}
+        {/* How honestly the scene holds together, as a figure beside the other
+            figures rather than as a sentence reading one out. Absent at 100%,
+            which is what makes it worth a column when it is there. */}
+        {purityLabel && purity && (
+          <div>
+            <dt>
+              <abbr className="col-hint" title={purity}>
+                In-scene play
+              </abbr>
+            </dt>
+            <dd>{purityLabel}</dd>
+          </div>
+        )}
       </dl>
 
-      {/* What the pin claims, or why there is none. Never prose about our
-          plumbing - one sentence, the same way the event page does it. */}
-      <p className="scene-place-note">{scenePlaceHint(scene)}</p>
+      {/* Only when there is no pin. A scene missing from the map beside this
+          panel reads as a scene the map lost, and nothing else on the page
+          says otherwise; a scene that *is* pinned needs no sentence, and its
+          basis is the hint on the venue count above. */}
+      {(!located || scene.dispersed) && <p className="scene-place-note">{place}</p>}
 
       {tooSmall && <p className="scene-place-note">{tooSmall}</p>}
 
-      {/* How honestly the scene holds together, where it does not hold
-          outright. Silent at 100%, which is almost every scene. */}
-      {purity && <p className="scene-place-note">{purity}</p>}
-
-      {/* The link out, and the sentence that keeps it honest.
-
-          **A scene has no ladder.** A ladder is scoped to a rating pool - a
+      {/* **A scene has no ladder.** A ladder is scoped to a rating pool - a
           connected component - because that is the only thing two ratings can
           be compared inside; a scene is a cluster of stores and is additive.
-          One pool covers several scenes, so a reader who opens this from
-          Peninsula lands on a board with South Bay players on it, and the note
-          says so before the click rather than leaving them to notice. The
-          button used to read "See this scene's ladder", which asserted
-          something that does not exist.
+          The link's own words say it opens *these players'* board rather than
+          the scene's, and the pool's size and reach are its hint - a sentence
+          above the button said the same thing to every reader, clicking or
+          not.
 
-          A scene with no pool has no board at all, so there is no link - just
-          the note. That is not an error and the scene is still a fact about
-          its stores. */}
-      <p className="scene-place-note">{ladder}</p>
-      {scene.componentId !== null && (
+          A scene with no pool has no board at all, so there is no link to
+          hang that on, and the note stands. That is not an error and the
+          scene is still a fact about its stores. */}
+      {scene.componentId === null ? (
+        ladder && <p className="scene-place-note">{ladder}</p>
+      ) : (
         <Link
           className="scene-ladder-link"
           to={carryPreview(scenePath(scene.componentId), search)}
+          title={ladder ?? undefined}
         >
           Open the ladder for these players
         </Link>

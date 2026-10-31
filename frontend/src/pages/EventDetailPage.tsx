@@ -1074,6 +1074,9 @@ function RosterSection({
 }) {
   const columns = rosterColumns(roster);
   const heading = roster.source === 'registrants' ? 'Who is signed up' : 'Who played';
+  // Null in the ordinary case: the provenance this used to restate is already
+  // in the heading and in the header's capture line.
+  const note = rosterNote(results);
 
   return (
     <section className="event-section">
@@ -1081,7 +1084,7 @@ function RosterSection({
         <h2>{heading}</h2>
         <span className="section-count">{roster.playerCount}</span>
       </div>
-      <p className="section-note">{rosterNote(roster, results)}</p>
+      {note && <p className="section-note">{note}</p>}
 
       {roster.entries.length === 0 ? (
         <div className="panel empty-state">

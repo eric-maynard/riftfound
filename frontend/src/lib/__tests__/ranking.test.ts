@@ -20,7 +20,6 @@ import {
   gameScore,
   gateProgress,
   GLOBAL_POSITION_HINT,
-  GLOBAL_POSITION_NOTICE,
   GLOBAL_SCENE_LABEL,
   hasPosition,
   hasPositions,
@@ -963,12 +962,15 @@ describe('positions on a ladder that mixes scenes', () => {
     // The specific weakness the ± cannot carry: the margin is the posterior SD
     // of a comparison *inside* a scene, and across scenes there is no
     // comparison for it to be about.
+    //
+    // This is now the **only** place that caveat lives - the banner that said
+    // it in prose above the ladder is gone - so the assertion is the whole
+    // promise rather than one of two copies of it.
     expect(GLOBAL_POSITION_HINT).toContain('no recorded game crosses one');
     expect(GLOBAL_POSITION_HINT).toContain(RATING_ANCHOR.toLocaleString());
-    // One line, and it no longer claims there are no positions.
-    expect(GLOBAL_POSITION_NOTICE).not.toMatch(/No positions/i);
-    expect(GLOBAL_POSITION_NOTICE.split('\n')).toHaveLength(1);
-    expect(GLOBAL_POSITION_NOTICE).toContain(GLOBAL_SCENE_LABEL);
+    // And it does not claim there are no positions, which is what the line it
+    // replaced used to say.
+    expect(GLOBAL_POSITION_HINT).not.toMatch(/No positions/i);
   });
 
   it('shows the depth a place was earned among, because that is what varies', () => {

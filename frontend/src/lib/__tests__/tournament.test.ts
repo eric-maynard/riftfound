@@ -225,7 +225,9 @@ describe('strength of field is a word, and the bands are measured', () => {
     // to say so rather than letting it read as difficulty.
     const band = fieldBand(field({ ratedSample: 9, ratedPlayers: 9, meanRating: 1300 }));
     expect(band.hint).toContain('not a claim that this event is harder');
-    expect(band.hint).toContain('between-event SD 0');
+    // Said in words. The SDs themselves are in the doc comment on the bands:
+    // a reader hovering a one-word verdict is not reading an ICC.
+    expect(band.hint).toContain('no more than drawing a few players at random');
   });
 });
 
@@ -280,12 +282,12 @@ describe('the field is counted in three groups, matching the table', () => {
     expect(labels).not.toContain(UNRANKED_LABEL);
   });
 
-  it('gives each group a reason, and names the right threshold in each', () => {
+  it('names the right threshold in each group, and only the threshold', () => {
     const settings = field();
     expect(fieldSegmentHint('rated', settings)).toContain('8 or more recorded games');
-    expect(fieldSegmentHint('unsettled', settings)).toContain('prints their number');
+    expect(fieldSegmentHint('unsettled', settings)).toContain('not a position');
     // The third group is the only one the word "Unranked" may be said of.
-    expect(fieldSegmentHint('none', settings)).toContain('fewer than 3 recorded games');
+    expect(fieldSegmentHint('none', settings)).toContain('Fewer than 3 recorded games');
     expect(fieldSegmentHint('none', settings)).toContain(UNRANKED_LABEL);
   });
 
@@ -551,18 +553,22 @@ describe('roster', () => {
     expect(entry.checkedIn).toBe(false);
   });
 
-  it('says where the list came from in one line', () => {
-    expect(rosterNote(roster(), results())).toBe('Sign-ups recorded before the event.');
-    expect(rosterNote(roster({ source: 'participants' }), results())).toBe(
-      'Recovered from the field that played.'
-    );
+  it('says nothing where the heading above it already said it', () => {
+    // The source line used to stand above every roster table: "Sign-ups
+    // recorded before the event" over a heading reading `Who is signed up`,
+    // with the capture time already in the header's provenance row. A
+    // qualifier with nothing to qualify is exposition, so there is none.
+    expect(rosterNote(results())).toBeNull();
+    expect(rosterNote(results({ status: 'partial' }))).toBeNull();
   });
 
   it('qualifies a list of ratings nobody earned here', () => {
-    // An upcoming event, and a finished one whose pairings were never run:
-    // both show ratings that this event did not produce.
-    expect(rosterNote(roster(), null)).toContain('counts towards a rating');
-    expect(rosterNote(roster(), results({ status: 'none' }))).toContain('no games were recorded');
+    // The one thing that is NOT in the heading, and the reason this function
+    // still exists. An upcoming event, and a finished one whose pairings were
+    // never run, both show ratings that this event did not produce - and a
+    // table of ratings under an event implies it did.
+    expect(rosterNote(null)).toContain('counts towards a rating');
+    expect(rosterNote(results({ status: 'none' }))).toContain('No games were recorded');
   });
 });
 
@@ -657,7 +663,7 @@ describe('the scene line', () => {
     // carry that, or the link silently asserts the scene and the pool are the
     // same set of people.
     expect(line.componentId).toBe('ce3da9bead6');
-    expect(line.hint).toContain('This store belongs to this scene');
+    expect(line.hint).toContain('nearby stores whose players play each other');
     expect(line.hint).toContain('wider pool of 1,688 players');
   });
 
@@ -698,7 +704,7 @@ describe('the scene line', () => {
     );
     expect(line.name).toBe('Peninsula');
     expect(line.componentId).toBeNull();
-    expect(line.hint).toContain('has not placed anybody who played here');
+    expect(line.hint).toContain('Nobody who played here is placed on a ladder yet');
     // And no size caveat: there is no pool for one to be about.
     expect(line.hint).not.toContain('too small to order');
   });

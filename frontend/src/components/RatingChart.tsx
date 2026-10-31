@@ -13,8 +13,8 @@ import {
  * Rating over time for one player, as inline SVG.
  *
  * One series, so there is no legend box, and no caption either - the heading
- * names what is plotted and what the band means lives in the hover hints and in
- * "How rankings work". The hard case this is built for is a sparse
+ * names what is plotted, and what the band means is in the hover hints and in
+ * the footer's one note. The hard case this is built for is a sparse
  * series: at launch most players have one to three games, and the chart has to
  * make that look like what it is rather than like a dramatic trend. Three
  * things do that work:
@@ -98,10 +98,7 @@ function RatingChart({ points, scopeLabel, provisional = false }: RatingChartPro
   if (provisional) {
     return (
       <div className="rating-chart rating-chart-empty">
-        <p className="muted">
-          Unranked &mdash; no rating is published yet, so there is no history to chart. It appears
-          here once enough games are recorded.
-        </p>
+        <p className="muted">Unranked &mdash; no rating is published yet, so there is nothing to chart.</p>
       </div>
     );
   }
@@ -109,10 +106,7 @@ function RatingChart({ points, scopeLabel, provisional = false }: RatingChartPro
   if (points.length === 0) {
     return (
       <div className="rating-chart rating-chart-empty">
-        <p className="muted">
-          No rating history yet. Points appear here once games from a recorded event are matched to
-          this player.
-        </p>
+        <p className="muted">No rating history yet.</p>
       </div>
     );
   }
@@ -125,9 +119,8 @@ function RatingChart({ points, scopeLabel, provisional = false }: RatingChartPro
     <div className="rating-chart">
       <div className="rating-chart-head">
         <div>
-          {/* The title carries the scope and nothing else. What the band means
-              belongs in "How rankings work" and in the hover hints, not as
-              prose under every chart. */}
+          {/* The title carries the scope and nothing else. What the band
+              means is a hover hint, not prose under every chart. */}
           <h3 className="rating-chart-title">Rating over time &mdash; {scopeLabel}</h3>
         </div>
         <button
