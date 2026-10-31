@@ -36,7 +36,7 @@ src/
 │   ├── sceneMap.ts       # Pure helpers for the map (radii, bounds, copy, filter)
 │   ├── tournament.ts     # Pure helpers for the event page, incl. its scene line
 │   ├── calendarDates.ts  # FullCalendar date markers -> local dates
-│   ├── calendarGrid.ts   # Day counts, the `+`'s name, hover-card placement
+│   ├── calendarGrid.ts   # Day counts, a date cell's name, hover-card placement
 │   ├── eventColors.ts    # One chip colour per event type, measured
 │   └── geolocation.ts    # "Use my current location" as a pure state machine
 ├── hooks/
@@ -878,12 +878,18 @@ deliberately kept. But a hover card is a bad place for a *link*: reaching it
 means moving the pointer off the thing that opened it, and the card used to
 close on exactly that move. On a day with a "+N more" link there was a way
 round; on every other day the card's contents could not be clicked at all, and
-nowhere could they be reached by keyboard, since a FullCalendar chip is a
-`<div>` with no event `url` and so is not focusable.
+nowhere could they be reached by keyboard.
 
-Four routes in now, all of them opening the **same dialog**
-(`DayEventsModal`): the `+` on a day cell, the "+N more" link, a tap on a
-cell, a tap on its date. FullCalendar's own "+N more" popover is retired -
+**Clicking anywhere in a day cell opens that day's list, on every width.** The
+phone has always worked that way; desktop grew an explicit `+` in the corner
+of every cell instead, which is the thing the owner asked to be rid of ("on
+mobile tapping a date cell just opens the events popout, can we have desktop
+behave that way instead of having explicit (+) on each date?"). The `+` is
+gone and `dateClick` is no longer gated on `isMobile`.
+
+Three routes in now, all of them opening the **same dialog**
+(`DayEventsModal`): a click or tap anywhere in a day cell, its date number,
+and the "+N more" link. FullCalendar's own "+N more" popover is retired -
 `moreLinkClick` returns `'none'` on every width. It was a second layout
 answering the same question, it existed only on the minority of days that
 overflow, and it was the sole reason the trophy needed a `display: none` on
@@ -891,49 +897,104 @@ the grid plus a carve-out to show it back inside `.fc-popover`. Both are gone,
 and so is `.has-trophy`, which existed to let a chip's title shrink out of the
 glyph's way.
 
-#### The `+` on a day cell
-- A real `<button>` on **every day that has events**, injected by
-  `dayCellDidMount`. Not on empty days: a control that promises a list and
-  opens an empty one is a broken promise, and 42 identical controls are what a
-  screen reader has to read past to find the three that lead anywhere.
+**A chip click is not a cell click, and the library guarantees it** rather than
+us: FullCalendar's `DateClicking` runs `isValidDateDownEl` on the pointerdown
+target and declines anything inside `.fc-event`, `.fc-more-link`,
+`a[data-navlink]` or `.fc-popover`. So a chip goes to `eventClick`, the date
+number to `navLinkDayClick`, "+N more" to `moreLinkClick`, each exactly once,
+and no handler here calls `stopPropagation`. The `+` did need one, being our
+own element and invisible to that test.
+
+#### The date cell, and the date number in it
+- **The cell.** `dateClick` opens the day list; `openDayList` returns on a day
+  with no events, so clicking an empty cell does nothing. That is the decision,
+  not an omission: a dialog listing no events answers a question nobody asked
+  and then has to be dismissed. `dateClick` cannot be declined per cell, so the
+  "nothing to show" check lives in the one opener.
+- **The affordance is a cursor and a cyan hairline on hover**, both scoped to
+  a `day-has-events` class that `dayCellDidMount` and a re-dress effect keep on
+  the `<td>`. Nothing is drawn in the cell at rest, which is the point.
+- **A line rather than a tinted background, decided on measurements.** Every
+  ink on this calendar is light on dark, so a wash moves the ground out from
+  under all of it. Today's cell is the binding case - its composited ground is
+  **#565272**, not the `#38334b` an older comment claimed, which is what a DOM
+  walk is for - and a 10% cyan wash took its "+N more" from **5.31:1 to
+  4.35:1**, under AA. 8% leaves 0.03 of margin, 6% is barely visible.
+  Darkening fixes every ratio and fails the other way: `#21222c -> #1c1d26` is
+  a 1.05:1 change nobody can see while being obvious on today's lavender. The
+  hairline changes no ground at all, so nothing on the calendar needed
+  re-measuring, and as a non-text graphic it clears 3:1 easily: **11.41:1** on
+  a normal cell, **5.31:1** on today's. 1px inset against the focus ring's 2px
+  outset, so hover and focus are two marks rather than one in two places.
+  - It **stays up while the pointer is on a chip**. The precise version
+    (`:hover:not(:has(.fc-event:hover))`) strobes, because chips are stacked
+    with gaps and sweeping a cell crosses background, chip, background.
+- **The date number is the control**, and the keyboard route. `navLinks` is on
+  at every width now (it was `isMobile`), so FullCalendar renders the date as
+  `<a data-navlink tabindex="0">` with Enter *and* Space handling, and
+  `navLinkDayClick` opens the same list. Without `navLinks` it is an `<a>` with
+  no `href` and no `tabindex` - **verified in Chromium: `focus()` on one leaves
+  `document.activeElement` on `<body>`**, so before this there was no keyboard
+  route but the `+`.
 - **Its accessible name carries the count and the date in full** - "Show all 3
-  events on Friday, November 7" (`dayListLabel`). A grid of buttons all named
-  "+" is useless: announced on its own, a cell's numeral has nothing around it
-  to say which day it means.
-- **Built by hand, not through `dayCellContent`.** That hook's content is
-  injected *inside* the `<a class="fc-daygrid-day-number">` FullCalendar wraps
-  around it, and interactive content inside an anchor is invalid markup that
-  announces as one confused control - the same reason `DayEventsModal` puts
-  its trophy beside its row button rather than in it.
-- **Absolutely positioned in `.fc-daygrid-day-frame`**, not a flex item in
-  `.fc-daygrid-day-top`. Two reasons, both load-bearing: the day-top is where
-  the cell is narrowest (at 390px a cell is ~51px and the numeral already owns
-  2rem of it), and `.fc-day-other .fc-daygrid-day-top` is `opacity: .3`, which
-  a child cannot climb out of. Out of flow it costs the grid nothing at any
-  width; it sits in the day-top's band, above the first chip, so it steals no
-  hover.
+  events on Friday, November 7" (`dayListLabel`), set as `aria-label`, with
+  `role="button"` beside it and the same sentence as the `title` (through
+  `navLinkHint`, so FullCalendar's "Go to November 7, 2025" never appears; an
+  empty day gets no tooltip). Left alone the control's name is its own text,
+  and a screen reader's control list would read a column of bare numerals. The
+  visible numeral stays inside the name it is given - label-in-name, and not by
+  luck: the numeral is the day of the month and the label spells a numeric day.
+- **An empty day's number is `tabindex="-1"`**, so the tab order holds the days
+  that lead somewhere and not all 42. `navLinks` makes every number tabbable
+  and offers no per-cell say in it.
+- **Writing those attributes by hand is safe, for a specific reason.** Preact
+  only removes an attribute it had in its own previous props, and FullCalendar's
+  navlink props are `title`, `data-navlink`, `tabIndex`, `id` and two handlers -
+  so `role` and `aria-label` are ours alone, and `tabIndex` is written only when
+  its value changes, which between two navlink renders it never does. Verified
+  in Chromium on one pinned `<td>`: filtering it from four events to none and
+  back withdrew and restored the class, role, label and tabindex correctly, on
+  the same DOM node. A month change replaces the cells outright, so
+  `dayCellDidMount` catches those.
 - **The day comes off the cell's `data-date`, never a closure.** FullCalendar
   re-renders the grid in place and may keep the same `<td>`s, in which case the
-  mount hook does not fire again and a captured date would open the wrong day's
-  list. `dayStringToLocalDate` parses it - with the `Date(y, m, d)`
+  mount hook does not fire again and a captured date would describe the wrong
+  day. `dayStringToLocalDate` parses it - with the `Date(y, m, d)`
   constructor, because `new Date('2025-11-07')` is UTC midnight by spec and
   reads back as the 6th west of UTC.
-- The click `stopPropagation`s natively, because FullCalendar's `dateClick` is
-  one delegated native listener and on touch it would open the list twice.
-- **Hidden under 600px**, and the reason is width rather than input. There is
-  no hover trap on a phone (`isMobile` withholds the card entirely) and the
-  whole cell plus its date already open the list, so a third tap target in a
-  51px cell buys nothing. The reader this leaves out is a desktop window
-  narrowed under 600px, who keeps the mouse and is covered by the card's own
-  footer instead.
-- Cyan, matching the "+N more" link in the same cell because they open the same
-  dialog. Measured on every ground a cell can have: 11.40:1 normal, 10.78:1
-  other-month, 8.70:1 on today's composited lavender wash, 7.95:1 on its own
-  hover tint.
-- The "+N more" link **stays** on an overflowing day rather than yielding to
-  the `+`. They are not rival doors - same dialog - and the link says what the
-  `+` cannot: that this cell is hiding events, and how many. What absorbed what
-  is that both of them absorbed the popover.
+- **A click on a cell's background focuses the date number before opening.**
+  `dateClick`'s target is a plain `<div>`, so focus would stay on `<body>` and
+  Escape would drop the reader at the top of the document; this makes the
+  return landing the day they just opened. Measured, not assumed: Chromium does
+  not match `:focus-visible` on a programmatic focus whose last real
+  interaction was a pointer, so a click leaves no ring, while the same element
+  does show one after Escape. No branch needed, including on touch.
+- **An other-month day with events lifts its day-top out of FullCalendar's
+  `opacity: .3`.** That rule predates there being a control in the day-top; our
+  own rule already mutes those numbers with `--color-text-muted`, measured for
+  the job (**6.41:1** on `#2a2b36`, measured in situ), and multiplying a
+  measured colour by 0.3 drops it to **1.82:1** - a named button nobody can
+  see. The 0.3 stays on the trailing
+  days with nothing in them. This is also why the `+` used to sit outside the
+  day-top.
+- **Nothing in the `< 600px` block any more.** It used to hide the `+` and put
+  `cursor: pointer` on every day-top including the empty ones. The whole cell
+  opens the list at every width now, and the cursor follows `day-has-events`.
+- The "+N more" link **stays** on an overflowing day. It is not a rival door -
+  it is a *count*: the only thing on the grid that says this cell is hiding
+  events and how many.
+- **It is smaller than what it replaced**, which is the expected direction for
+  a change that deletes a control: main bundle **155.93KB gzipped before,
+  155.88KB after**, CSS 10.58 -> 10.56KB. The injection machinery left; a class
+  toggle and three attributes arrived.
+- **Chips are focusable, and three comments here used to say they are not.**
+  In 6.1.19 a chip is an `<a tabindex="0">` with FullCalendar's own Enter/Space
+  handling - measured in Chromium, where Enter on a focused chip fires
+  `eventClick` and opens the visit URL. The conclusion the old claim supported
+  survives: a keyboard reader can reach an *event*, but not the hover card
+  (hover-only) and so not the trophy in it, which is why the day list matters.
+  The tab order inside a day is the named date number, then its chips, then
+  "+N more"; empty days are skipped.
 
 #### The hover card's footer
 - The card keeps `pointer-events: none`. It is drawn over the pointer's own
@@ -974,7 +1035,9 @@ glyph's way.
   of it closes first), and a visible close button.
 - It is **the keyboard route to everything the hover card holds**, which is why
   the dialog treatment matters: every row and trophy in it is a real control in
-  the tab order, reached from a real button in the grid.
+  the tab order, reached from the day's date number in the grid. A chip is
+  focusable and opens its own event; the card is hover-only, so the trophy in
+  it, and the standings behind that, exist for a keyboard reader only here.
 - Each row renders the trophy as a *sibling* of the event button inside a
   coloured band - a link inside a button is invalid markup. The band is 44px
   tall; sized for touch, kept for the mouse.
@@ -1040,8 +1103,9 @@ glyph's way.
   and `dayStringToLocalDate` for a cell's `data-date` - all pure and all
   tested, including across a DST boundary, where a blind offset lands an hour
   out. Only the `moreLinkClick` path converts a marker; the other two must be
-  left alone. All four routes funnel into one `openDayList`, so there is one
-  source of truth for what a day contains.
+  left alone. All three routes funnel into one `openDayList`, so there is one
+  source of truth for what a day contains - and one place that decides a day
+  with no events opens nothing.
 - **Availability is swept over the whole visible range**, not one day list at a
   time. `CalendarPage` already loads every event for the range in one
   `calendarMode` request, so `loadAvailability` asks about all of them up

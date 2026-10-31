@@ -71,9 +71,16 @@ describe('dayListLabel', () => {
   const nov7 = new Date(2025, 10, 7);
 
   it('names the day in full, not as a numeral', () => {
-    // A button announced on its own has no cell around it to say what "7"
-    // means.
+    // The control *is* the numeral, and announced on its own it has no cell
+    // around it to say what "7" means.
     expect(dayListLabel(nov7, 3)).toBe('Show all 3 events on Friday, November 7');
+  });
+
+  it('keeps the visible numeral inside the name it gives it', () => {
+    // Label-in-name, and not by luck: the numeral is the day of the month and
+    // the label spells the date with a numeric day. Checked away from the
+    // single digits, where "7" would match "November 7" by accident.
+    expect(dayListLabel(new Date(2025, 10, 21), 2)).toContain('21');
   });
 
   it('counts one event as one', () => {
@@ -81,7 +88,8 @@ describe('dayListLabel', () => {
   });
 
   it('never promises events it cannot show', () => {
-    // A day with none gets no button at all; this is the belt to that braces.
+    // A day with none is not named and not tabbable at all; this is the belt
+    // to that braces.
     expect(dayListLabel(nov7, 0)).toBe('Events on Friday, November 7');
   });
 
