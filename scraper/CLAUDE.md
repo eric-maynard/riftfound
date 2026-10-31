@@ -487,6 +487,13 @@ return an event that had already happened. Most of that set's play was over
 before we were looking, and no lookback, retention policy or backfill reaches
 it. A store showing 5 Vendetta players is showing the truth about our data.
 
+> **Superseded in part, 2026-10-31.** The first `prb-` row really is 2026-10-01
+> and the first nine weeks of Vendetta really are gone. But the *last three* are
+> not, and once the queue drained they turned out to be **55,908 matches and
+> 8,374 rated players** - more evidence than Radiance has. The "5 Vendetta
+> players" sentence was true of a table mid-backfill and is not true now. See
+> "Correction: the Vendetta era is not unrecoverable".
+
 What the change does recover, measured with `loadEventFactCandidates` against
 production:
 
@@ -2100,19 +2107,310 @@ per-set ladder and an empty one:
 | `set:s4` (Vendetta) | 2,327 | **460** |
 | `set:s5` (Radiance) | **75** | **2,120** |
 
-Each era is fitted **independently** on its own matches, which is right - a set
-rotation is a real metagame reset - and expensive in evidence. An era with fewer
-than `RANKING_MIN_SET_MATCHES` (50) matches is not fitted at all rather than
+Each era is fitted on its own matches, and an era with fewer than
+`RANKING_MIN_SET_MATCHES` (50) matches is not fitted at all rather than
 published as a page of provisional numbers. The public default scope is still
 `all`: a per-set ladder is a filter over a narrower slice of each player's
 record, so it is always the thinner evidence, and a set in its first weeks has
 almost none.
+
+The eras used to be fitted **independently**, every player's first rating in
+every era drawn from the same global prior, on the premise that a set rotation is
+a real metagame reset. That premise was measured and **replaced**: a per-era fit
+now opens from the previous era's closing posterior. See "Measured: does
+carrying a rating across a set era help?" below for the sweep, and note that the
+numbers in the table above predate the Vendetta backfill draining - the current
+figures are in that section.
 
 One thing the table above does **not** mean: a healthy Radiance ladder is not the
 same as a ladder of Radiance *constructed* play. All 2,120 of those rated players
 earned it largely at prerelease events, which are sealed. Summoner Skirmish - the
 Radiance constructed tier - has no finished events yet (see the tier section
 above), so Radiance-era constructed skill is currently unmeasured.
+
+### Correction: the Vendetta era is not unrecoverable, and the earlier numbers were a backfill artifact
+
+"How far back the backfill can reach" says the Vendetta era is largely gone, and
+"Per-set ratings" quotes **460** rated players in `set:s4` against Radiance's
+2,120. Production on **2026-10-31**, read off the `SET` catalogue:
+
+| | set | name | release | matches | rated players |
+|---|---|---|---|---|---|
+| `SET#s4` | 4 | Vendetta | 2026-07-31 | **55,908** | **8,374** |
+| `SET#s5` | 5 | Radiance | 2026-10-23 | **78,088** | **3,333** |
+
+So **Vendetta is now the better-evidenced era of the two**, by a factor of two
+and a half on rated players. Both the old claim and the old number need
+unpicking, because they were wrong in different ways.
+
+**The 460 was a backfill artifact, not a limit.** It was measured on
+2026-10-26, when the results queue had drained only as far as 2026-10-09 and
+2026-10-01..03 held 983 `prb-` events against **0** results captures (the
+receipts are in "How far back the backfill can reach" - they were quoted there
+as evidence for raising the lookback, which is exactly what they were). The
+queue has since drained through 2026-10-17, and the facts those 983 events were
+always going to yield are now in the table. Nothing about the model changed; the
+data arrived.
+
+**The "unrecoverable" claim is half right, and the half that is right is the
+less interesting half.** The binding fact it rests on survives: this scraper's
+first `prb-` event row really is 2026-10-01 (September holds four rows, on 09-25,
+09-26 and 09-28, and nothing earlier), because `CompeteTournamentSearch` is
+upcoming-only. What the claim got wrong is the conclusion. Vendetta ran
+2026-07-31..2026-10-22, 84 days, and we have the **last 23 of them**. Those 23
+days are 55,908 matches, because they are the days the scraper was running at
+full coverage over a mature set. The first nine weeks are gone for good and
+nothing will recover them; the ladder is a ladder of late-Vendetta play and the
+`SET#s4` item's `releaseDate` still truthfully says 2026-07-31. "A store showing
+5 Vendetta players is showing the truth about our data" was true the day it was
+written and is not true now.
+
+The practical correction: **do not read "Vendetta is unrecoverable" as "there is
+no Vendetta signal".** There is 55,908 matches of it, which is what made the
+carried-prior measurement below possible at all.
+
+One more fact about coverage, recorded because it decides where a temporal split
+can go: **2026-10-18..10-24 holds zero results facts**, and 10-25..10-31 holds
+eight events between them. The results pass works oldest-first and has drained
+to 10-17; whatever is behind the gap after that was not diagnosed here. It means
+there is exactly one place in today's data a per-era held-out split has
+statistical power, which is the main limitation of the measurement below.
+
+### Measured: does carrying a rating across a set era help?
+
+The request: *"we should have ample signal from the vendetta set already, if we
+anchor starting elo in one set to closing elo in the last."* It replaces a stated
+design decision - that each era is fitted independently because a rotation is a
+metagame reset - so it was measured rather than implemented on the strength of
+the intuition.
+
+**The shape.** `ranking/carry.ts`. A player's first rating in era N+1 is drawn
+from N(m, min(s^2 + k·rot^2, sigma0^2)), where `m` and `s` are their closing
+rating and posterior SD in the last era they played, `k` is the number of era
+boundaries crossed since, `rot` is `RANKING_SET_CARRY_ROTATION_ELO`, and sigma0
+is the global prior SD. Four properties, each of them a way the obvious version
+would be wrong:
+
+- **A player with no previous era keeps N(0, sigma0^2).** The first era is fitted
+  exactly as it was, and the old model is the `rot = infinity` corner of the new
+  one. `set:s4` is byte-identical with the carry on or off.
+- **A carried prior is never wider than the global one.** The global prior is the
+  maximum-entropy fallback; a thin record last era must land back on it rather
+  than somewhere worse. The cap is what makes a long absence decay into "new
+  player, but we remember roughly where you were".
+- **Natural units throughout.** The carry is read off the previous fit in
+  logistic units where 0 is the prior mean. Nothing in it touches `eloOrigin` -
+  see "The anchor is still a display offset" below.
+- **Per-era only.** `carrySetPriors` is read inside the era loop and nowhere
+  else. `all` already fits one curve over the whole history and the Wiener
+  process already links a player's days across a boundary, so carrying there
+  would double-count the same evidence.
+
+#### The gate
+
+Temporal split on a replay of production facts (2026-09-01..11-02, dumped
+2026-10-31; 139,692 matches, 66,433 players), cutoff **2026-10-17**. That is the
+only split in today's data with power: Vendetta's evidence ends 2026-10-17 and
+Radiance's begins 2026-10-15, so the s5 training slice is 52,099 matches on
+10-15..10-16 and the held-out day is 10-17. Scored on the 3,886 held-out
+Radiance matches where **both** players also appear in the Radiance training
+slice, so no variant is credited for a player another has never met - the same
+fairness rule the per-format comparison uses.
+
+| rotation (Elo) | carried | capped | accuracy | log loss | vs off | Brier | median SD |
+|---|---|---|---|---|---|---|---|
+| **off (the old default)** | 0 | 0 | 58.23% | 0.67410 | - | 0.24042 | 121.1 |
+| 0 | 24,650 | 0 | 59.78% | **0.66858** | **-0.00552** | 0.23772 | 117.3 |
+| 20 | 24,650 | 0 | 59.83% | **0.66857** | **-0.00553** | 0.23771 | 117.5 |
+| 40 | 24,650 | 0 | 59.60% | 0.66860 | -0.00551 | 0.23773 | 118.3 |
+| 60 | 24,650 | 1,844 | 59.75% | 0.66879 | -0.00532 | 0.23783 | 120.2 |
+| 80 | 24,650 | ~8,000 | 59.73% | 0.66925 | -0.00485 | 0.23805 | 120.7 |
+| **100 (DEFAULT)** | 24,650 | 16,342 | **59.47%** | **0.66974** | **-0.00437** | **0.23827** | **121.0** |
+| 125 | 24,650 | 24,650 | 59.42% | 0.67013 | -0.00397 | 0.23845 | 121.2 |
+| 150 | 24,650 | 24,650 | 59.37% | 0.67016 | -0.00395 | 0.23846 | 121.2 |
+| 300 / 600 | 24,650 | 24,650 | 59.37% | 0.67016 | -0.00395 | 0.23846 | 121.2 |
+
+Read it as two findings of very different strength.
+
+**1. That carrying helps is a measurement.** Every widening in the sweep beats
+the independent fit, and a paired 2,000-draw bootstrap over the 3,886 rows puts
+the 95% CI for the default at **[-0.0099, -0.0031]** and for the most aggressive
+variant at [-0.0132, -0.0040]. Both exclude zero. 0.0044 nats is three times the
+0.0015-nat band this document already established as the noise floor (the three
+observation levels), and accuracy moves 1.2-1.6pp.
+
+**The control that makes it believable.** Carrying the *same* closing ratings
+**shuffled between players** - same arithmetic, same starting points, same
+posterior widths, only the identities permuted - makes held-out log loss
+**worse**:
+
+| variant | log loss | vs off | bootstrap 95% CI |
+|---|---|---|---|
+| carry, rotation 0 | 0.66858 | -0.00552 | [-0.0132, -0.0040] |
+| carry, rotation 150 | 0.67016 | -0.00395 | [-0.0089, -0.0024] |
+| **permuted means, rotation 0** | 0.68379 | **+0.00968** | [+0.0067, +0.0152] |
+| **permuted means, rotation 150** | 0.68059 | **+0.00649** | [+0.0055, +0.0105] |
+
+So the gain is not an artifact of moving the fit's starting point or of
+narrowing its posteriors - it is information about *that player*. A sign flip of
+that size is the cleanest evidence in this section.
+
+**2. The widening itself is not identifiable.** The whole sweep from 0 to 600
+spans **0.0016 nats**, which is inside the noise band. `rot` is in the same
+position `RANKING_DRIFT_ELO_PER_SQRT_DAY` is in: the data says carry, and says
+nothing about how much. So 100 is picked on the two principles the rest of the
+model is picked on, not on its score:
+
+- **It does not move the publishing bar.** The median posterior SD in the
+  `set:s5` fit is 121.0 against 121.1 with no carry at all. A rotation of 0 takes
+  it to 117.3, which would admit players over the 120 bar on *carried* rather
+  than earned evidence - precisely the failure "is an event tier worth a weight?"
+  refuses for tier weights. The carry is allowed to improve predictions; it is
+  not allowed to quietly lower the bar.
+- **Precision carries only where precision was earned.** The cap bites when
+  sqrt(s^2 + 100^2) >= 150, i.e. at a closing SD of 112 - almost exactly where
+  the measured SD-against-games table crosses 120, which is about five games. So
+  a player with a real record last era carries their width, and a player with
+  one or two games carries the mean alone at the global width. 16,342 of the
+  24,650 carried players are capped, which is that rule in numbers.
+
+#### Does it help most where the ladder is thin?
+
+That was the hypothesis - a new set's ladder is thin by construction, so the gain
+should concentrate on players with few games in the new era. **Directionally yes
+at the very thinnest, but the shape does not hold up.** Log loss by the *thinner*
+player's match count in the Radiance training slice:
+
+| matches | n | off | rotation 0 | delta | rotation 150 | delta |
+|---|---|---|---|---|---|---|
+| 1 | 201 | 0.6728 | 0.6517 | **-0.0211** | 0.6597 | -0.0131 |
+| 2 | 343 | 0.6412 | 0.6444 | **+0.0032** | 0.6413 | +0.0001 |
+| 3 | 2,032 | 0.6800 | 0.6757 | -0.0042 | 0.6776 | -0.0023 |
+| 4-5 | 1,160 | 0.6731 | 0.6649 | -0.0082 | 0.6665 | -0.0066 |
+| 6-8 | 144 | 0.6770 | 0.6761 | -0.0009 | 0.6743 | -0.0027 |
+| 9+ | 6 | 0.7445 | 0.7273 | -0.0172 | 0.7448 | +0.0004 |
+
+The single-match bucket gets the largest gain by a factor of two and a half, so
+the hypothesis is not refuted - but the two-match bucket is marginally *worse*,
+and 4-5 beats 3. With 144 and 6 rows in the top buckets the tail is noise, and
+the ordering in the middle is not monotone. **The honest statement is that the
+gain is real in aggregate and that this window cannot establish its shape.**
+Claiming a clean thin-ladder effect from this table would be reading six rows.
+
+#### What it does to coverage, which is a different claim
+
+The carry lets the ladder call a match where a player has *no* games in the new
+era at all. Those rows are not in the comparison above, because scoring them
+would credit the carry for coverage rather than calibration - but the coverage
+is the product gain, so it is reported on its own:
+
+| cutoff | rows the independent fit can call | rows the carry can call | carry's log loss on its rows |
+|---|---|---|---|
+| 2026-10-17 | 3,886 | **7,855** (2.0x) | 0.6693 |
+| 2026-10-16 | 59 | **9,136** (155x) | 0.6692 |
+
+The second row is the thin-ladder regime in its pure form: with one day of
+Radiance play in the training slice, the independent fit can speak to 59 matches
+and the carried one to 9,136, at a log loss indistinguishable from what it
+achieves on the common rows. That is what "a new set's ladder is thin by
+construction" costs, and what the carry buys back.
+
+#### What it does to the rated population, which is less than hoped
+
+Measured through a dry-run `buildSnapshot` on the same replay, at the shipped
+publishing bar (8 games, 120 SD):
+
+| rotation | `set:s4` rated | `set:s5` rated | of players |
+|---|---|---|---|
+| off | 8,396 | 4,136 | 44,445 |
+| 0 | 8,396 | 4,333 (+4.8%) | 44,445 |
+| **100 (DEFAULT)** | **8,396** | **4,185 (+1.2%)** | 44,445 |
+| 150 | 8,396 | 4,131 (-0.1%) | 44,445 |
+
+Two things to take from this. `set:s4` **does not move at any widening**, which
+is the no-previous-era case working: Vendetta is the first fitted era, so there
+is nothing to carry into it. And `set:s5` moves by **1.2%** at the default,
+which is far less than the framing "a carried prior should move that number"
+expects.
+
+The reason is worth stating plainly because it limits what this change can ever
+be sold as: **`minGames` binds, not the SD, and a prior cannot manufacture
+games.** 8 games is the binding test for the overwhelming majority of the pool
+(see "Publishing honestly"), and carrying a rating does not give anyone a ninth
+game. The carry buys prediction quality and coverage; it does **not** rescue the
+new-set ladder's population. Anything that does would be a change to the bar, and
+that is a different decision with a different measurement.
+
+#### Three invariants, checked rather than asserted
+
+**The `all` scope does not move.** A dry-run `buildSnapshot` over the same
+139,692 matches with the carry on and off, compared field by field: **0**
+differences across 57,791 player profiles, 28,148 `all` and `component:` ladder
+rows, and 41,155 `all`-scope rating-history points. `rankingSetCarry.test.ts`
+pins the same thing on a fixture, including the `all` scope's own rated count.
+
+**`componentId` keeps its meaning.** Components are found **once**, on the whole
+co-play graph, before any era is fitted (`findComponents(observations)` in
+`snapshot.ts`), and every per-era scope reads `componentId`, `componentSize`,
+`crossComponentUncertainty` and the `minComponentSize` suppression from that one
+partition. The carry changes the prior inside an era fit and touches none of it,
+which the production diff above confirms (`componentId` and `componentSize` are
+in the compared profile fields) and which a two-disconnected-scenes fixture pins.
+The per-era component structure is therefore still the whole-history structure,
+exactly as before; nothing about what a component *means* or how the publishing
+bar reads it has changed.
+
+**The anchor is still a display offset.** The carry is the one change in this
+model that could plausibly make `RANKING_ELO_ORIGIN` load-bearing - a carried
+*Elo* number would shift with the anchor while the likelihood did not. It is read
+in natural units instead, and the three-way check from "Where the scale is
+anchored" was re-run with the carry **on**: a full `buildSnapshot` at 1200 and at
+1500 over the same observations moves every profile, every `setRatings` entry and
+every ladder row by **exactly 300.0** (largest deviation 1.14e-13, float noise),
+with **zero** differences in rank order, `rated`, `provisionalReason`,
+`uncertainty`, `componentId` or `componentSize`. `rankingSetCarry.test.ts`
+asserts both halves: the published numbers shift by the offset, and the carried
+prior arrays themselves are *identical* at the two anchors.
+
+#### What this is not evidence for, and when to re-measure
+
+Be precise about the confound, because it is large. The one window with power has
+Vendetta's last data **one day** before Radiance's first, and the two eras differ
+by *format* - Vendetta's evidence is Nexus Night constructed play, Radiance's
+training slice is the Pre-Rift sealed weekend - more than they differ by time. So
+this measures "the previous era's record is better than nothing as an opening
+prior", which is what was asked. It does **not** measure whether skill survives a
+real three-month rotation, and it is the most favourable possible case for the
+idea: a genuine gap would be a harder test. The two other cutoffs available today
+(2026-10-16 and 2026-10-25) have 59 and 29 scorable rows and no power at all;
+the first is directionally negative and the second mixed, and neither is worth a
+number.
+
+Two decisions are therefore shipped **untested**, and both are documented as
+such on `SetCarryMode`:
+
+- **What happens to a player who skips an era.** `last-seen` (the default)
+  carries from the last era they played, widening once per boundary crossed, so a
+  long absence decays into the global prior on its own - at a rotation of 100 a
+  single skipped era already puts the carried SD at the cap. `previous-only`
+  treats a returner as new. Only two eras have ever been fitted and they are
+  adjacent, so **no player in today's data can have skipped one**: the two modes
+  score identically on every row the sweep can see. `last-seen` is the default
+  because it degrades continuously rather than at a cliff edge.
+- **The widening itself**, per the sweep above.
+
+**What to re-run, and when.** The same command at the Radiance -> Legacy boundary
+(2027-01-29), which is the first real rotation with a real gap on both sides:
+
+```bash
+./ranking-metrics.sh validate --remote
+```
+
+The carry sweep, the per-bucket breakout, the coverage columns and the rated
+population table are all in that output. If the widening becomes identifiable
+there, re-pick it on the measurement; if carrying stops helping across a true
+rotation, `RANKING_SET_CARRY=false` turns it off without a deploy and this
+section should record the reversal.
 
 ### Storage: the output contract
 
@@ -3078,6 +3376,30 @@ The publishing bar:
 - `RANKING_PRERELEASE_TYPES`: Tournament types that count toward the set they preview (default: `Pre-Rift`)
 - `RANKING_PRERELEASE_LEAD_DAYS`: How far before a release a prerelease may sit (default: `14`)
 
+Carrying a rating across a set rotation (see "does carrying a rating across a
+set era help?"). **Per-era scopes only - `all` is byte-identical with these at
+any value.**
+
+- `RANKING_SET_CARRY`: Open a per-era fit from the previous era's closing
+  posterior instead of the global prior (default: `true`, on a measured
+  held-out gain of 0.0044 nats with a bootstrap CI excluding zero). `false`
+  restores the independent per-era fits.
+- `RANKING_SET_CARRY_ROTATION_ELO`: Extra prior SD added in quadrature per era
+  boundary crossed (default: `100`). **Not identifiable from current data** -
+  the whole sweep from 0 to 600 spans 0.0016 nats, inside the noise band - so
+  100 is picked on two principles: it leaves the median posterior SD at 121.0
+  against 121.1 with no carry, so the publishing bar does not move, and its cap
+  bites at a closing SD of 112, so precision carries only for players who
+  earned about five games last era. Re-sweep at the first real rotation.
+- `RANKING_SET_CARRY_MODE`: `last-seen` | `previous-only` (default:
+  `last-seen`). How a player who skipped an era is treated. **Unmeasurable
+  today** - only two eras have been fitted and they are adjacent, so nobody can
+  have skipped one.
+
+A malformed value in any of the three logs a warning and falls back to the
+measured default, the same rule `RANKING_SET_TABLE` and `RANKING_TIER_WEIGHTS`
+follow: a bad env var must not take the rating pass down.
+
 Venues and scenes:
 
 - `RANKING_VENUE_TOP_PLAYERS`: Players denormalised onto a `VENUE#` item,
@@ -3110,6 +3432,20 @@ properties the design rests on rather than its surface:
   **two disconnected clusters proving the prior stops them floating**, bye
   rejection by every route a bye id can reach a fact row, and uncertainty
   narrowing monotonically with evidence while never exceeding the prior.
+- `rankingSetCarry.test.ts` - carrying a rating across a set rotation: a player
+  with **no previous era** still gets the global prior (and so does one absent
+  from the previous era while their clubmates carry), a carried prior is **never
+  wider than the global one** and says when it capped, the widening compounds
+  once per boundary crossed while `previous-only` resets a returner, a player
+  the new era never saw answers at the carried mean rather than the global one,
+  the **`all` scope is byte-identical** with the carry on or off (rows, history
+  and every published profile field), the **first era is byte-identical** while
+  the later one moves, `componentId` / `componentSize` /
+  `crossComponentUncertainty` are unchanged across two disconnected scenes, and
+  **the anchor stays a display offset** - both that every published number
+  shifts by exactly the offset and that the carried prior *arrays* are
+  bit-identical at two anchors, which is the assertion that would fail if a
+  carried Elo value had crept in anywhere.
 - `rankingCommunities.test.ts` - the case against components as a scene
   primitive, as assertions: two cliques joined by **one** match are one
   component and two communities, Louvain's labelling is deterministic (an

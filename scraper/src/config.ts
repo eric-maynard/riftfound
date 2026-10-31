@@ -136,6 +136,13 @@ const envSchema = z.object({
   // count toward the set they preview rather than the outgoing one.
   RANKING_PRERELEASE_TYPES: z.string().default('Pre-Rift'),
   RANKING_PRERELEASE_LEAD_DAYS: z.string().transform(Number).default('14'),
+  // Carrying a rating across a set rotation: a per-era fit opens from the
+  // previous era's closing ratings instead of the global prior. On by
+  // measurement - see scraper/CLAUDE.md, "Measured: does carrying a rating
+  // across a set era help?". Affects per-era scopes only, never `all`.
+  RANKING_SET_CARRY: z.string().optional(),
+  RANKING_SET_CARRY_ROTATION_ELO: z.string().optional(),
+  RANKING_SET_CARRY_MODE: z.string().optional(),
 
   // Geocoding - Photon (self-hosted)
   PHOTON_URL: z.string().default('http://localhost:2322'),

@@ -27,7 +27,9 @@
  */
 
 import { MatchResult, sliceMatches, type ObservationSet } from './observations.js';
-import { fitWhr, ratingOnDay, type WhrOptions } from './whr.js';
+import { SetCarry, type SetCarryMode, type SetCarryOptions } from './carry.js';
+import { ELO_PER_NAT, fitWhr, ratingOnDay, type PlayerPrior, type WhrOptions } from './whr.js';
+import type { SetEra } from './sets.js';
 
 export interface PredictorScore {
   name: string;
@@ -496,4 +498,294 @@ export function sweepTierWeights(
     weights: variant.weights,
     result: validate(observations, cutoffDay, { ...overrides, tierWeights: variant.weights }),
   }));
+}
+
+/**
+ * The gate on carrying a rating across a set rotation.
+ *
+ * The question: "we should have ample signal from the vendetta set already, if
+ * we anchor starting elo in one set to closing elo in the last". The premise it
+ * replaces - that a rotation is a metagame reset, so each era is fitted from
+ * the global prior - is a *decision*, so this measures it rather than assuming
+ * either way.
+ *
+ * The split is the same temporal one `validate` uses, and the comparison is
+ * built to be fair in the way the per-format comparison was:
+ *
+ * - **Both variants are scored on exactly the same rows.** The common rows are
+ *   the held-out matches in the target era where *both* players also appear in
+ *   that era's pre-cutoff slice, so neither variant is credited for a player
+ *   the other has never met. Without that the carried fit would score on extra
+ *   rows and win on coverage rather than on calibration.
+ * - **Coverage is reported separately, not folded in.** The carried prior can
+ *   call a match where a player has no games in the new era at all, which is a
+ *   real product gain and a different claim from "it predicts better". Those
+ *   rows are scored in their own column.
+ * - **It is broken out by how thin the new era's evidence is.** The whole point
+ *   of carrying is that a new set's ladder is thin by construction, so the
+ *   result that matters is whether the gain concentrates on players with few
+ *   games in the new era. A uniform gain would be suspicious; a gain only on
+ *   the thin buckets is the predicted shape.
+ *
+ * Each row is one candidate widening, with `rotationSigmaElo: null` as the
+ * shipped baseline (no carry at all).
+ */
+export interface SetCarryBucket {
+  /** The thinner of the two players had this many games in the era slice. */
+  label: string;
+  heldOut: number;
+  accuracy: number;
+  logLoss: number;
+}
+
+export interface SetCarryRow {
+  /** Era whose held-out matches are being predicted. */
+  eraId: string;
+  /** Eras whose closing ratings were available to carry from. */
+  priorEraIds: string[];
+  /** null for the shipped baseline: no carry. */
+  rotationSigmaElo: number | null;
+  mode: SetCarryMode | null;
+  /** Players whose prior was moved off the global one. */
+  carriedPlayers: number;
+  /** Of those, how many were capped at the global SD - mean only, no precision. */
+  cappedPlayers: number;
+  /** Matches in the target era before the cutoff: the era-scoped training set. */
+  trainMatches: number;
+  /** Rows every variant can call. Identical across the rows of one era. */
+  heldOut: number;
+  score: PredictorScore;
+  /** Rows this variant can call at all, which the carry can extend. */
+  covered: number;
+  coverageScore: PredictorScore;
+  /** Common rows split on the thinner player's game count in the era slice. */
+  buckets: SetCarryBucket[];
+}
+
+/** Buckets on the *thinner* player's games in the new era's training slice. */
+const CARRY_BUCKETS: { label: string; max: number }[] = [
+  { label: '1-2', max: 2 },
+  { label: '3-4', max: 4 },
+  { label: '5-7', max: 7 },
+  { label: '8+', max: Number.POSITIVE_INFINITY },
+];
+
+function bucketOf(games: number): string {
+  for (const bucket of CARRY_BUCKETS) if (games <= bucket.max) return bucket.label;
+  return CARRY_BUCKETS[CARRY_BUCKETS.length - 1].label;
+}
+
+/**
+ * Fit every era up to `target` in order, chaining the carry through them.
+ *
+ * Returns the prior era `target` should open with. `target === 0` has nothing
+ * before it, so it always gets null - which is the no-previous-era case, and
+ * the reason a first era is fitted exactly as it is today.
+ */
+function carryChain(
+  observations: ObservationSet,
+  eraIds: readonly string[],
+  target: number,
+  keep: (matchIndex: number) => boolean,
+  options: SetCarryOptions,
+  overrides: Partial<WhrOptions>
+): { prior: PlayerPrior | null; carried: number; capped: number } {
+  const carry = new SetCarry(observations.players.length, options);
+  const eraOf = (matchIndex: number) => observations.events[observations.event[matchIndex]].eraId;
+  let globalSigma = Number.POSITIVE_INFINITY;
+  for (let earlier = 0; earlier < target; earlier++) {
+    const slice = sliceMatches(observations, i => keep(i) && eraOf(i) === eraIds[earlier]);
+    const built = carry.priorFor(earlier, globalSigma);
+    const fit = fitWhr(slice, overrides, built.prior);
+    globalSigma = fit.priorSigma;
+    carry.record(fit, earlier);
+  }
+  const built = carry.priorFor(target, globalSigma);
+  return { prior: built.prior, carried: built.counts.carried, capped: built.counts.capped };
+}
+
+/**
+ * Sweep the rotation widening against held-out log loss, per era.
+ *
+ * `eras` must be the chronological era table the observations were built with;
+ * only eras with at least `minEraMatches` pre-cutoff matches are fitted, which
+ * mirrors `RANKING_MIN_SET_MATCHES` in the snapshot - an era that is not a
+ * ladder is not a rotation either.
+ */
+export function sweepSetCarry(
+  observations: ObservationSet,
+  cutoffDay: number,
+  eras: readonly SetEra[],
+  candidatesElo: (number | null)[] = [null, 0, 25, 50, 75, 100, 150, 200, 300, 600],
+  overrides: Partial<WhrOptions> = {},
+  mode: SetCarryMode = 'last-seen',
+  minEraMatches = 50
+): SetCarryRow[] {
+  const playerCount = observations.players.length;
+  const eraOf = (matchIndex: number) => observations.events[observations.event[matchIndex]].eraId;
+  const before = (matchIndex: number) => observations.events[observations.event[matchIndex]].day < cutoffDay;
+  const trainDay = cutoffDay - 1;
+
+  const trainCounts = new Map<string, number>();
+  const testCounts = new Map<string, number>();
+  for (let i = 0; i < observations.playerA.length; i++) {
+    const eraId = eraOf(i);
+    if (!eraId) continue;
+    const counts = before(i) ? trainCounts : testCounts;
+    counts.set(eraId, (counts.get(eraId) ?? 0) + 1);
+  }
+
+  const fittable = eras.filter(era => (trainCounts.get(era.id) ?? 0) >= minEraMatches);
+  const eraIds = fittable.map(era => era.id);
+  const rows: SetCarryRow[] = [];
+
+  for (let target = 1; target < fittable.length; target++) {
+    const era = fittable[target];
+    if ((testCounts.get(era.id) ?? 0) === 0) continue;
+
+    const eraTrain = sliceMatches(observations, i => before(i) && eraOf(i) === era.id);
+    // Games per player inside the era's training slice: both the "seen in this
+    // era" test and the thin/thick split come off this.
+    const eraTrainGames = new Int32Array(playerCount);
+    for (let i = 0; i < eraTrain.playerA.length; i++) {
+      const games = Math.max(1, eraTrain.gameWinners[i].length);
+      eraTrainGames[eraTrain.playerA[i]] += games;
+      eraTrainGames[eraTrain.playerB[i]] += games;
+    }
+
+    for (const rotationSigmaElo of candidatesElo) {
+      const chain = rotationSigmaElo === null
+        ? { prior: null, carried: 0, capped: 0 }
+        : carryChain(observations, eraIds, target, before, { enabled: true, rotationSigmaElo, mode }, overrides);
+      const prior = chain.prior;
+
+      const fit = fitWhr(eraTrain, overrides, prior);
+      const label = rotationSigmaElo === null
+        ? `${era.id}: no carry (DEFAULT)`
+        : `${era.id}: carry, rotation ${rotationSigmaElo}`;
+      const common = new Scorer(label);
+      const all = new Scorer(`${label} (all callable rows)`);
+      const buckets = new Map<string, Scorer>();
+      const callable = (player: number) =>
+        eraTrainGames[player] > 0 || (prior !== null && prior.sigma[player] > 0);
+
+      for (let i = 0; i < observations.playerA.length; i++) {
+        if (before(i)) continue;
+        if (eraOf(i) !== era.id) continue;
+        if (observations.result[i] === MatchResult.Draw) continue;
+        const a = observations.playerA[i];
+        const b = observations.playerB[i];
+        const aWon = observations.result[i] === MatchResult.AWin;
+        const thin = Math.min(eraTrainGames[a], eraTrainGames[b]);
+        const probability =
+          1 / (1 + Math.exp(-(ratingOnDay(fit, a, trainDay) - ratingOnDay(fit, b, trainDay))));
+
+        // Callable at all: the fit has a rating for both sides, which the
+        // carried prior extends to a player with no games in this era.
+        if (callable(a) && callable(b)) all.add(probability, aWon);
+
+        // The comparable rows: both players present in the era's own slice.
+        if (thin === 0) continue;
+        common.add(probability, aWon);
+        const key = bucketOf(thin);
+        let bucket = buckets.get(key);
+        if (!bucket) buckets.set(key, (bucket = new Scorer(key)));
+        bucket.add(probability, aWon);
+      }
+
+      const commonScore = common.score();
+      const allScore = all.score();
+      rows.push({
+        eraId: era.id,
+        priorEraIds: eraIds.slice(0, target),
+        rotationSigmaElo,
+        mode: rotationSigmaElo === null ? null : mode,
+        carriedPlayers: chain.carried,
+        cappedPlayers: chain.capped,
+        trainMatches: eraTrain.playerA.length,
+        heldOut: commonScore.covered,
+        score: commonScore,
+        covered: allScore.covered,
+        coverageScore: allScore,
+        buckets: CARRY_BUCKETS.map(bucket => {
+          const scorer = buckets.get(bucket.label)?.score();
+          return {
+            label: bucket.label,
+            heldOut: scorer?.covered ?? 0,
+            accuracy: scorer?.accuracy ?? 0,
+            logLoss: scorer?.logLoss ?? 0,
+          };
+        }),
+      });
+    }
+  }
+
+  return rows;
+}
+
+/**
+ * How many players a carried prior would admit to each per-era ladder.
+ *
+ * Reported beside the sweep because the product claim and the accuracy claim
+ * are different claims: a carried prior can leave log loss alone and still
+ * change who is publishable, by opening a thin player's curve at a narrower
+ * posterior SD than the global prior allows. Both have to be stated.
+ *
+ * `minGames` / `maxUncertaintyElo` are the snapshot's publishing bar. Fitted on
+ * the whole window, not a split - this is a population count, not a prediction.
+ */
+export function setCarryRatedCounts(
+  observations: ObservationSet,
+  eras: readonly SetEra[],
+  rotationSigmaElo: number | null,
+  overrides: Partial<WhrOptions> = {},
+  minGames = 8,
+  maxUncertaintyElo = 120,
+  mode: SetCarryMode = 'last-seen',
+  minEraMatches = 50
+): { eraId: string; matches: number; players: number; rated: number; carriedPlayers: number }[] {
+  const playerCount = observations.players.length;
+  const eraOf = (matchIndex: number) => observations.events[observations.event[matchIndex]].eraId;
+
+  const counts = new Map<string, number>();
+  for (let i = 0; i < observations.playerA.length; i++) {
+    const eraId = eraOf(i);
+    if (eraId) counts.set(eraId, (counts.get(eraId) ?? 0) + 1);
+  }
+  const fittable = eras.filter(era => (counts.get(era.id) ?? 0) >= minEraMatches);
+
+  const carry = new SetCarry(playerCount, {
+    enabled: rotationSigmaElo !== null,
+    rotationSigmaElo: rotationSigmaElo ?? 0,
+    mode,
+  });
+  const out: { eraId: string; matches: number; players: number; rated: number; carriedPlayers: number }[] = [];
+  let globalSigma = Number.POSITIVE_INFINITY;
+
+  fittable.forEach((era, ordinal) => {
+    const slice = sliceMatches(observations, i => eraOf(i) === era.id);
+    const built = carry.priorFor(ordinal, globalSigma);
+    const fit = fitWhr(slice, overrides, built.prior);
+    globalSigma = fit.priorSigma;
+    carry.record(fit, ordinal);
+
+    let players = 0;
+    let rated = 0;
+    for (let p = 0; p < playerCount; p++) {
+      const points = fit.days[p]?.length ?? 0;
+      if (points === 0) continue;
+      players++;
+      const sigmaElo = fit.sigmas[p][points - 1] * ELO_PER_NAT;
+      if (fit.gamesPlayed[p] >= minGames && sigmaElo <= maxUncertaintyElo) rated++;
+    }
+    out.push({
+      eraId: era.id,
+      matches: slice.playerA.length,
+      players,
+      rated,
+      carriedPlayers: built.counts.carried,
+    });
+  });
+
+  return out;
 }

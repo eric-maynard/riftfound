@@ -46,6 +46,7 @@ import { runPlayriftboundResultsPass } from './sources/playriftboundResults.js';
 import { refitDue, runRankingPass } from './ranking/pass.js';
 import { parsePrereleaseTypes } from './ranking/sets.js';
 import { parseTierWeights } from './ranking/whr.js';
+import { parseSetCarryOptions } from './ranking/carry.js';
 import {
   findCancelledPlayriftboundEvents,
   findCancelledUvsEvents,
@@ -795,6 +796,13 @@ async function runRanking(context: Context): Promise<{ statusCode: number; body:
   const tierWeights = parseTierWeights(env.RANKING_TIER_WEIGHTS);
   if (tierWeights.warning) console.warn(`[ranking] ${tierWeights.warning}; tiers left unweighted`);
 
+  const setCarry = parseSetCarryOptions({
+    enabled: env.RANKING_SET_CARRY,
+    rotationSigmaElo: env.RANKING_SET_CARRY_ROTATION_ELO,
+    mode: env.RANKING_SET_CARRY_MODE,
+  });
+  if (setCarry.warning) console.warn(`[ranking] ${setCarry.warning}; using the measured defaults`);
+
   const runId = await startScrapeRun();
   try {
     const summary = await runRankingPass({
@@ -824,6 +832,7 @@ async function runRanking(context: Context): Promise<{ statusCode: number; body:
         minSetMatches: env.RANKING_MIN_SET_MATCHES,
         venueTopPlayers: env.RANKING_VENUE_TOP_PLAYERS,
         sceneMapTopVenues: env.RANKING_SCENE_MAP_TOP_VENUES,
+        setCarry: setCarry.options,
       },
     });
 

@@ -36,6 +36,7 @@
 import { MatchResult, sliceMatches, type ObservationSet } from './observations.js';
 import { findComponents, venueKey, type ComponentAssignment, type ComponentVenue } from './graph.js';
 import { fitWhr, latestRating, natToElo, ELO_PER_NAT, type WhrFit, type WhrOptions } from './whr.js';
+import { DEFAULT_SET_CARRY_OPTIONS, SetCarry, type CarryCounts, type SetCarryOptions } from './carry.js';
 import { sceneLookup, type SceneAssignment } from './scenes.js';
 import { scenePlace, DEFAULT_SCENE_MAP_TOP_VENUES } from './sceneMap.js';
 import { ALL_SCOPE, componentScope, setComponentScope, setScope, utcDate, type SetDefinition, type SetEra } from './sets.js';
@@ -107,6 +108,16 @@ export interface SnapshotOptions {
   generatedAt?: Date;
   /** Per-set fits are skipped below this many matches in the era. */
   minSetMatches: number;
+  /**
+   * Whether a per-era fit opens from the previous era's closing ratings.
+   *
+   * **Per-era only, by construction.** It is read inside the era loop and
+   * nowhere else, so the `all` scope is byte-identical with it on or off:
+   * `all` already fits one curve over the whole history and the Wiener process
+   * already links a player's days across a set boundary, so carrying there
+   * would double-count the same evidence. See ranking/carry.ts.
+   */
+  setCarry: SetCarryOptions;
 }
 
 /**
@@ -158,6 +169,7 @@ export const DEFAULT_SNAPSHOT_OPTIONS: Omit<
   // reading as individual stores; see DEFAULT_SCENE_MAP_TOP_VENUES.
   sceneMapTopVenues: DEFAULT_SCENE_MAP_TOP_VENUES,
   sceneAssignment: null,
+  setCarry: DEFAULT_SET_CARRY_OPTIONS,
 };
 
 export interface SnapshotDiagnostics {
@@ -174,6 +186,13 @@ export interface SnapshotDiagnostics {
   scopes: { scope: string; rated: number; total: number }[];
   /** Eras skipped for want of data, with their match counts. */
   skippedEras: { eraId: string; matches: number }[];
+  /**
+   * Per-era carried-prior counts, empty when the carry is off.
+   *
+   * Counts only - a carried prior is a per-player fact and nothing that
+   * identifies a player goes anywhere near a log line.
+   */
+  setCarry: { eraId: string; carried: number; capped: number; fresh: number }[];
   matchLogEntries: number;
   matchLogEventsWritten: number;
   /** Venue items emitted, which is the count of venues with a real shop id. */
@@ -345,6 +364,13 @@ export function buildSnapshot(
     { scope: ALL_SCOPE, label: 'All time', eraId: null, fit: allFit, observations, ...allTally },
   ];
   const skippedEras: { eraId: string; matches: number }[] = [];
+  // Carrying a rating across a set rotation. `options.eras` is chronological,
+  // and `eraOrdinal` counts only the eras actually *fitted*, so an era with too
+  // little evidence to be a ladder does not consume a rotation's widening.
+  // Nothing in this block is reachable from the `all` fit above.
+  const carry = new SetCarry(playerCount, options.setCarry);
+  const carryCounts: { eraId: string; counts: CarryCounts }[] = [];
+  let eraOrdinal = 0;
   for (const era of options.eras) {
     const indices = eraMatches.get(era.id);
     if (!indices || indices.length < options.minSetMatches) {
@@ -353,11 +379,16 @@ export function buildSnapshot(
     }
     const keep = new Set(indices);
     const slice = sliceMatches(observations, i => keep.has(i));
+    const opened = carry.priorFor(eraOrdinal, allFit.priorSigma);
+    const fit = fitWhr(slice, options.whr, opened.prior);
+    carry.record(fit, eraOrdinal);
+    if (options.setCarry.enabled) carryCounts.push({ eraId: era.id, counts: opened.counts });
+    eraOrdinal++;
     scopeFits.push({
       scope: setScope(era.id),
       label: era.label,
       eraId: era.id,
-      fit: fitWhr(slice, options.whr),
+      fit,
       observations: slice,
       ...tally(slice, playerCount),
     });
@@ -980,6 +1011,12 @@ export function buildSnapshot(
     maxDelta: allFit.maxDelta,
     scopes: scopeCounts,
     skippedEras,
+    setCarry: carryCounts.map(row => ({
+      eraId: row.eraId,
+      carried: row.counts.carried,
+      capped: row.counts.capped,
+      fresh: row.counts.fresh,
+    })),
     matchLogEntries: matchLog.length,
     matchLogEventsWritten: matchLogEvents.size,
     venueCount: venueProfiles.length,

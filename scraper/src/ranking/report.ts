@@ -36,12 +36,15 @@ import { replayDates, replayFacts, resolveVenueLabels, runRankingPass } from './
 import {
   gamesPerMatchByType,
   matchDistributionByTier,
+  setCarryRatedCounts,
   sweepObservationLevel,
   sweepPriorSigma,
+  sweepSetCarry,
   sweepTierWeights,
   validate,
   validateByType,
 } from './validate.js';
+import { DEFAULT_SET_CARRY_OPTIONS } from './carry.js';
 import { buildSnapshot, DEFAULT_SNAPSHOT_OPTIONS } from './snapshot.js';
 import type { EventResults, EventRoster } from '../database.js';
 
@@ -607,6 +610,80 @@ async function main(): Promise<void> {
         brier: whr.brier.toFixed(4),
       };
     })));
+
+    console.log('\n--- CARRYING A RATING ACROSS A SET ROTATION ---');
+    console.log(
+      '\nA per-era fit opens from the previous era\'s closing ratings instead of the\n' +
+        'global prior. "rotation" is the extra prior SD, in Elo, added in quadrature per\n' +
+        'era boundary crossed; "off" is the independent-era fit. Scored on the rows every\n' +
+        'variant can call - both players present in the target era\'s own training slice -\n' +
+        'so the comparison is calibration and not coverage. "callable" is the coverage the\n' +
+        'carry adds on top, scored separately because it is a different claim.\n'
+    );
+    const { table: carrySetTable } = parseSetTable(args.setTable ?? process.env.RANKING_SET_TABLE);
+    const carryEras = buildEras(carrySetTable);
+    const carryRows = sweepSetCarry(observations, cutoff, carryEras);
+    if (carryRows.length === 0) {
+      console.log('  (only one era has enough matches to fit; nothing to carry across yet)');
+    } else {
+      const baseline = new Map<string, number>();
+      for (const row of carryRows) {
+        if (row.rotationSigmaElo === null) baseline.set(row.eraId, row.score.logLoss);
+      }
+      console.log(table(carryRows.map(row => ({
+        era: row.eraId,
+        'carried from': row.priorEraIds.join(',') || '-',
+        rotation: row.rotationSigmaElo === null ? 'off (DEFAULT)' : row.rotationSigmaElo,
+        carried: row.carriedPlayers,
+        capped: row.cappedPlayers,
+        'held-out': row.heldOut,
+        accuracy: percent(row.score.accuracy),
+        'log loss': row.score.logLoss.toFixed(4),
+        'vs off': ((row.score.logLoss - (baseline.get(row.eraId) ?? row.score.logLoss)) >= 0 ? '+' : '') +
+          (row.score.logLoss - (baseline.get(row.eraId) ?? row.score.logLoss)).toFixed(4),
+        brier: row.score.brier.toFixed(4),
+        callable: row.covered,
+        'callable loss': row.coverageScore.logLoss.toFixed(4),
+      }))));
+
+      console.log(
+        '\nBy the thinner player\'s games in the target era (the whole point: a new set\'s\n' +
+          'ladder is thin by construction, so the gain should concentrate here)\n'
+      );
+      console.log(table(carryRows.map(row => {
+        const cells: Record<string, string | number> = {
+          era: row.eraId,
+          rotation: row.rotationSigmaElo === null ? 'off (DEFAULT)' : row.rotationSigmaElo,
+        };
+        for (const bucket of row.buckets) {
+          cells[`${bucket.label} (n=${bucket.heldOut})`] = bucket.heldOut > 0 ? bucket.logLoss.toFixed(4) : '-';
+        }
+        return cells;
+      })));
+    }
+
+    console.log(
+      '\nWhat it does to the per-era rated population (publishing bar, whole window).\n' +
+        'Stated separately from the log loss because it is a separate claim, and because\n' +
+        'a prior cannot manufacture games: minGames is what binds for most players.\n'
+    );
+    console.log(table(
+      [null, 0, 50, DEFAULT_SET_CARRY_OPTIONS.rotationSigmaElo, 150].flatMap(rotation =>
+        setCarryRatedCounts(observations, carryEras, rotation).map(row => ({
+          rotation: rotation === null
+            ? 'off'
+            : rotation === DEFAULT_SET_CARRY_OPTIONS.rotationSigmaElo
+              ? `${rotation} (DEFAULT)`
+              : rotation,
+          era: row.eraId,
+          matches: row.matches,
+          players: row.players,
+          rated: row.rated,
+          share: percent(row.players > 0 ? row.rated / row.players : 0),
+          carried: row.carriedPlayers,
+        }))
+      )
+    ));
   }
 
   if (command === 'bar' || command === 'all') {
