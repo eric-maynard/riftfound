@@ -93,16 +93,17 @@ async function runDistributedScrape(): Promise<{ found: number; created: number 
   const { total: totalExpected, pageCount } = await getEventCount();
   console.log(`API reports ${totalExpected} upcoming events (~${pageCount} pages)`);
 
+  // UVS listing nothing is not a reason to skip the second source: the UVS
+  // paging loop below is skipped and the playriftbound pass still runs.
   if (pageCount === 0) {
-    console.log('No events to scrape');
-    return { found: 0, created: 0 };
+    console.warn('UVS reports no upcoming events - skipping the UVS pass');
   }
 
   // Calculate delay between pages to spread across the cycle
   // Reserve 10% of interval for processing overhead
   const cycleMs = env.SCRAPE_INTERVAL_MINUTES * 60 * 1000;
   const availableMs = cycleMs * 0.9;
-  const delayBetweenPagesMs = Math.floor(availableMs / pageCount);
+  const delayBetweenPagesMs = Math.floor(availableMs / Math.max(1, pageCount));
 
   // Minimum delay of 2 seconds, maximum of 5 minutes per page
   const effectiveDelayMs = Math.max(2000, Math.min(delayBetweenPagesMs, 5 * 60 * 1000));
@@ -152,7 +153,7 @@ async function runDistributedScrape(): Promise<{ found: number; created: number 
   const shopsToGeocode: UpsertShopResult[] = [];
 
   try {
-    while (true) {
+    while (pageCount > 0) {
       const startTime = Date.now();
 
       console.log(`\n[Page ${currentPage}/${pageCount}] Fetching...`);

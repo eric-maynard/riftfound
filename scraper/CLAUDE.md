@@ -89,8 +89,13 @@ completely disjoint set of midwest events. A whole-world request (lat 0 / lon 0,
 
 Coverage therefore comes from many anchors rather than a few:
 
-- Anchors are derived from the coordinates the **UVS pass just collected**, one
-  per geohash-3 cell (`anchorsFromCoordinates`). Precision-3 cells are ~156km
+- Anchors are derived from the coordinates of the events **already stored, from
+  both sources** (in the local loop: the UVS pass just collected), one per
+  geohash-3 cell (`anchorsFromCoordinates`). Riot's own rows have to count: UVS
+  has listed 0 upcoming events since 2026-11-09, and a UVS-only seed shrank the
+  sweep to the few cells still holding a leftover UVS row. For the same reason an
+  empty UVS listing never skips this source - the coordinator dispatches it even
+  when there are no UVS pages to shard. Precision-3 cells are ~156km
   square, so a query from the cell centre (at most ~110km from any corner) covers
   the whole cell - and coverage automatically tracks wherever Riftbound is
   actually played instead of a hand-maintained city list.
