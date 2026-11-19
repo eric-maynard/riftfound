@@ -163,15 +163,19 @@ async function runCoordinator(
     const { total: totalExpected, pageCount } = await getEventCount();
     console.log(`API reports ${totalExpected} upcoming events across ${pageCount} pages`);
 
-    if (pageCount === 0) {
-      await completeScrapeRun(runId, { eventsFound: 0, eventsCreated: 0, eventsUpdated: 0 });
-      return { statusCode: 200, body: JSON.stringify({ message: 'No events to scrape' }) };
+    // UVS listing nothing is not a reason to skip the second source. Since
+    // 2026-11-09 UVS has reported 0 upcoming Riftbound events; returning here
+    // meant the playriftbound pass was never dispatched and no new event from
+    // either source reached the table.
+    const uvsEmpty = pageCount === 0;
+    if (uvsEmpty) {
+      console.warn('UVS reports no upcoming events - no shards to dispatch, playriftbound still runs');
     }
 
     // Split into shards. Keep shard count bounded so we don't hammer upstream
     // — MAX_SHARDS concurrent workers × 1 req per ~1s each is still gentle.
-    const shardCount = Math.min(MAX_SHARDS, Math.max(1, Math.ceil(pageCount / PAGES_PER_SHARD)));
-    const pagesPerShard = Math.ceil(pageCount / shardCount);
+    const shardCount = uvsEmpty ? 0 : Math.min(MAX_SHARDS, Math.max(1, Math.ceil(pageCount / PAGES_PER_SHARD)));
+    const pagesPerShard = uvsEmpty ? 0 : Math.ceil(pageCount / shardCount);
     const shards: Array<{ startPage: number; endPage: number }> = [];
     for (let i = 0; i < shardCount; i++) {
       const startPage = i * pagesPerShard + 1;
@@ -181,10 +185,14 @@ async function runCoordinator(
     }
     console.log(`Dispatching ${shards.length} shards of ~${pagesPerShard} pages each`);
 
-    try {
-      await recordScrapeCycle({ cycleId, shardCount: shards.length, totalExpected });
-    } catch (error) {
-      console.error('Failed to record scrape cycle:', error instanceof Error ? error.message : error);
+    // An empty UVS listing is not recorded as a cycle: a cycle that saw nothing
+    // would count as evidence that every stored UVS event was cancelled.
+    if (!uvsEmpty) {
+      try {
+        await recordScrapeCycle({ cycleId, shardCount: shards.length, totalExpected });
+      } catch (error) {
+        console.error('Failed to record scrape cycle:', error instanceof Error ? error.message : error);
+      }
     }
 
     // Fire-and-forget invoke each worker. InvocationType: 'Event' returns
@@ -225,10 +233,14 @@ async function runCoordinator(
     // Remove UVS events that recent complete cycles no longer saw upstream and
     // UVS confirms are gone. Only reads cycles that finished well before this one.
     let cancelled: CancellationSummary = { removed: 0, considered: 0 };
-    try {
-      cancelled = await removeCancelledUvsEvents(context);
-    } catch (error) {
-      console.error('UVS cancellation check failed:', error instanceof Error ? error.message : error);
+    if (uvsEmpty) {
+      cancelled.skippedReason = 'UVS reported no upcoming events';
+    } else {
+      try {
+        cancelled = await removeCancelledUvsEvents(context);
+      } catch (error) {
+        console.error('UVS cancellation check failed:', error instanceof Error ? error.message : error);
+      }
     }
 
     const durationMs = Date.now() - startTime;
@@ -446,11 +458,16 @@ async function runPlayriftbound(
   const sweepStartedAt = new Date();
 
   try {
-    // 1. Anchor coordinates from the UVS rows already in the table. Anchors are
-    //    ~156km geohash cells, so rows from the previous cycle are just as good.
+    // 1. Anchor coordinates from every row already in the table, Riot's own
+    //    included. Anchors are ~156km geohash cells, so rows from the previous
+    //    cycle are just as good. Seeding from UVS rows alone stopped working once
+    //    UVS stopped listing events: the anchor set shrank to the few cells that
+    //    still held a leftover UVS row.
     const before = await loadUpcomingEvents(PRB_DAYS_FORWARD);
-    const coordinates = before.filter(isUvsRow).map(e => ({ latitude: e.latitude, longitude: e.longitude }));
-    console.log(`Loaded ${before.length} stored events (${coordinates.length} UVS) in ${Date.now() - startTime}ms`);
+    const coordinates = before.map(e => ({ latitude: e.latitude, longitude: e.longitude }));
+    console.log(
+      `Loaded ${before.length} stored events (${before.filter(isUvsRow).length} UVS) in ${Date.now() - startTime}ms`
+    );
 
     // 2. Rate-limited sweep, bounded by the invocation's time budget.
     const prbResult = await fetchPlayriftboundEvents({

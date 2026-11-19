@@ -90,6 +90,27 @@ describe('coordinator', () => {
     expect(db.recordScrapeCycle).toHaveBeenCalledWith(expect.objectContaining({ cycleId: cycleIds[0] }));
   });
 
+  it('still dispatches playriftbound when UVS reports no upcoming events', async () => {
+    // 2026-11-09: UVS went to 0 upcoming events and the coordinator returned
+    // before dispatching the second source, so nothing new was scraped at all.
+    const { getEventCount } = await import('../api.js');
+    (getEventCount as unknown as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ total: 0, pageCount: 0 });
+
+    const res = await handler({} as never, context());
+
+    expect(res.statusCode).toBe(202);
+    const modes = sent.map(i => JSON.parse(Buffer.from(i.Payload as Uint8Array).toString()).mode);
+    expect(modes).toEqual(['playriftbound']);
+    expect(JSON.parse(res.body)).toMatchObject({
+      shards: 0, playriftboundDispatched: true, cancellationCheck: 'UVS reported no upcoming events',
+    });
+    // An empty listing must not become evidence that stored UVS events were cancelled.
+    expect(db.recordScrapeCycle).not.toHaveBeenCalled();
+    expect(db.loadScrapeCycles).not.toHaveBeenCalled();
+    expect(db.deleteEventsByExternalId).not.toHaveBeenCalled();
+    expect(db.failScrapeRun).not.toHaveBeenCalled();
+  });
+
   it('does not dispatch playriftbound when stored reads are unsupported', async () => {
     db.supportsStoredEventReads.mockReturnValue(false);
     await handler({} as never, context());
@@ -100,7 +121,7 @@ describe('coordinator', () => {
 });
 
 describe('playriftbound invocation', () => {
-  it('seeds anchors from stored UVS rows, merges twins, deletes orphan prb rows and upserts the rest', async () => {
+  it('seeds anchors from every stored row, merges twins, deletes orphan prb rows and upserts the rest', async () => {
     // Before the sweep: an older prb row that is actually a UVS twin, plus the UVS row.
     db.loadUpcomingEvents
       .mockResolvedValueOnce([uvsRow, { ...prbTwin }])
@@ -115,8 +136,12 @@ describe('playriftbound invocation', () => {
     expect(res.statusCode).toBe(200);
 
     const opts = prb.fetchPlayriftboundEvents.mock.calls[0][0];
-    // prb rows must not seed anchors
-    expect(opts.coordinates).toEqual([{ latitude: uvsRow.latitude, longitude: uvsRow.longitude }]);
+    // Riot's own rows seed anchors too: with UVS listing nothing they are the
+    // only record of where Riftbound is played.
+    expect(opts.coordinates).toEqual([
+      { latitude: uvsRow.latitude, longitude: uvsRow.longitude },
+      { latitude: prbTwin.latitude, longitude: prbTwin.longitude },
+    ]);
     expect(opts.deadline).toBeLessThan(Date.now() + 900_000);
 
     expect(db.applyMergedEventFields).toHaveBeenCalledWith('1039321', {
